@@ -6,7 +6,7 @@ category: Distribution
 summary: Product changes prepared for the next tagged release.
 ---
 
-## Unreleased
+## 0.1.0 - 2026-08-20
 
 - Package complete agent skill directories into portable `.tar.gz` bundles.
 - Create an Agentbox thread, attach the bundle, and grant explicit team access.
