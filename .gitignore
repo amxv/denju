@@ -14,3 +14,9 @@ npm-debug.log*
 # Astro
 .astro/
 .vercel
+
+# Golden Goose local operational state
+.agents/gg/queue.md
+
+# Local agent research artifacts
+tmp/
