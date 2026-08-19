@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Guidance for coding agents working in `agentbox-skill-share`.
+Guidance for coding agents working in `denju`.
 
 ## Purpose
 
@@ -10,12 +10,12 @@ distributed as native GitHub release binaries through an npm wrapper.
 
 ## Architecture
 
-- `cmd/agentbox-skill-share/main.go`: process entrypoint and exit handling.
+- `cmd/denju/main.go`: process entrypoint and exit handling.
 - `internal/app/`: flags, validation, help, and workflow orchestration.
 - `internal/bundle/`: deterministic skill validation and `.tar.gz` creation.
 - `internal/agentbox/`: JSON-mode Agentbox CLI adapter.
 - `internal/buildinfo/`: build-time version plumbing.
-- `bin/agentbox-skill-share.js`: npm shim for the packaged native binary.
+- `bin/denju.js`: npm shim for the packaged native binary.
 - `scripts/postinstall.js`: downloads a release binary, with a local Go fallback.
 - `.github/workflows/release.yml`: tag-driven binary and npm release pipeline.
 - `src/`: Astro/ZueDocs documentation site.

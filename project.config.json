@@ -1,17 +1,17 @@
 {
-  "cliName": "agentbox-skill-share",
-  "binaryName": "agentbox-skill-share",
-  "goModule": "github.com/amxv/agentbox-skill-share",
+  "cliName": "denju",
+  "binaryName": "denju",
+  "goModule": "github.com/amxv/denju",
   "githubOwner": "amxv",
-  "githubRepo": "agentbox-skill-share",
-  "npmPackage": "@amxv/agentbox-skill-share",
+  "githubRepo": "denju",
+  "npmPackage": "denju-cli",
   "description": "Package and share complete agent skills through Agentbox",
   "homepage": "https://denju.ashray.xyz",
   "canonicalUrl": "https://denju.ashray.xyz",
   "license": "Apache-2.0",
   "paths": {
-    "command": "cmd/agentbox-skill-share",
-    "wrapper": "bin/agentbox-skill-share.js",
-    "binary": "bin/agentbox-skill-share-bin"
+    "command": "cmd/denju",
+    "wrapper": "bin/denju.js",
+    "binary": "bin/denju-bin"
   }
 }

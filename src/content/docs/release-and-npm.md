@@ -48,9 +48,9 @@ Release assets use this shape:
 Examples:
 
 ```bash
-agentbox-skill-share_darwin_arm64
-agentbox-skill-share_linux_amd64
-agentbox-skill-share_windows_amd64.exe
+denju_darwin_arm64
+denju_linux_amd64
+denju_windows_amd64.exe
 ```
 
 Do not change this naming convention unless you update the workflow and `scripts/postinstall.js` together.

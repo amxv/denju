@@ -1,4 +1,4 @@
-# agentbox-skill-share
+# denju
 
 Package complete agent skill directories and share them in a new Agentbox thread.
 
@@ -9,8 +9,8 @@ new thread, and grants a chosen Agentbox team access.
 ## Install
 
 ```bash
-npm install -g @amxv/agentbox-skill-share
-agentbox-skill-share --help
+npm install -g denju-cli
+denju --help
 ```
 
 The separate [`@amxv/agentbox`](https://github.com/amxv/agentbox) CLI must also
@@ -25,7 +25,7 @@ agentbox doctor
 ## Share skills
 
 ```bash
-agentbox-skill-share \
+denju \
   --team ama \
   --title "Reusable agent skills" \
   agentbox dogfood frontend-design
@@ -45,7 +45,7 @@ separately through Agentbox.
 ## Package without sharing
 
 ```bash
-agentbox-skill-share \
+denju \
   --package-only \
   --archive ./agent-skills.tar.gz \
   agentbox dogfood
@@ -73,7 +73,7 @@ overwritten.
 bun install --frozen-lockfile
 make check
 make build
-./dist/agentbox-skill-share --help
+./dist/denju --help
 bun run docs:check
 bun run docs:build
 ```

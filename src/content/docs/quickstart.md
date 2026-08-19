@@ -11,14 +11,14 @@ summary: From npm install to a team-visible Agentbox thread in a few commands.
 Install the bundle CLI and the Agentbox CLI:
 
 ```bash
-npm install -g @amxv/agentbox-skill-share
+npm install -g denju-cli
 npm install -g @amxv/agentbox
 ```
 
 Verify both commands:
 
 ```bash
-agentbox-skill-share --version
+denju --version
 agentbox --version
 ```
 
@@ -36,7 +36,7 @@ An existing configured Agentbox profile also works.
 Skill names resolve under `~/.agents/skills` by default:
 
 ```bash
-agentbox-skill-share \
+denju \
   --team ama \
   --title "Reusable agent skills" \
   agentbox dogfood frontend-design
@@ -51,7 +51,7 @@ thread ID when the workflow succeeds.
 Use package-only mode to inspect a handoff without creating a thread:
 
 ```bash
-agentbox-skill-share \
+denju \
   --package-only \
   --archive ./agent-skills.tar.gz \
   agentbox dogfood

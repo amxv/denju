@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/amxv/agentbox-skill-share/internal/app"
+	"github.com/amxv/denju/internal/app"
 )
 
 func main() {

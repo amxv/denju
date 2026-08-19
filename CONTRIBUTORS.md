@@ -13,14 +13,14 @@
 bun install --frozen-lockfile
 make check
 make build
-./dist/agentbox-skill-share --help
+./dist/denju --help
 ```
 
 Use `--package-only` for local behavior checks that should not create an
 Agentbox thread:
 
 ```bash
-./dist/agentbox-skill-share \
+./dist/denju \
   --package-only \
   --archive /tmp/example-skills.tar.gz \
   agentbox
@@ -46,4 +46,4 @@ Run these commands serially and keep command examples synchronized with the CLI.
 4. Push `vX.Y.Z` or run `make release-tag VERSION=X.Y.Z`.
 
 GitHub Actions builds native binaries, publishes the GitHub release, and then
-publishes `@amxv/agentbox-skill-share` to npm.
+publishes `denju-cli` to npm.

@@ -1,13 +1,20 @@
 ---
 title: Changelog
-description: Release notes for agentbox-skill-share.
+description: Release notes for denju.
 order: 99
 category: Distribution
 summary: Product changes prepared for the next tagged release.
 ---
 
+## 0.2.0 - 2026-08-20
+
+- Rename the repository, Go module, and terminal command to `denju`.
+- Publish the npm distribution under the available `denju-cli` package name.
+- Keep the documentation at `denju.ashray.xyz` with GitHub push-to-deploy.
+
 ## 0.1.0 - 2026-08-20
 
+- Initial release under the `agentbox-skill-share` name.
 - Package complete agent skill directories into portable `.tar.gz` bundles.
 - Create an Agentbox thread, attach the bundle, and grant explicit team access.
 - Support package-only output for local inspection and offline handoffs.

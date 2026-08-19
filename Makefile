@@ -2,18 +2,18 @@ SHELL := /bin/bash
 
 GO ?= go
 GOFMT ?= gofmt
-BIN_NAME ?= agentbox-skill-share
-CMD_NAME ?= agentbox-skill-share
+BIN_NAME ?= denju
+CMD_NAME ?= denju
 CMD_PATH ?= ./cmd/$(CMD_NAME)
 DIST_DIR ?= dist
 BIN_PATH ?= $(DIST_DIR)/$(BIN_NAME)
 VERSION ?= $(shell node -p "require('./package.json').version" 2>/dev/null)
-LDFLAGS ?= -s -w -X github.com/amxv/agentbox-skill-share/internal/buildinfo.Version=$(if $(VERSION),$(VERSION),dev)
+LDFLAGS ?= -s -w -X github.com/amxv/denju/internal/buildinfo.Version=$(if $(VERSION),$(VERSION),dev)
 
 .PHONY: help bootstrap fmt test vet lint check docs-check docs-build build build-all install-local clean release-tag
 
 help:
-	@echo "agentbox-skill-share command runner"
+	@echo "denju command runner"
 	@echo ""
 	@echo "Targets:"
 	@echo "  make bootstrap    - initialize CLI, module, repo, npm, docs, and license identity"
@@ -24,9 +24,9 @@ help:
 	@echo "  make check        - fmt + test + vet + lint"
 	@echo "  make docs-check    - validate the Astro/ZueDocs site"
 	@echo "  make docs-build    - build the Astro/ZueDocs site"
-	@echo "  make build        - build local binary to dist/agentbox-skill-share"
+	@echo "  make build        - build local binary to dist/denju"
 	@echo "  make build-all    - build release binaries for 6 target platforms"
-	@echo "  make install-local - install CLI to ~/.local/bin/agentbox-skill-share"
+	@echo "  make install-local - install CLI to ~/.local/bin/denju"
 	@echo "  make clean        - remove dist artifacts"
 	@echo "  make release-tag VERSION=x.y.z - create and push a tag for GitHub Actions"
 

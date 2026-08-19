@@ -1,14 +1,14 @@
 export const siteConfig = {
-  name: "agentbox-skill-share",
+  name: "denju",
   strapline: "Package and share complete agent skills",
   description:
     "Documentation for packaging complete agent skill directories and sharing them with a team through Agentbox.",
-  repoUrl: "https://github.com/amxv/agentbox-skill-share",
+  repoUrl: "https://github.com/amxv/denju",
   accentColor: "#0369a1",
   accentColorDark: "#38bdf8",
   footerSections: [
     {
-      title: "agentbox-skill-share",
+      title: "denju",
       text:
         "A focused Go CLI for moving complete reusable skills between Agentbox teammates."
     },
@@ -20,8 +20,8 @@ export const siteConfig = {
     {
       title: "Repository",
       linkPrefix: "Source: ",
-      linkHref: "https://github.com/amxv/agentbox-skill-share",
-      linkLabel: "github.com/amxv/agentbox-skill-share"
+      linkHref: "https://github.com/amxv/denju",
+      linkLabel: "github.com/amxv/denju"
     }
   ]
 } as const;

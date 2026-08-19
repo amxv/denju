@@ -4,9 +4,9 @@ description: Prepare a Go CLI changelog and push a tag for the GitHub Actions re
 allowed-tools: Bash, Read, Write, Edit
 ---
 
-# Release agentbox-skill-share
+# Release denju
 
-Use this skill when cutting a release for `agentbox-skill-share`. The release is intentionally controlled by the repository:
+Use this skill when cutting a release for `denju`. The release is intentionally controlled by the repository:
 edit the changelog, commit it, and push a `v*` tag. GitHub Actions builds the
 native binaries, creates the GitHub Release, and publishes npm.
 

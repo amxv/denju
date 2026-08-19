@@ -11,12 +11,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/amxv/agentbox-skill-share/internal/agentbox"
-	"github.com/amxv/agentbox-skill-share/internal/buildinfo"
-	"github.com/amxv/agentbox-skill-share/internal/bundle"
+	"github.com/amxv/denju/internal/agentbox"
+	"github.com/amxv/denju/internal/buildinfo"
+	"github.com/amxv/denju/internal/bundle"
 )
 
-const commandName = "agentbox-skill-share"
+const commandName = "denju"
 
 var version = buildinfo.CurrentVersion()
 
@@ -169,11 +169,11 @@ func isHelpArg(value string) bool {
 
 func printRootHelp(w io.Writer) {
 	writeLines(w,
-		"agentbox-skill-share - package and share complete agent skills through Agentbox",
+		"denju - package and share complete agent skills through Agentbox",
 		"",
 		"Usage:",
-		"  agentbox-skill-share [options] <skill> [<skill> ...]",
-		"  agentbox-skill-share --version",
+		"  denju [options] <skill> [<skill> ...]",
+		"  denju --version",
 		"",
 		"Options:",
 		"  --skills-dir <path>  skill directory root (default: ~/.agents/skills)",
@@ -183,8 +183,8 @@ func printRootHelp(w io.Writer) {
 		"  --package-only       create a bundle without using Agentbox",
 		"",
 		"Examples:",
-		"  agentbox-skill-share --team ama agentbox dogfood",
-		"  agentbox-skill-share --package-only --archive skills.tar.gz agentbox dogfood",
+		"  denju --team ama agentbox dogfood",
+		"  denju --package-only --archive skills.tar.gz agentbox dogfood",
 	)
 }
 

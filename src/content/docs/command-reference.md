@@ -1,6 +1,6 @@
 ---
 title: Command reference
-description: Flags, defaults, output behavior, and examples for agentbox-skill-share.
+description: Flags, defaults, output behavior, and examples for denju.
 order: 3
 category: Reference
 summary: A compact reference for live shares and package-only bundles.
@@ -9,8 +9,8 @@ summary: A compact reference for live shares and package-only bundles.
 ## Syntax
 
 ```bash
-agentbox-skill-share [options] <skill> [<skill> ...]
-agentbox-skill-share --version
+denju [options] <skill> [<skill> ...]
+denju --version
 ```
 
 At least one skill name is required.
@@ -30,7 +30,7 @@ At least one skill name is required.
 ## Live share
 
 ```bash
-agentbox-skill-share \
+denju \
   --team engineering \
   --title "Frontend skill set" \
   frontend-design react-best-practices shadcn
@@ -41,7 +41,7 @@ Successful output includes the new `thr_...` ID and the team slug.
 ## Alternate skill root
 
 ```bash
-agentbox-skill-share \
+denju \
   --skills-dir ./skills \
   --package-only \
   --archive ./skills.tar.gz \

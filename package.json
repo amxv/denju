@@ -1,27 +1,27 @@
 {
-  "name": "@amxv/agentbox-skill-share",
-  "version": "0.1.0",
+  "name": "denju-cli",
+  "version": "0.2.0",
   "description": "Package and share complete agent skills through Agentbox",
   "license": "Apache-2.0",
   "author": "amxv",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/amxv/agentbox-skill-share.git"
+    "url": "git+https://github.com/amxv/denju.git"
   },
   "homepage": "https://denju.ashray.xyz",
   "bugs": {
-    "url": "https://github.com/amxv/agentbox-skill-share/issues"
+    "url": "https://github.com/amxv/denju/issues"
   },
   "bin": {
-    "agentbox-skill-share": "bin/agentbox-skill-share.js"
+    "denju": "bin/denju.js"
   },
   "config": {
-    "cliName": "agentbox-skill-share",
-    "cliBinaryName": "agentbox-skill-share",
-    "goModule": "github.com/amxv/agentbox-skill-share"
+    "cliName": "denju",
+    "cliBinaryName": "denju",
+    "goModule": "github.com/amxv/denju"
   },
   "files": [
-    "bin/agentbox-skill-share.js",
+    "bin/denju.js",
     "scripts/postinstall.js",
     "cmd",
     "internal",
@@ -35,7 +35,7 @@
   ],
   "scripts": {
     "postinstall": "node scripts/postinstall.js",
-    "test": "node --check bin/agentbox-skill-share.js && node --check scripts/postinstall.js && node --check scripts/project.js && node --check scripts/setup.js",
+    "test": "node --check bin/denju.js && node --check scripts/postinstall.js && node --check scripts/project.js && node --check scripts/setup.js",
     "lint": "npm run test",
     "docs:dev": "astro dev",
     "docs:build": "astro build",

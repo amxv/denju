@@ -1,3 +1,3 @@
-module github.com/amxv/agentbox-skill-share
+module github.com/amxv/denju
 
 go 1.26
