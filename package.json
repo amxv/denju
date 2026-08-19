@@ -1,27 +1,27 @@
 {
-  "name": "@amxv/go-cli-template",
+  "name": "@amxv/agentbox-skill-share",
   "version": "0.1.0",
-  "description": "Template for shipping a Go CLI via npm with GitHub release automation",
+  "description": "Package and share complete agent skills through Agentbox",
   "license": "Apache-2.0",
   "author": "amxv",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/amxv/go-cli-template.git"
+    "url": "git+https://github.com/amxv/agentbox-skill-share.git"
   },
-  "homepage": "https://github.com/amxv/go-cli-template#readme",
+  "homepage": "https://github.com/amxv/agentbox-skill-share#readme",
   "bugs": {
-    "url": "https://github.com/amxv/go-cli-template/issues"
+    "url": "https://github.com/amxv/agentbox-skill-share/issues"
   },
   "bin": {
-    "mycli": "bin/mycli.js"
+    "agentbox-skill-share": "bin/agentbox-skill-share.js"
   },
   "config": {
-    "cliName": "mycli",
-    "cliBinaryName": "mycli",
-    "goModule": "github.com/amxv/go-cli-template"
+    "cliName": "agentbox-skill-share",
+    "cliBinaryName": "agentbox-skill-share",
+    "goModule": "github.com/amxv/agentbox-skill-share"
   },
   "files": [
-    "bin/mycli.js",
+    "bin/agentbox-skill-share.js",
     "scripts/postinstall.js",
     "cmd",
     "internal",
@@ -35,7 +35,7 @@
   ],
   "scripts": {
     "postinstall": "node scripts/postinstall.js",
-    "test": "node --check bin/mycli.js && node --check scripts/postinstall.js && node --check scripts/project.js && node --check scripts/setup.js",
+    "test": "node --check bin/agentbox-skill-share.js && node --check scripts/postinstall.js && node --check scripts/project.js && node --check scripts/setup.js",
     "lint": "npm run test",
     "docs:dev": "astro dev",
     "docs:build": "astro build",
@@ -46,11 +46,12 @@
     "node": ">=18"
   },
   "keywords": [
+    "agentbox",
+    "agent-skills",
+    "automation",
     "go",
     "cli",
-    "template",
-    "npm",
-    "release"
+    "npm"
   ],
   "devDependencies": {
     "@astrojs/check": "^0.9.4",

@@ -2,18 +2,18 @@ SHELL := /bin/bash
 
 GO ?= go
 GOFMT ?= gofmt
-BIN_NAME ?= mycli
-CMD_NAME ?= mycli
+BIN_NAME ?= agentbox-skill-share
+CMD_NAME ?= agentbox-skill-share
 CMD_PATH ?= ./cmd/$(CMD_NAME)
 DIST_DIR ?= dist
 BIN_PATH ?= $(DIST_DIR)/$(BIN_NAME)
 VERSION ?= $(shell node -p "require('./package.json').version" 2>/dev/null)
-LDFLAGS ?= -s -w -X github.com/amxv/go-cli-template/internal/buildinfo.Version=$(if $(VERSION),$(VERSION),dev)
+LDFLAGS ?= -s -w -X github.com/amxv/agentbox-skill-share/internal/buildinfo.Version=$(if $(VERSION),$(VERSION),dev)
 
 .PHONY: help bootstrap fmt test vet lint check docs-check docs-build build build-all install-local clean release-tag
 
 help:
-	@echo "go-cli-template command runner"
+	@echo "agentbox-skill-share command runner"
 	@echo ""
 	@echo "Targets:"
 	@echo "  make bootstrap    - initialize CLI, module, repo, npm, docs, and license identity"
@@ -24,9 +24,9 @@ help:
 	@echo "  make check        - fmt + test + vet + lint"
 	@echo "  make docs-check    - validate the Astro/ZueDocs site"
 	@echo "  make docs-build    - build the Astro/ZueDocs site"
-	@echo "  make build        - build local binary to dist/mycli"
+	@echo "  make build        - build local binary to dist/agentbox-skill-share"
 	@echo "  make build-all    - build release binaries for 6 target platforms"
-	@echo "  make install-local - install CLI to ~/.local/bin/mycli"
+	@echo "  make install-local - install CLI to ~/.local/bin/agentbox-skill-share"
 	@echo "  make clean        - remove dist artifacts"
 	@echo "  make release-tag VERSION=x.y.z - create and push a tag for GitHub Actions"
 
@@ -59,7 +59,7 @@ build:
 
 build-all:
 	@mkdir -p $(DIST_DIR)
-	@for target in "darwin amd64" "darwin arm64" "linux amd64" "linux arm64" "windows amd64"; do \
+	@for target in "darwin amd64" "darwin arm64" "linux amd64" "linux arm64" "windows amd64" "windows arm64"; do \
 		set -- $$target; \
 		GOOS=$$1; GOARCH=$$2; \
 		EXT=""; \

@@ -1,7 +1,7 @@
 ---
 title: Release and npm publishing
 description: Understand the tag-driven GitHub release workflow and the npm wrapper package contract.
-order: 3
+order: 4
 category: Distribution
 summary: How native binaries, GitHub releases, and npm publishing fit together.
 ---
@@ -48,9 +48,9 @@ Release assets use this shape:
 Examples:
 
 ```bash
-mycli_darwin_arm64
-mycli_linux_amd64
-mycli_windows_amd64.exe
+agentbox-skill-share_darwin_arm64
+agentbox-skill-share_linux_amd64
+agentbox-skill-share_windows_amd64.exe
 ```
 
 Do not change this naming convention unless you update the workflow and `scripts/postinstall.js` together.
@@ -70,6 +70,9 @@ NPM_TOKEN
 ```
 
 Make sure the package name in `package.json` is available and publishable before tagging a release.
+
+The runtime also expects `@amxv/agentbox` to be installed separately for live
+thread creation. Package-only mode has no Agentbox runtime dependency.
 
 The default package license is Apache-2.0 and is kept in sync with `LICENSE` and
 the bootstrap metadata. Run `make bootstrap BOOTSTRAP_ARGS='--license MIT'` when a project

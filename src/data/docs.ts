@@ -1,34 +1,34 @@
 export const siteConfig = {
-  name: "mycli",
-  strapline: "A Go CLI shipped through npm",
+  name: "agentbox-skill-share",
+  strapline: "Package and share complete agent skills",
   description:
-    "Documentation for mycli, a starter Go command-line tool template with npm distribution, GitHub release automation, and an embedded ZueDocs-powered docs site.",
-  repoUrl: "https://github.com/amxv/go-cli-template",
+    "Documentation for packaging complete agent skill directories and sharing them with a team through Agentbox.",
+  repoUrl: "https://github.com/amxv/agentbox-skill-share",
   accentColor: "#0369a1",
   accentColorDark: "#38bdf8",
   footerSections: [
     {
-      title: "mycli",
+      title: "agentbox-skill-share",
       text:
-        "A starter Go CLI template with native binaries, npm installation, release automation, and docs included from day one."
+        "A focused Go CLI for moving complete reusable skills between Agentbox teammates."
     },
     {
       title: "What this site covers",
       text:
-        "Installation, local development, command customization, release workflow, npm packaging, and docs site maintenance."
+        "Installation, authentication, bundle behavior, command options, and release maintenance."
     },
     {
       title: "Repository",
       linkPrefix: "Source: ",
-      linkHref: "https://github.com/amxv/go-cli-template",
-      linkLabel: "github.com/amxv/go-cli-template"
+      linkHref: "https://github.com/amxv/agentbox-skill-share",
+      linkLabel: "github.com/amxv/agentbox-skill-share"
     }
   ]
 } as const;
 
 export const docCategories = [
   "Start",
-  "Development",
+  "Guides",
   "Distribution",
   "Reference"
 ] as const;

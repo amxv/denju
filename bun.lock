@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "@amxv/go-cli-template",
+      "name": "@amxv/agentbox-skill-share",
       "devDependencies": {
         "@astrojs/check": "^0.9.4",
         "@types/node": "^24.0.13",

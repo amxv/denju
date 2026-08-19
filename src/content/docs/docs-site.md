@@ -1,9 +1,9 @@
 ---
 title: Docs site maintenance
-description: Run, edit, validate, and deploy the ZueDocs-powered documentation site embedded in this Go CLI template.
+description: Run, edit, validate, and deploy the ZueDocs-powered project documentation.
 order: 5
 category: Reference
-summary: Developer notes for maintaining the Astro docs app alongside the Go CLI.
+summary: Developer notes for maintaining the Astro docs app alongside the CLI.
 ---
 
 ## Local development

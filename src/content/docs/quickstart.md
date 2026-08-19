@@ -1,78 +1,62 @@
 ---
 title: Quickstart
-description: Install dependencies, run the starter CLI, and start the bundled ZueDocs site.
+description: Install both CLIs, authenticate Agentbox, and share your first complete skill bundle.
 order: 1
 category: Start
-summary: The fastest path from a fresh clone to a working CLI and local docs site.
+summary: From npm install to a team-visible Agentbox thread in a few commands.
 ---
 
-## Clone and initialize
+## Install
 
-For a brand-new CLI, create the repository from the directory where the clone
-should be created:
-
-```bash
-gh repo create acme/pluck \
-  --public \
-  --template amxv/go-cli-template \
-  --clone
-```
-
-Then run bootstrap from the new repository root:
+Install the bundle CLI and the Agentbox CLI:
 
 ```bash
-cd pluck
-make bootstrap BOOTSTRAP_ARGS='--cli-name pluck --github-owner acme \
-  --github-repo pluck --npm-package @acme/pluck --license Apache-2.0'
+npm install -g @amxv/agentbox-skill-share
+npm install -g @amxv/agentbox
 ```
 
-The bootstrap command runs from the repository root and never reclones. Omit
-`--public` in the GitHub command for the safe private default. Use public
-visibility for the normal anonymous npm installation path.
-
-For an existing clone, run `make bootstrap` with the identity options shown in the
-customization guide. No manual `mycli` rename sweep is required.
-
-## Install dependencies
-
-Install Go, Node.js, and Bun, then install JavaScript dependencies:
+Verify both commands:
 
 ```bash
-bun install
+agentbox-skill-share --version
+agentbox --version
 ```
 
-The repository uses Go for the CLI, Node for the npm wrapper, and Astro/ZueDocs for the docs site.
-
-## Run the starter CLI
-
-Use the make targets to validate and build the starter command:
+## Authenticate Agentbox
 
 ```bash
-make check
-make build
-./dist/mycli --help
-./dist/mycli hello
+agentbox login
+agentbox doctor
 ```
 
-The sample command is intentionally small so it is easy to replace.
+An existing configured Agentbox profile also works.
 
-## Start the docs site
+## Share installed skills
 
-Run the embedded documentation site locally:
+Skill names resolve under `~/.agents/skills` by default:
 
 ```bash
-bun run docs:dev
+agentbox-skill-share \
+  --team ama \
+  --title "Reusable agent skills" \
+  agentbox dogfood frontend-design
 ```
 
-Astro usually serves the site at `http://localhost:4321`.
+The command validates all three skills, creates one archive, opens a new thread,
+attaches the archive, and grants the `ama` team access. It prints the stable
+thread ID when the workflow succeeds.
 
-## First customization pass
+## Build an archive locally
 
-Replace the starter command behavior in:
+Use package-only mode to inspect a handoff without creating a thread:
 
 ```bash
-internal/app/app.go
-internal/app/app_test.go
+agentbox-skill-share \
+  --package-only \
+  --archive ./agent-skills.tar.gz \
+  agentbox dogfood
+
+tar -tzf ./agent-skills.tar.gz
 ```
 
-Keep the docs open while you edit so the quickstart, command reference, and release notes stay aligned with the actual CLI.
+Existing output files are not overwritten.

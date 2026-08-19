@@ -1,17 +1,17 @@
 {
-  "cliName": "mycli",
-  "binaryName": "mycli",
-  "goModule": "github.com/amxv/go-cli-template",
+  "cliName": "agentbox-skill-share",
+  "binaryName": "agentbox-skill-share",
+  "goModule": "github.com/amxv/agentbox-skill-share",
   "githubOwner": "amxv",
-  "githubRepo": "go-cli-template",
-  "npmPackage": "@amxv/go-cli-template",
-  "description": "Template for shipping a Go CLI via npm with GitHub release automation",
-  "homepage": "https://github.com/amxv/go-cli-template#readme",
-  "canonicalUrl": "https://github.com/amxv/go-cli-template",
+  "githubRepo": "agentbox-skill-share",
+  "npmPackage": "@amxv/agentbox-skill-share",
+  "description": "Package and share complete agent skills through Agentbox",
+  "homepage": "https://github.com/amxv/agentbox-skill-share#readme",
+  "canonicalUrl": "https://github.com/amxv/agentbox-skill-share",
   "license": "Apache-2.0",
   "paths": {
-    "command": "cmd/mycli",
-    "wrapper": "bin/mycli.js",
-    "binary": "bin/mycli-bin"
+    "command": "cmd/agentbox-skill-share",
+    "wrapper": "bin/agentbox-skill-share.js",
+    "binary": "bin/agentbox-skill-share-bin"
   }
 }

@@ -8,9 +8,9 @@ on:
 env:
   GO_VERSION: "1.26"
   NODE_VERSION: "22"
-  CLI_BINARY: "mycli"
-  CLI_ENTRYPOINT: "mycli"
-  CLI_MODULE: "github.com/amxv/go-cli-template"
+  CLI_BINARY: "agentbox-skill-share"
+  CLI_ENTRYPOINT: "agentbox-skill-share"
+  CLI_MODULE: "github.com/amxv/agentbox-skill-share"
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 permissions:

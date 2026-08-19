@@ -4,10 +4,9 @@ description: Prepare a Go CLI changelog and push a tag for the GitHub Actions re
 allowed-tools: Bash, Read, Write, Edit
 ---
 
-# Release a Go CLI from this template
+# Release agentbox-skill-share
 
-Use this skill when cutting a release for a project generated from
-`go-cli-template`. The release is intentionally controlled by the repository:
+Use this skill when cutting a release for `agentbox-skill-share`. The release is intentionally controlled by the repository:
 edit the changelog, commit it, and push a `v*` tag. GitHub Actions builds the
 native binaries, creates the GitHub Release, and publishes npm.
 
@@ -66,5 +65,5 @@ npm view "$(node -p "require('./package.json').name")" version
 ```
 
 Report the tag, workflow URL, release URL, asset names, and published npm
-version. The template does not sync local keychains, validate release secrets,
+version. This project does not sync local keychains, validate release secrets,
 or orchestrate the workflow from a local `ship` command.

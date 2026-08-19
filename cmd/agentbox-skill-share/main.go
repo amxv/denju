@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/amxv/go-cli-template/internal/app"
+	"github.com/amxv/agentbox-skill-share/internal/app"
 )
 
 func main() {
