@@ -6,8 +6,8 @@
   "githubRepo": "agentbox-skill-share",
   "npmPackage": "@amxv/agentbox-skill-share",
   "description": "Package and share complete agent skills through Agentbox",
-  "homepage": "https://github.com/amxv/agentbox-skill-share#readme",
-  "canonicalUrl": "https://github.com/amxv/agentbox-skill-share",
+  "homepage": "https://denju.ashray.xyz",
+  "canonicalUrl": "https://denju.ashray.xyz",
   "license": "Apache-2.0",
   "paths": {
     "command": "cmd/agentbox-skill-share",
