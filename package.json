@@ -1,0 +1,62 @@
+{
+  "name": "@amxv/go-cli-template",
+  "version": "0.1.0",
+  "description": "Template for shipping a Go CLI via npm with GitHub release automation",
+  "license": "Apache-2.0",
+  "author": "amxv",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/amxv/go-cli-template.git"
+  },
+  "homepage": "https://github.com/amxv/go-cli-template#readme",
+  "bugs": {
+    "url": "https://github.com/amxv/go-cli-template/issues"
+  },
+  "bin": {
+    "mycli": "bin/mycli.js"
+  },
+  "config": {
+    "cliName": "mycli",
+    "cliBinaryName": "mycli",
+    "goModule": "github.com/amxv/go-cli-template"
+  },
+  "files": [
+    "bin/mycli.js",
+    "scripts/postinstall.js",
+    "cmd",
+    "internal",
+    "go.mod",
+    "README.md",
+    "LICENSE",
+    "AGENTS.md",
+    "CONTRIBUTORS.md",
+    "Makefile",
+    "project.config.json"
+  ],
+  "scripts": {
+    "postinstall": "node scripts/postinstall.js",
+    "test": "node --check bin/mycli.js && node --check scripts/postinstall.js && node --check scripts/project.js && node --check scripts/setup.js",
+    "lint": "npm run test",
+    "docs:dev": "astro dev",
+    "docs:build": "astro build",
+    "docs:preview": "astro preview",
+    "docs:check": "astro check"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "go",
+    "cli",
+    "template",
+    "npm",
+    "release"
+  ],
+  "devDependencies": {
+    "@astrojs/check": "^0.9.4",
+    "@types/node": "^24.0.13",
+    "astro": "^7.0.3",
+    "typescript": "^5.9.2",
+    "zuedocs": "0.1.26"
+  }
+}

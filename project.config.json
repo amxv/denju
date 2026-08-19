@@ -1,0 +1,17 @@
+{
+  "cliName": "mycli",
+  "binaryName": "mycli",
+  "goModule": "github.com/amxv/go-cli-template",
+  "githubOwner": "amxv",
+  "githubRepo": "go-cli-template",
+  "npmPackage": "@amxv/go-cli-template",
+  "description": "Template for shipping a Go CLI via npm with GitHub release automation",
+  "homepage": "https://github.com/amxv/go-cli-template#readme",
+  "canonicalUrl": "https://github.com/amxv/go-cli-template",
+  "license": "Apache-2.0",
+  "paths": {
+    "command": "cmd/mycli",
+    "wrapper": "bin/mycli.js",
+    "binary": "bin/mycli-bin"
+  }
+}

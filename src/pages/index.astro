@@ -1,0 +1,160 @@
+---
+import { getCollection } from "astro:content";
+import BaseLayout from "zuedocs/layouts/BaseLayout.astro";
+import { primaryNav, siteConfig } from "../data/docs";
+
+const docs = (await getCollection("docs")).sort((a, b) => a.data.order - b.data.order);
+
+const proofPoints = [
+  {
+    title: "Go binary first",
+    body: "Keep the runtime simple: one Go entrypoint, internal command logic, and build-time version metadata."
+  },
+  {
+    title: "npm install path",
+    body: "Ship a tiny Node shim that downloads the right GitHub release binary after npm install."
+  },
+  {
+    title: "Release automation included",
+    body: "Tag a version and let GitHub Actions build platform binaries, publish a release, and publish npm."
+  },
+  {
+    title: "Docs from day one",
+    body: "Use the embedded ZueDocs site for quickstarts, command reference, release notes, and operator guidance."
+  }
+];
+
+const workflows = [
+  "Create a repository from the template, then initialize the command, module, npm, release, and docs identity in one pass.",
+  "Keep docs next to the CLI so every future command has a guide, reference page, and maintenance notes.",
+  "Use make targets locally for formatting, tests, vetting, builds, and multi-platform release binaries.",
+  "Edit the changelog, commit it, and push a version tag so GitHub Actions can publish the release."
+];
+---
+
+<BaseLayout
+  title={`${siteConfig.name} | ${siteConfig.strapline}`}
+  description={siteConfig.description}
+  siteConfig={siteConfig}
+  primaryNav={primaryNav}
+>
+  <section class="hero shell">
+    <div class="hero__copy">
+      <p class="section-label">Go CLI template</p>
+      <h1>Start a Go command-line app with npm distribution, releases, and docs already wired up.</h1>
+      <p class="hero__lede">
+        This template gives future CLIs a practical baseline: a small Go command surface,
+        a native-binary npm install wrapper, GitHub release automation, and a ZueDocs-powered
+        site that can grow with the project.
+      </p>
+      <p class="hero__annotation">
+        Replace the sample command, update project identity, write your first guides,
+        and keep shipping from one repo.
+      </p>
+      <div class="hero__actions">
+        <a class="button button--solid" href="/docs/quickstart">Start with the quickstart</a>
+        <a class="button button--ghost" href="/docs">Browse all docs</a>
+      </div>
+    </div>
+    <aside class="hero__panel">
+      <p class="hero__panel-label">Starter session</p>
+      <ul class="hero__signal-list">
+        <li>Rename the command from mycli to your real binary name.</li>
+        <li>Replace starter handlers with your CLI behavior.</li>
+        <li>Keep docs updated as command groups are added.</li>
+      </ul>
+      <div class="hero__terminal">
+        <span>$ make check</span>
+        <span>$ make build</span>
+        <span>$ bun run docs:dev</span>
+        <span>$ make release-tag VERSION=0.2.0</span>
+      </div>
+    </aside>
+  </section>
+
+  <section class="shell section-grid">
+    <div class="section-heading">
+      <p class="section-label">Why it exists</p>
+      <h2>A reusable baseline for CLIs that need more than a single binary.</h2>
+      <p>
+        Most internal and public CLIs need the same supporting pieces: tests, release builds,
+        install scripts, package metadata, contributor notes, and a docs site. This template
+        keeps those pieces ready so new tools can focus on the command behavior.
+      </p>
+    </div>
+    <div class="proof-grid">
+      {proofPoints.map((item) => (
+        <article class="proof-card">
+          <h3>{item.title}</h3>
+          <p>{item.body}</p>
+        </article>
+      ))}
+    </div>
+  </section>
+
+  <section class="shell split-section">
+    <div>
+      <p class="section-label">Built for</p>
+      <h2>Small Go CLIs that should be easy to install, document, and release.</h2>
+    </div>
+    <div class="stack-list">
+      {workflows.map((item) => (
+        <article class="stack-list__item">
+          <p>{item}</p>
+        </article>
+      ))}
+    </div>
+  </section>
+
+  <section class="shell capability-band">
+    <div class="capability-band__intro">
+      <p class="section-label">Included pieces</p>
+      <h2>One repo with the app, distribution path, and documentation shell.</h2>
+    </div>
+    <div class="capability-band__grid">
+      <div>
+        <p class="capability-title">Go app</p>
+        <p>Entrypoint, command handlers, tests, version plumbing, and make targets.</p>
+      </div>
+      <div>
+        <p class="capability-title">npm wrapper</p>
+        <p>A Node shim and postinstall script for installing native release binaries.</p>
+      </div>
+      <div>
+        <p class="capability-title">Release workflow</p>
+        <p>GitHub Actions build matrix, release asset upload, and npm publish flow.</p>
+      </div>
+      <div>
+        <p class="capability-title">ZueDocs site</p>
+        <p>Astro routes, docs collection, shared layouts, markdown source routes, and starter guides.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="shell docs-teaser">
+    <div class="section-heading">
+      <p class="section-label">Docs map</p>
+      <h2>Use the starter guides to customize the CLI and keep the docs site useful.</h2>
+      <p>
+        The docs cover bootstrap, command customization, release packaging, command reference,
+        and maintenance notes for the embedded ZueDocs site.
+      </p>
+    </div>
+    <div class="docs-teaser__grid">
+      {docs.map((entry) => (
+        <a class="docs-teaser__card" href={`/docs/${entry.id}`}>
+          <span>{entry.data.category}</span>
+          <h3>{entry.data.title}</h3>
+          <p>{entry.data.summary ?? entry.data.description}</p>
+        </a>
+      ))}
+    </div>
+  </section>
+
+  <section class="shell closing-note">
+    <p>
+      Use this template when the next CLI should start with releases, npm installation,
+      and docs already in place.
+    </p>
+  </section>
+</BaseLayout>

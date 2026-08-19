@@ -1,0 +1,15 @@
+# Build outputs
+/dist
+/bin/*-bin
+/bin/*.exe
+
+# Node/npm
+node_modules/
+*.tgz
+npm-debug.log*
+
+# macOS
+.DS_Store
+
+# Astro
+.astro/
