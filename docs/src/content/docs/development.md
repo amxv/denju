@@ -1,22 +1,33 @@
 ---
 title: Development
-description: The small set of commands agents and contributors need to build, verify, and run Denju locally.
+description: Use the canonical repository commands to verify Denju, run the local registry stack, and exercise setup without touching your real agent configuration.
 order: 2
 category: Development
+summary: The commands and isolation rules for safe, repeatable Denju development.
 ---
 
-From the repository root:
+## Verify the repository
+
+From the repository root, use the Rust-native command surface:
 
 ```bash
 cargo xtask check
 cargo build --workspace
-cargo xtask dev
-bun run docs:dev
 ```
 
 Rust is the primary project. The root Bun workspace exists only for the documentation site and the published npm installer shim.
 
+`cargo xtask check` is the comprehensive handoff gate. `just` is a discoverable alias layer; it does not own build, migration, or environment logic.
+
+## Run the local registry
+
 `cargo xtask dev` owns the local dependency and registry lifecycle. It starts the pinned PostgreSQL 18.6 and Garage 2.3.0 services, applies registry migrations, and runs the registry at `http://127.0.0.1:7788`. Re-running it while the registry is already live is safe.
+
+```bash
+cargo xtask dev
+```
+
+## Exercise setup safely
 
 For setup development, use an isolated home and the explicit local registry rather than your real harness roots:
 
@@ -29,3 +40,15 @@ HOME="$TEST_HOME" \
   DENJU_TEST_SERVICE_INSTALL_ONLY=1 \
   cargo run -p denju -- setup --registry http://127.0.0.1:7788
 ```
+
+## Work on the docs
+
+The docs app is isolated under `docs/` and consumes the shared ZueDocs package. Run Astro validation serially:
+
+```bash
+bun run docs:check
+bun run docs:build
+bun run docs:dev
+```
+
+Only changes under `docs/` trigger the Denju documentation project on Vercel. Keep product documentation and metadata inside that directory so deployment scope remains predictable.

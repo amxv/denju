@@ -1,18 +1,57 @@
 ---
 import { getCollection } from "astro:content";
 import BaseLayout from "zuedocs/layouts/BaseLayout.astro";
+import DocsPageActions from "zuedocs/components/DocsPageActions.astro";
 import { docCategories, primaryNav, siteConfig } from "../../data/docs";
+
 const entries = (await getCollection("docs")).sort((a, b) => a.data.order - b.data.order);
-const grouped = docCategories.map((category) => ({ category, entries: entries.filter((entry) => entry.data.category === category) })).filter((group) => group.entries.length > 0);
+const grouped = docCategories
+  .map((category) => ({
+    category,
+    entries: entries.filter((entry) => entry.data.category === category)
+  }))
+  .filter((group) => group.entries.length > 0);
 ---
-<BaseLayout title={`${siteConfig.name} Docs`} description={siteConfig.description} siteConfig={siteConfig} primaryNav={primaryNav}>
-  <main class="shell" style="padding-block: 5rem;">
-    <h1>Denju docs</h1>
+
+<BaseLayout
+  title={`${siteConfig.name} Docs`}
+  description={siteConfig.description}
+  siteConfig={siteConfig}
+  primaryNav={primaryNav}
+>
+  <section class="shell docs-index-hero">
+    <div class="docs-index-hero__head">
+      <div>
+        <p class="section-label">Documentation</p>
+        <h1>Understand Denju from the product boundary inward.</h1>
+      </div>
+      <DocsPageActions />
+    </div>
+    <p>
+      Start with the product model, use the development guide when working in the
+      repository, and keep the reference pages close when changing ownership boundaries.
+    </p>
+  </section>
+
+  <section class="shell docs-index">
     {grouped.map((group) => (
-      <section>
-        <h2>{group.category}</h2>
-        <ul>{group.entries.map((entry) => <li><a href={`/docs/${entry.id}`}>{entry.data.title}</a> — {entry.data.description}</li>)}</ul>
+      <section class="docs-index__group">
+        <div class="docs-index__group-head">
+          <p class="section-label">{group.category}</p>
+        </div>
+        <div class="docs-index__cards">
+          {group.entries.map((entry) => (
+            <a class="docs-index__card" href={`/docs/${entry.id}`}>
+              <h2>{entry.data.title}</h2>
+              <p>{entry.data.description}</p>
+            </a>
+          ))}
+        </div>
       </section>
     ))}
-  </main>
+  </section>
 </BaseLayout>
+
+<script>
+  import "zuedocs/docsEnhancements";
+</script>

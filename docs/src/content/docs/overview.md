@@ -1,11 +1,25 @@
 ---
 title: Overview
-description: What Denju is becoming and how the repository is organized.
+description: Understand Denju's current product boundary, local model, and registry architecture before changing implementation details.
 order: 1
 category: Start
-summary: Native Rust foundations for Agent Skills distribution and synchronization.
+summary: "The product model: one native CLI, durable local state, and one registry boundary."
 ---
 
-Denju is an agent-native, CLI-only social registry and synchronization system for Agent Skills.
+Denju is an agent-native, CLI-only registry and synchronization system for Agent Skills.
 
-The repository contains a native Rust client and daemon, a Rust registry server, shared domain crates, a thin npm installer, and this documentation site. Anonymous `denju setup`, durable local state, harness-root configuration, per-user service management, and the minimal PostgreSQL-backed registry foundation are implemented; later product capabilities build on those same boundaries.
+## What exists today
+
+The Rust implementation provides deterministic Agent Skills validation and content identity, anonymous `denju setup`, durable SQLite-backed local state, Codex and Claude harness-root configuration, per-user service management, and the PostgreSQL-backed registry foundation used by the CLI.
+
+The repository also contains a thin npm installer for the native binary and this documentation site. Product behavior lives in Rust; JavaScript is not a second implementation path.
+
+## Local model
+
+Each Denju installation owns one local state database and one canonical managed skills tree. Harness-facing paths are projections of that managed state rather than independent copies. The CLI remains correct when the background service is stopped because durable local state, not local IPC, is authoritative.
+
+## Registry model
+
+The registry is a separate Rust server backed by PostgreSQL and required S3-compatible object storage. The official service uses Neon PostgreSQL and Cloudflare R2, while local development uses the same interfaces with PostgreSQL and Garage.
+
+Mutable references and registry metadata live in PostgreSQL. Skill bytes are content-addressed objects. This keeps synchronization and recovery based on durable state rather than process memory or filesystem events.

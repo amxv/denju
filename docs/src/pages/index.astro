@@ -1,12 +1,37 @@
 ---
+import { getCollection } from "astro:content";
 import BaseLayout from "zuedocs/layouts/BaseLayout.astro";
 import { primaryNav, siteConfig } from "../data/docs";
+
+const docs = (await getCollection("docs")).sort((a, b) => a.data.order - b.data.order);
 ---
 <BaseLayout title={`${siteConfig.name} | ${siteConfig.strapline}`} description={siteConfig.description} siteConfig={siteConfig} primaryNav={primaryNav}>
-  <main class="shell" style="padding-block: 7rem; max-width: 760px;">
-    <p>Agent Skills registry + synchronization</p>
-    <h1>Keep every agent on the skills you trust.</h1>
-    <p>Denju is being rebuilt as a native Rust CLI, background synchronization service, and self-hostable registry.</p>
-    <p><a href="/docs">Read the docs →</a></p>
-  </main>
+  <section class="shell docs-index-hero">
+    <div class="docs-index-hero__head">
+      <div>
+        <p class="section-label">Agent Skills registry</p>
+        <h1>Keep the skills your agents use in one durable system.</h1>
+      </div>
+    </div>
+    <p>
+      Denju is a native Rust CLI, local synchronization service, and self-hostable
+      registry built around deterministic Agent Skills content and durable local state.
+    </p>
+  </section>
+
+  <section class="shell docs-index">
+    <section class="docs-index__group">
+      <div class="docs-index__group-head">
+        <p class="section-label">Documentation</p>
+      </div>
+      <div class="docs-index__cards">
+        {docs.map((entry) => (
+          <a class="docs-index__card" href={`/docs/${entry.id}`}>
+            <h2>{entry.data.title}</h2>
+            <p>{entry.data.summary}</p>
+          </a>
+        ))}
+      </div>
+    </section>
+  </section>
 </BaseLayout>

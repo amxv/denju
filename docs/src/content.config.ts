@@ -1,5 +1,6 @@
-import { defineCollection, z } from "astro:content";
+import { defineCollection } from "astro:content";
 import { glob } from "astro/loaders";
+import { z } from "astro/zod";
 import { docCategories } from "./data/docs";
 
 const docs = defineCollection({
@@ -9,7 +10,7 @@ const docs = defineCollection({
     description: z.string(),
     order: z.number(),
     category: z.enum(docCategories),
-    summary: z.string().optional()
+    summary: z.string()
   })
 });
 

@@ -1,13 +1,13 @@
 export const siteConfig = {
   name: "denju",
-  strapline: "Agent-native skills, synchronized",
-  description: "Documentation for Denju, an agent-native social registry and synchronization system for Agent Skills.",
+  strapline: "Agent Skills, synchronized",
+  description: "Documentation for Denju, a native Rust CLI and registry for managing Agent Skills across agent harnesses.",
   repoUrl: "https://github.com/amxv/denju",
   accentColor: "#0369a1",
   accentColorDark: "#38bdf8",
   footerSections: [
-    { title: "denju", text: "A native Rust CLI and registry for discovering, publishing, and synchronizing Agent Skills." },
-    { title: "Status", text: "The Rust implementation is being built from the product specification." },
+    { title: "denju", text: "A native Rust CLI and registry for managing Agent Skills across agent harnesses." },
+    { title: "Docs", text: "Human-readable documentation with raw Markdown routes for agents and tools." },
     { title: "Repository", linkPrefix: "Source: ", linkHref: "https://github.com/amxv/denju", linkLabel: "github.com/amxv/denju" }
   ]
 } as const;
