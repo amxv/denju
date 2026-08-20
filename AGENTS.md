@@ -1,6 +1,8 @@
 # AGENTS.md
 
-Denju is a greenfield Rust implementation. The former Go/Agentbox product is preserved on `legacy/go-agentbox-v0.2.0`; do not recreate or preserve its architecture on `main`.
+Denju is a greenfield Rust implementation. The former Go/Agentbox product is preserved only as historical Git data on `legacy/go-agentbox-v0.2.0`.
+
+**Implementation agents must not read the old code.** Do not check out the legacy branch, `git show` its source, diff against it, grep it, copy tests from it, or use it for behavioral parity or implementation examples. Build from the product specification, current `main`, and the current workstream package only. A separate user-requested historical investigation is outside this implementation workflow.
 
 ## Start here
 
@@ -20,8 +22,10 @@ Denju is a greenfield Rust implementation. The former Go/Agentbox product is pre
 - `crates/denju-registry/` — registry use cases, PostgreSQL, S3, search, outbox.
 - `crates/denju-testkit/` — shared deterministic fixtures only.
 - `xtask/` — canonical developer/CI commands.
+- `Justfile` — thin discoverable aliases only; recipes delegate to Cargo/xtask/Bun and contain no build logic.
 - `packages/npm/` — thin binary installer/launcher; never a source-build fallback.
 - `docs/` — Astro/ZueDocs site.
+- `deploy/dev.compose.yml` — pinned local PostgreSQL + S3-compatible dependencies; Phase 2 makes `cargo xtask dev` own their lifecycle plus the registry process.
 
 Keep dependencies one-way toward `denju-core`; binaries wire product logic rather than owning it. Do not introduce generic utility crates or traits without a real ownership/I/O boundary.
 
@@ -30,13 +34,16 @@ Keep dependencies one-way toward `denju-core`; binaries wire product logic rathe
 Use the narrowest useful check while iterating, then run the scoped full check before handoff:
 
 ```bash
+just
+just check-crate denju-core
+just test denju-core
 cargo check -p <crate>
 cargo test -p <crate>
 cargo clippy -p <crate> --all-targets -- -D warnings
 cargo xtask check
 ```
 
-`cargo xtask check` is the canonical repository-wide gate. It runs Rust format/lint/tests plus npm/docs checks. The docs and npm workspaces are intentionally separate from runtime Rust code.
+`cargo xtask check` is the canonical repository-wide gate and CI contract. `just` is only the low-friction command menu; never duplicate Rust build/generation/dev logic in the Justfile. Do not add a Makefile as a second command authority. The docs and npm workspaces are intentionally separate from runtime Rust code.
 
 ## Safety
 
