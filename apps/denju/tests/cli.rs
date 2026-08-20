@@ -1,6 +1,7 @@
 use std::process::{Command, Output};
 
 use serde_json::Value;
+use tempfile::tempdir;
 
 #[test]
 fn plain_root_is_compact_guidance_with_one_next_action() {
@@ -89,8 +90,15 @@ fn help_is_available_in_text_and_json_modes() {
 }
 
 fn denju(args: &[&str]) -> Output {
+    let home = tempdir().expect("isolated test home");
     Command::new(env!("CARGO_BIN_EXE_denju"))
         .args(args)
+        .env("HOME", home.path())
+        .env("CODEX_HOME", ".codex")
+        .env("CLAUDE_CONFIG_DIR", ".claude")
+        .env_remove("DENJU_TEST_FILE_CREDENTIALS")
+        .env_remove("DENJU_TEST_SERVICE_INSTALL_ONLY")
+        .env_remove("DENJU_DAEMON_ONCE")
         .output()
         .expect("run denju binary")
 }

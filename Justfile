@@ -12,6 +12,10 @@ rust:
 docs:
     cargo xtask docs
 
+# Start the pinned PostgreSQL + Garage dependencies and registry process.
+dev:
+    cargo xtask dev
+
 # Fast compile check for one workspace package.
 check-crate crate:
     cargo check -p {{ crate }}

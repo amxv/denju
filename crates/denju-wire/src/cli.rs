@@ -87,6 +87,12 @@ impl CliError {
 #[serde(rename_all = "snake_case")]
 pub enum CliErrorCode {
     InvalidArguments,
+    SetupRequired,
+    RegistryLocked,
+    RegistryUnavailable,
+    LocalState,
+    CredentialUnavailable,
+    ServiceUnavailable,
     Internal,
 }
 

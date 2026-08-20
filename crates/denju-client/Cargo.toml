@@ -9,6 +9,11 @@ repository.workspace = true
 [dependencies]
 denju-core = { path = "../denju-core" }
 denju-wire = { path = "../denju-wire" }
+reqwest.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+url.workspace = true
+uuid.workspace = true
 
 [lints]
 workspace = true

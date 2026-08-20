@@ -15,7 +15,7 @@ services:
       timeout: 5s
       retries: 20
     volumes:
-      - denju-postgres:/var/lib/postgresql/data
+      - denju-postgres:/var/lib/postgresql
 
   garage:
     image: dxflrs/garage:v2.3.0
