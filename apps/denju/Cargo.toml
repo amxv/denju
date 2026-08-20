@@ -7,11 +7,14 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+clap.workspace = true
 denju-client = { path = "../../crates/denju-client" }
 denju-core = { path = "../../crates/denju-core" }
 denju-local = { path = "../../crates/denju-local" }
 denju-sync = { path = "../../crates/denju-sync" }
 denju-wire = { path = "../../crates/denju-wire" }
+serde.workspace = true
+serde_json.workspace = true
 
 [lints]
 workspace = true

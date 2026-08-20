@@ -1,0 +1,104 @@
+use std::process::{Command, Output};
+
+use serde_json::Value;
+
+#[test]
+fn plain_root_is_compact_guidance_with_one_next_action() {
+    let output = denju(&[]);
+    assert!(output.status.success());
+    assert_eq!(
+        stdout(&output),
+        "Denju is ready to set up.\nNext: denju setup\n"
+    );
+    assert!(stderr(&output).is_empty());
+    assert_eq!(stdout(&output).matches("Next:").count(), 1);
+    assert!(!stdout(&output).contains("scaffold"));
+}
+
+#[test]
+fn version_uses_public_binary_name() {
+    for flag in ["--version", "-V"] {
+        let output = denju(&[flag]);
+        assert!(output.status.success());
+        assert!(stdout(&output).starts_with("denju "));
+        assert!(stderr(&output).is_empty());
+    }
+}
+
+#[test]
+fn json_root_and_version_emit_one_machine_result() {
+    let root = denju(&["--json"]);
+    assert!(root.status.success());
+    assert!(stderr(&root).is_empty());
+    assert_eq!(stdout(&root).lines().count(), 1);
+    let root_json: Value = serde_json::from_str(stdout(&root).trim()).expect("valid JSON");
+    assert_eq!(root_json["version"], 1);
+    assert_eq!(root_json["ok"], true);
+    assert_eq!(root_json["result"]["kind"], "guidance");
+    assert_eq!(root_json["result"]["state"], "setup_required");
+    assert_eq!(root_json["result"]["next_command"], "denju setup");
+
+    let version = denju(&["--json", "--version"]);
+    assert!(version.status.success());
+    assert!(stderr(&version).is_empty());
+    assert_eq!(stdout(&version).lines().count(), 1);
+    let version_json: Value = serde_json::from_str(stdout(&version).trim()).expect("valid JSON");
+    assert_eq!(version_json["version"], 1);
+    assert_eq!(version_json["result"]["kind"], "version");
+    assert!(version_json["result"]["version"].as_str().is_some());
+}
+
+#[test]
+fn invalid_arguments_are_stable_and_do_not_corrupt_json_stdout() {
+    let text = denju(&["not-a-command"]);
+    assert_eq!(text.status.code(), Some(2));
+    assert!(stdout(&text).is_empty());
+    assert!(stderr(&text).starts_with("error: "));
+    assert!(stderr(&text).contains("Next: denju --help"));
+
+    let json = denju(&["--json", "not-a-command"]);
+    assert_eq!(json.status.code(), Some(2));
+    assert!(stderr(&json).is_empty());
+    assert_eq!(stdout(&json).lines().count(), 1);
+    let value: Value = serde_json::from_str(stdout(&json).trim()).expect("valid JSON error");
+    assert_eq!(value["version"], 1);
+    assert_eq!(value["ok"], false);
+    assert_eq!(value["error"]["code"], "invalid_arguments");
+    assert_eq!(value["error"]["recovery"], "denju --help");
+}
+
+#[test]
+fn help_is_available_in_text_and_json_modes() {
+    let text = denju(&["--help"]);
+    assert!(text.status.success());
+    assert!(stdout(&text).contains("Usage: denju [OPTIONS]"));
+    assert!(stdout(&text).contains("--json"));
+    assert!(stderr(&text).is_empty());
+
+    let json = denju(&["--json", "--help"]);
+    assert!(json.status.success());
+    assert!(stderr(&json).is_empty());
+    let value: Value = serde_json::from_str(stdout(&json).trim()).expect("valid JSON help");
+    assert_eq!(value["result"]["kind"], "help");
+    assert!(
+        value["result"]["text"]
+            .as_str()
+            .expect("help text")
+            .contains("Usage: denju [OPTIONS]")
+    );
+}
+
+fn denju(args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_denju"))
+        .args(args)
+        .output()
+        .expect("run denju binary")
+}
+
+fn stdout(output: &Output) -> String {
+    String::from_utf8(output.stdout.clone()).expect("stdout is UTF-8")
+}
+
+fn stderr(output: &Output) -> String {
+    String::from_utf8(output.stderr.clone()).expect("stderr is UTF-8")
+}

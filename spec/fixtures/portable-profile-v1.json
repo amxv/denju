@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "valid_paths": [
+    "SKILL.md",
+    "scripts/run.sh",
+    ".config/settings.json",
+    "references/café.md"
+  ],
+  "invalid_paths": [
+    "../escape",
+    "/absolute",
+    "nested\\windows",
+    "CON",
+    "aux.txt",
+    "COM¹.log",
+    "lpt³",
+    "name.",
+    "name ",
+    "a//b",
+    "a/./b",
+    "a/../b",
+    "a:b",
+    "café.md"
+  ],
+  "case_collision": ["Readme.md", "README.md"],
+  "valid_symlink": {
+    "path": "scripts/current",
+    "target": "../shared/tool"
+  },
+  "escaping_symlink": {
+    "path": "current",
+    "target": "../outside"
+  }
+}
