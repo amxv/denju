@@ -2,6 +2,7 @@
 
 mod api;
 mod cli;
+mod identity;
 mod mutation;
 mod public;
 
@@ -10,9 +11,16 @@ pub use api::{
     RegistryCapabilities, RegistryLimits,
 };
 pub use cli::{CLI_ENVELOPE_VERSION, CliEnvelope, CliError, CliErrorCode};
+pub use identity::{
+    AccountDeleteRequest, AccountDeleteResponse, AutomationTokenCreateRequest,
+    AutomationTokenCreateResponse, AutomationTokenInfo, AutomationTokenList,
+    AutomationTokenRevokeRequest, AutomationTokenRevokeResponse, ClaimIdentityRequest, DeviceInfo,
+    DeviceList, DeviceRevokeRequest, DeviceRevokeResponse, IdentityBackupRequest, IdentityInfo,
+    IdentitySessionResponse, LoginRequest, RecoveryResetRequest,
+};
 pub use mutation::{
-    RequestHash, RequestHashError, SubscriptionMutationKind, create_installation_request_hash,
-    subscription_request_hash,
+    IdentityMutationDomain, RequestHash, RequestHashError, SubscriptionMutationKind,
+    create_installation_request_hash, identity_mutation_request_hash, subscription_request_hash,
 };
 pub use public::{
     PublicSkill, PublicSkillDetail, PublicSkillManifest, PublicSkillManifestEntry,

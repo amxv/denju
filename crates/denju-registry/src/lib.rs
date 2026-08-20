@@ -1,5 +1,7 @@
 //! Registry use cases plus PostgreSQL and S3-compatible persistence boundaries.
 
+mod identity;
+
 use std::{str::FromStr, time::Duration};
 
 use aws_credential_types::Credentials;
@@ -24,7 +26,7 @@ use url::Url;
 use uuid::Uuid;
 
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
-const EXPECTED_SCHEMA_VERSION: i64 = 2;
+const EXPECTED_SCHEMA_VERSION: i64 = 3;
 const SNAPSHOT_URL_TTL: Duration = Duration::from_secs(5 * 60);
 
 #[derive(Debug, Clone)]
@@ -265,7 +267,7 @@ impl Registry {
         kind: SubscriptionMutationKind,
         request: &SubscriptionMutationRequest,
     ) -> Result<SubscriptionMutationResponse, ApiError> {
-        let installation_id = self.authenticate_installation(bearer).await?;
+        let subject = self.subscription_subject(bearer).await?;
         let operation_id = OperationId::from_str(&request.operation_id)
             .map_err(|error| ApiError::new(ApiErrorCode::InvalidRequest, error.to_string()))?;
         let resource_id = ResourceId::from_str(&request.resource_id)
@@ -287,17 +289,32 @@ impl Registry {
         }
 
         let mut tx = self.pool.begin().await.map_err(internal_api_error)?;
-        if let Some((stored_hash, stored_resource, subscribed)) =
-            sqlx::query_as::<_, (Vec<u8>, Uuid, bool)>(
-                "SELECT request_hash, resource_id, subscribed FROM subscription_operations \
-                 WHERE installation_id = $1 AND operation_id = $2",
+        let replay = match subject {
+            identity::SubscriptionSubject::Installation(installation_id) => {
+                sqlx::query_as::<_, (Vec<u8>, Uuid, bool)>(
+                    "SELECT request_hash, resource_id, subscribed FROM subscription_operations \
+                     WHERE installation_id = $1 AND operation_id = $2",
+                )
+                .bind(installation_id)
+                .bind(operation_id.as_uuid())
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(internal_api_error)?
+            }
+            identity::SubscriptionSubject::User(user_id) => sqlx::query_as::<
+                _,
+                (Vec<u8>, Uuid, bool),
+            >(
+                "SELECT request_hash, resource_id, subscribed FROM account_subscription_operations \
+                     WHERE user_id = $1 AND operation_id = $2",
             )
-            .bind(installation_id)
+            .bind(user_id)
             .bind(operation_id.as_uuid())
             .fetch_optional(&mut *tx)
             .await
-            .map_err(internal_api_error)?
-        {
+            .map_err(internal_api_error)?,
+        };
+        if let Some((stored_hash, stored_resource, subscribed)) = replay {
             if stored_hash.as_slice() != supplied_hash.as_bytes()
                 || stored_resource != resource_id.as_uuid()
             {
@@ -330,8 +347,12 @@ impl Registry {
             ));
         }
 
-        let subscribed = match kind {
-            SubscriptionMutationKind::Subscribe => {
+        let subscribed = kind == SubscriptionMutationKind::Subscribe;
+        match (subject, kind) {
+            (
+                identity::SubscriptionSubject::Installation(installation_id),
+                SubscriptionMutationKind::Subscribe,
+            ) => {
                 sqlx::query(
                     "INSERT INTO installation_subscriptions (installation_id, resource_id) \
                      VALUES ($1, $2) ON CONFLICT DO NOTHING",
@@ -341,9 +362,11 @@ impl Registry {
                 .execute(&mut *tx)
                 .await
                 .map_err(internal_api_error)?;
-                true
             }
-            SubscriptionMutationKind::Unsubscribe => {
+            (
+                identity::SubscriptionSubject::Installation(installation_id),
+                SubscriptionMutationKind::Unsubscribe,
+            ) => {
                 sqlx::query(
                     "DELETE FROM installation_subscriptions WHERE installation_id = $1 AND resource_id = $2",
                 )
@@ -352,26 +375,69 @@ impl Registry {
                 .execute(&mut *tx)
                 .await
                 .map_err(internal_api_error)?;
-                false
             }
-        };
-        sqlx::query(
-            "INSERT INTO subscription_operations \
-             (installation_id, operation_id, request_hash, action, resource_id, subscribed) \
-             VALUES ($1, $2, $3, $4, $5, $6)",
-        )
-        .bind(installation_id)
-        .bind(operation_id.as_uuid())
-        .bind(supplied_hash.as_bytes().as_slice())
-        .bind(match kind {
+            (identity::SubscriptionSubject::User(user_id), SubscriptionMutationKind::Subscribe) => {
+                sqlx::query(
+                    "INSERT INTO account_subscriptions (user_id, resource_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+                )
+                .bind(user_id)
+                .bind(resource_id.as_uuid())
+                .execute(&mut *tx)
+                .await
+                .map_err(internal_api_error)?;
+            }
+            (
+                identity::SubscriptionSubject::User(user_id),
+                SubscriptionMutationKind::Unsubscribe,
+            ) => {
+                sqlx::query(
+                    "DELETE FROM account_subscriptions WHERE user_id = $1 AND resource_id = $2",
+                )
+                .bind(user_id)
+                .bind(resource_id.as_uuid())
+                .execute(&mut *tx)
+                .await
+                .map_err(internal_api_error)?;
+            }
+        }
+        let action = match kind {
             SubscriptionMutationKind::Subscribe => "subscribe",
             SubscriptionMutationKind::Unsubscribe => "unsubscribe",
-        })
-        .bind(resource_id.as_uuid())
-        .bind(subscribed)
-        .execute(&mut *tx)
-        .await
-        .map_err(internal_api_error)?;
+        };
+        match subject {
+            identity::SubscriptionSubject::Installation(installation_id) => {
+                sqlx::query(
+                    "INSERT INTO subscription_operations \
+                     (installation_id, operation_id, request_hash, action, resource_id, subscribed) \
+                     VALUES ($1, $2, $3, $4, $5, $6)",
+                )
+                .bind(installation_id)
+                .bind(operation_id.as_uuid())
+                .bind(supplied_hash.as_bytes().as_slice())
+                .bind(action)
+                .bind(resource_id.as_uuid())
+                .bind(subscribed)
+                .execute(&mut *tx)
+                .await
+                .map_err(internal_api_error)?;
+            }
+            identity::SubscriptionSubject::User(user_id) => {
+                sqlx::query(
+                    "INSERT INTO account_subscription_operations \
+                     (user_id, operation_id, request_hash, action, resource_id, subscribed) \
+                     VALUES ($1, $2, $3, $4, $5, $6)",
+                )
+                .bind(user_id)
+                .bind(operation_id.as_uuid())
+                .bind(supplied_hash.as_bytes().as_slice())
+                .bind(action)
+                .bind(resource_id.as_uuid())
+                .bind(subscribed)
+                .execute(&mut *tx)
+                .await
+                .map_err(internal_api_error)?;
+            }
+        }
         tx.commit().await.map_err(internal_api_error)?;
 
         Ok(SubscriptionMutationResponse {
@@ -384,21 +450,41 @@ impl Registry {
         &self,
         bearer: &str,
     ) -> Result<SubscriptionCatalog, ApiError> {
-        let installation_id = self.authenticate_installation(bearer).await?;
-        let rows = sqlx::query_as::<_, SubscriptionRow>(
-            "SELECT r.id, n.slug AS owner, r.slug AS name, r.description, r.generation, sr.version, sr.revision_id, \
-                    sr.manifest_json, sr.snapshot_key, sr.snapshot_sha256, sr.snapshot_size \
-             FROM installation_subscriptions s \
-             JOIN resources r ON r.id = s.resource_id \
-             JOIN namespaces n ON n.id = r.owner_namespace_id \
-             JOIN skill_releases sr ON sr.resource_id = r.id AND sr.version = r.latest_release_version \
-             WHERE s.installation_id = $1 AND r.visibility = 'public' AND r.kind = 'skill' \
-             ORDER BY n.slug, r.slug, r.id",
-        )
-        .bind(installation_id)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(internal_api_error)?;
+        let subject = self.subscription_subject(bearer).await?;
+        let rows = match subject {
+            identity::SubscriptionSubject::Installation(installation_id) => {
+                sqlx::query_as::<_, SubscriptionRow>(
+                    "SELECT r.id, n.slug AS owner, r.slug AS name, r.description, r.generation, sr.version, sr.revision_id, \
+                            sr.manifest_json, sr.snapshot_key, sr.snapshot_sha256, sr.snapshot_size \
+                     FROM installation_subscriptions s \
+                     JOIN resources r ON r.id = s.resource_id \
+                     JOIN namespaces n ON n.id = r.owner_namespace_id \
+                     JOIN skill_releases sr ON sr.resource_id = r.id AND sr.version = r.latest_release_version \
+                     WHERE s.installation_id = $1 AND r.visibility = 'public' AND r.kind = 'skill' \
+                     ORDER BY n.slug, r.slug, r.id",
+                )
+                .bind(installation_id)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(internal_api_error)?
+            }
+            identity::SubscriptionSubject::User(user_id) => {
+                sqlx::query_as::<_, SubscriptionRow>(
+                    "SELECT r.id, n.slug AS owner, r.slug AS name, r.description, r.generation, sr.version, sr.revision_id, \
+                            sr.manifest_json, sr.snapshot_key, sr.snapshot_sha256, sr.snapshot_size \
+                     FROM account_subscriptions s \
+                     JOIN resources r ON r.id = s.resource_id \
+                     JOIN namespaces n ON n.id = r.owner_namespace_id \
+                     JOIN skill_releases sr ON sr.resource_id = r.id AND sr.version = r.latest_release_version \
+                     WHERE s.user_id = $1 AND r.visibility = 'public' AND r.kind = 'skill' \
+                     ORDER BY n.slug, r.slug, r.id",
+                )
+                .bind(user_id)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(internal_api_error)?
+            }
+        };
 
         let mut skills = Vec::with_capacity(rows.len());
         for row in rows {
@@ -568,7 +654,7 @@ impl Registry {
         row.into_wire()
     }
 
-    async fn authenticate_installation(&self, bearer: &str) -> Result<Uuid, ApiError> {
+    pub(crate) async fn authenticate_installation(&self, bearer: &str) -> Result<Uuid, ApiError> {
         let raw = hex::decode(bearer)
             .ok()
             .filter(|bytes| bytes.len() == 32)
@@ -579,17 +665,19 @@ impl Registry {
                 )
             })?;
         let credential_hash: [u8; 32] = Sha256::digest(&raw).into();
-        sqlx::query_scalar::<_, Uuid>("SELECT id FROM installations WHERE credential_hash = $1")
-            .bind(credential_hash.as_slice())
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(internal_api_error)?
-            .ok_or_else(|| {
-                ApiError::new(
-                    ApiErrorCode::Unauthorized,
-                    "invalid installation credential",
-                )
-            })
+        sqlx::query_scalar::<_, Uuid>(
+            "SELECT id FROM installations WHERE credential_hash = $1 AND revoked_at IS NULL",
+        )
+        .bind(credential_hash.as_slice())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal_api_error)?
+        .ok_or_else(|| {
+            ApiError::new(
+                ApiErrorCode::Unauthorized,
+                "invalid installation credential",
+            )
+        })
     }
 }
 

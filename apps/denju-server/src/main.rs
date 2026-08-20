@@ -17,10 +17,14 @@ use clap::{Parser, Subcommand};
 use denju_core::{OwnedSkillEntry, build_deterministic_skill_snapshot};
 use denju_registry::{Registry, RegistrySettings};
 use denju_wire::{
-    ApiError, ApiErrorCode, CreateInstallationRequest, CreateInstallationResponse,
-    PublicSkillDetail, PublicSkillSearchResponse, RegistryCapabilities, RegistryLimits,
-    SubscriptionCatalog, SubscriptionMutationKind, SubscriptionMutationRequest,
-    SubscriptionMutationResponse,
+    AccountDeleteRequest, AccountDeleteResponse, ApiError, ApiErrorCode,
+    AutomationTokenCreateRequest, AutomationTokenCreateResponse, AutomationTokenList,
+    AutomationTokenRevokeRequest, AutomationTokenRevokeResponse, ClaimIdentityRequest,
+    CreateInstallationRequest, CreateInstallationResponse, DeviceList, DeviceRevokeRequest,
+    DeviceRevokeResponse, IdentityBackupRequest, IdentityInfo, IdentitySessionResponse,
+    LoginRequest, PublicSkillDetail, PublicSkillSearchResponse, RecoveryResetRequest,
+    RegistryCapabilities, RegistryLimits, SubscriptionCatalog, SubscriptionMutationKind,
+    SubscriptionMutationRequest, SubscriptionMutationResponse,
 };
 use serde::Deserialize;
 use url::Url;
@@ -118,6 +122,19 @@ async fn serve(config: ServerConfig) -> Result<(), String> {
         .route("/health/ready", get(health_ready))
         .route("/v1/capabilities", get(capabilities))
         .route("/v1/installations", post(create_installation))
+        .route("/v1/identity/claim", post(claim_identity))
+        .route("/v1/identity/login", post(login))
+        .route("/v1/identity/recover", post(recovery_reset))
+        .route("/v1/identity/backup", post(identity_backup))
+        .route("/v1/identity", get(identity_info))
+        .route("/v1/devices", get(devices))
+        .route("/v1/devices/revoke", post(revoke_device))
+        .route(
+            "/v1/tokens",
+            get(automation_tokens).post(create_automation_token),
+        )
+        .route("/v1/tokens/revoke", post(revoke_automation_token))
+        .route("/v1/account/delete", post(delete_account))
         .route("/v1/search", get(search_public_skills))
         .route("/v1/skills/show", get(show_public_skill))
         .route(
@@ -150,6 +167,146 @@ async fn search_public_skills(
 ) -> Result<Json<PublicSkillSearchResponse>, ApiResponseError> {
     registry
         .search_public_skills(&query.q, query.limit.unwrap_or(20), query.cursor.as_deref())
+        .await
+        .map(Json)
+        .map_err(ApiResponseError)
+}
+
+async fn claim_identity(
+    State(registry): State<Arc<Registry>>,
+    headers: HeaderMap,
+    Json(request): Json<ClaimIdentityRequest>,
+) -> Result<Json<IdentitySessionResponse>, ApiResponseError> {
+    let bearer = bearer_token(&headers)?;
+    registry
+        .claim_identity(bearer, &request)
+        .await
+        .map(Json)
+        .map_err(ApiResponseError)
+}
+
+async fn login(
+    State(registry): State<Arc<Registry>>,
+    headers: HeaderMap,
+    Json(request): Json<LoginRequest>,
+) -> Result<Json<IdentitySessionResponse>, ApiResponseError> {
+    let bearer = bearer_token(&headers)?;
+    registry
+        .login(bearer, &request)
+        .await
+        .map(Json)
+        .map_err(ApiResponseError)
+}
+
+async fn recovery_reset(
+    State(registry): State<Arc<Registry>>,
+    headers: HeaderMap,
+    Json(request): Json<RecoveryResetRequest>,
+) -> Result<Json<IdentitySessionResponse>, ApiResponseError> {
+    let bearer = bearer_token(&headers)?;
+    registry
+        .recovery_reset(bearer, &request)
+        .await
+        .map(Json)
+        .map_err(ApiResponseError)
+}
+
+async fn identity_backup(
+    State(registry): State<Arc<Registry>>,
+    headers: HeaderMap,
+    Json(request): Json<IdentityBackupRequest>,
+) -> Result<StatusCode, ApiResponseError> {
+    let bearer = bearer_token(&headers)?;
+    registry
+        .identity_backup(bearer, &request)
+        .await
+        .map(|()| StatusCode::NO_CONTENT)
+        .map_err(ApiResponseError)
+}
+
+async fn identity_info(
+    State(registry): State<Arc<Registry>>,
+    headers: HeaderMap,
+) -> Result<Json<IdentityInfo>, ApiResponseError> {
+    let bearer = bearer_token(&headers)?;
+    registry
+        .whoami(bearer)
+        .await
+        .map(Json)
+        .map_err(ApiResponseError)
+}
+
+async fn devices(
+    State(registry): State<Arc<Registry>>,
+    headers: HeaderMap,
+) -> Result<Json<DeviceList>, ApiResponseError> {
+    let bearer = bearer_token(&headers)?;
+    registry
+        .devices(bearer)
+        .await
+        .map(Json)
+        .map_err(ApiResponseError)
+}
+
+async fn revoke_device(
+    State(registry): State<Arc<Registry>>,
+    headers: HeaderMap,
+    Json(request): Json<DeviceRevokeRequest>,
+) -> Result<Json<DeviceRevokeResponse>, ApiResponseError> {
+    let bearer = bearer_token(&headers)?;
+    registry
+        .revoke_device(bearer, &request)
+        .await
+        .map(Json)
+        .map_err(ApiResponseError)
+}
+
+async fn create_automation_token(
+    State(registry): State<Arc<Registry>>,
+    headers: HeaderMap,
+    Json(request): Json<AutomationTokenCreateRequest>,
+) -> Result<Json<AutomationTokenCreateResponse>, ApiResponseError> {
+    let bearer = bearer_token(&headers)?;
+    registry
+        .create_automation_token(bearer, &request)
+        .await
+        .map(Json)
+        .map_err(ApiResponseError)
+}
+
+async fn automation_tokens(
+    State(registry): State<Arc<Registry>>,
+    headers: HeaderMap,
+) -> Result<Json<AutomationTokenList>, ApiResponseError> {
+    let bearer = bearer_token(&headers)?;
+    registry
+        .automation_tokens(bearer)
+        .await
+        .map(Json)
+        .map_err(ApiResponseError)
+}
+
+async fn revoke_automation_token(
+    State(registry): State<Arc<Registry>>,
+    headers: HeaderMap,
+    Json(request): Json<AutomationTokenRevokeRequest>,
+) -> Result<Json<AutomationTokenRevokeResponse>, ApiResponseError> {
+    let bearer = bearer_token(&headers)?;
+    registry
+        .revoke_automation_token(bearer, &request)
+        .await
+        .map(Json)
+        .map_err(ApiResponseError)
+}
+
+async fn delete_account(
+    State(registry): State<Arc<Registry>>,
+    headers: HeaderMap,
+    Json(request): Json<AccountDeleteRequest>,
+) -> Result<Json<AccountDeleteResponse>, ApiResponseError> {
+    let bearer = bearer_token(&headers)?;
+    registry
+        .delete_account(bearer, &request)
         .await
         .map(Json)
         .map_err(ApiResponseError)

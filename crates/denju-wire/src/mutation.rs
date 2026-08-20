@@ -5,6 +5,14 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 const CREATE_INSTALLATION_DOMAIN: &[u8] = b"denju:http:v1:create-installation\0";
+const CLAIM_IDENTITY_DOMAIN: &[u8] = b"denju:http:v1:claim-identity\0";
+const LOGIN_DOMAIN: &[u8] = b"denju:http:v1:login\0";
+const RECOVERY_RESET_DOMAIN: &[u8] = b"denju:http:v1:recovery-reset\0";
+const IDENTITY_BACKUP_DOMAIN: &[u8] = b"denju:http:v1:identity-backup\0";
+const DEVICE_REVOKE_DOMAIN: &[u8] = b"denju:http:v1:device-revoke\0";
+const TOKEN_CREATE_DOMAIN: &[u8] = b"denju:http:v1:automation-token-create\0";
+const TOKEN_REVOKE_DOMAIN: &[u8] = b"denju:http:v1:automation-token-revoke\0";
+const ACCOUNT_DELETE_DOMAIN: &[u8] = b"denju:http:v1:account-delete\0";
 const SUBSCRIBE_DOMAIN: &[u8] = b"denju:http:v1:subscribe\0";
 const UNSUBSCRIBE_DOMAIN: &[u8] = b"denju:http:v1:unsubscribe\0";
 
@@ -69,6 +77,54 @@ pub fn create_installation_request_hash(
     hasher.update(CREATE_INSTALLATION_DOMAIN);
     hasher.update(canonical);
     Ok(RequestHash::from_bytes(hasher.finalize().into()))
+}
+
+pub fn identity_mutation_request_hash<T: Serialize>(
+    operation_id: &str,
+    domain: IdentityMutationDomain,
+    safe_payload: &T,
+) -> Result<RequestHash, RequestHashError> {
+    #[derive(Serialize)]
+    struct HashInput<'a, T> {
+        operation_id: &'a str,
+        payload: &'a T,
+    }
+    let canonical = serde_json_canonicalizer::to_vec(&HashInput {
+        operation_id,
+        payload: safe_payload,
+    })
+    .map_err(|error| RequestHashError::Canonicalization(error.to_string()))?;
+    let mut hasher = Sha256::new();
+    hasher.update(domain.bytes());
+    hasher.update(canonical);
+    Ok(RequestHash::from_bytes(hasher.finalize().into()))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IdentityMutationDomain {
+    Claim,
+    Login,
+    RecoveryReset,
+    Backup,
+    DeviceRevoke,
+    TokenCreate,
+    TokenRevoke,
+    AccountDelete,
+}
+
+impl IdentityMutationDomain {
+    const fn bytes(self) -> &'static [u8] {
+        match self {
+            Self::Claim => CLAIM_IDENTITY_DOMAIN,
+            Self::Login => LOGIN_DOMAIN,
+            Self::RecoveryReset => RECOVERY_RESET_DOMAIN,
+            Self::Backup => IDENTITY_BACKUP_DOMAIN,
+            Self::DeviceRevoke => DEVICE_REVOKE_DOMAIN,
+            Self::TokenCreate => TOKEN_CREATE_DOMAIN,
+            Self::TokenRevoke => TOKEN_REVOKE_DOMAIN,
+            Self::AccountDelete => ACCOUNT_DELETE_DOMAIN,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -138,5 +194,26 @@ mod tests {
         )
         .unwrap();
         assert_ne!(subscribe, unsubscribe);
+    }
+
+    #[test]
+    fn identity_actions_have_distinct_hash_domains() {
+        let operation = "01890f47-6a1c-7cc2-98c1-5f6c1ed8a3a1";
+        let payload = ("safe", 7_u64);
+        let domains = [
+            IdentityMutationDomain::Claim,
+            IdentityMutationDomain::Login,
+            IdentityMutationDomain::RecoveryReset,
+            IdentityMutationDomain::Backup,
+            IdentityMutationDomain::DeviceRevoke,
+            IdentityMutationDomain::TokenCreate,
+            IdentityMutationDomain::TokenRevoke,
+            IdentityMutationDomain::AccountDelete,
+        ];
+        let hashes = domains
+            .into_iter()
+            .map(|domain| identity_mutation_request_hash(operation, domain, &payload).unwrap())
+            .collect::<std::collections::HashSet<_>>();
+        assert_eq!(hashes.len(), domains.len());
     }
 }

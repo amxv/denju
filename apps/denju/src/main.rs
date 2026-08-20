@@ -1,11 +1,18 @@
+mod identity;
 mod public;
 mod setup;
 
 use std::{ffi::OsString, process::ExitCode};
 
 use clap::{ArgAction, Parser, Subcommand};
-use denju_wire::{CliEnvelope, CliError, CliErrorCode};
-use denju_wire::{PublicSkillDetail, PublicSkillSearchResponse};
+use denju_wire::{
+    AutomationTokenList, AutomationTokenRevokeResponse, CliEnvelope, CliError, CliErrorCode,
+    DeviceList, DeviceRevokeResponse, IdentityInfo, PublicSkillDetail, PublicSkillSearchResponse,
+};
+use identity::{
+    AutomationTokenOutcome, BackupOutcome, ClaimOutcome, DeleteOutcome, LoginOutcome,
+    RecoveryOutcome,
+};
 use public::{SubscribeOutcome, SyncOutcome, UnsubscribeOutcome};
 use serde::Serialize;
 use setup::{DoctorOutcome, Guidance, RuntimeError, SetupOutcome};
@@ -16,6 +23,11 @@ Usage: denju [OPTIONS] [COMMAND]\n\
 \n\
 Commands:\n\
   setup   Set up this machine without creating an account\n\
+  claim   Claim a Denju identity for this installation\n\
+  login   Log this installation into an existing identity\n\
+  identity  Show, recover, back up, or delete identity state\n\
+  devices List or revoke authenticated devices\n\
+  tokens  List, create, or revoke scoped automation credentials\n\
   search  Search public Agent Skills\n\
   show    Show one public skill\n\
   subscribe   Subscribe to a public skill and materialize it\n\
@@ -55,6 +67,24 @@ enum Command {
         #[arg(long, value_name = "URL")]
         registry: Option<String>,
     },
+    Claim {
+        username: String,
+    },
+    Login {
+        username: String,
+    },
+    Identity {
+        #[command(subcommand)]
+        command: Option<IdentityCommand>,
+    },
+    Devices {
+        #[command(subcommand)]
+        command: Option<DevicesCommand>,
+    },
+    Tokens {
+        #[command(subcommand)]
+        command: Option<TokenCommand>,
+    },
     Search {
         query: String,
     },
@@ -73,17 +103,91 @@ enum Command {
     Daemon,
 }
 
+#[derive(Debug, Subcommand)]
+enum IdentityCommand {
+    Backup,
+    Recover {
+        username: String,
+    },
+    Delete {
+        #[arg(long, action = ArgAction::SetTrue)]
+        yes: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum DevicesCommand {
+    Revoke { session_id: String },
+}
+
+#[derive(Debug, Subcommand)]
+enum TokenCommand {
+    Create {
+        #[arg(long = "scope", required = true)]
+        scopes: Vec<String>,
+        #[arg(long, default_value_t = 86_400)]
+        expires_in_seconds: u64,
+    },
+    Revoke {
+        token_id: String,
+    },
+}
+
 #[derive(Debug, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum ResultPayload {
     Guidance {
         state: &'static str,
         #[serde(skip_serializing_if = "Option::is_none")]
-        next_command: Option<&'static str>,
+        next_command: Option<String>,
     },
     Setup {
         #[serde(flatten)]
         outcome: SetupOutcome,
+    },
+    Claim {
+        #[serde(flatten)]
+        outcome: ClaimOutcome,
+    },
+    Login {
+        #[serde(flatten)]
+        outcome: LoginOutcome,
+    },
+    Identity {
+        #[serde(flatten)]
+        outcome: IdentityInfo,
+    },
+    IdentityBackup {
+        #[serde(flatten)]
+        outcome: BackupOutcome,
+    },
+    IdentityRecovery {
+        #[serde(flatten)]
+        outcome: RecoveryOutcome,
+    },
+    IdentityDelete {
+        #[serde(flatten)]
+        outcome: DeleteOutcome,
+    },
+    Devices {
+        #[serde(flatten)]
+        outcome: DeviceList,
+    },
+    DeviceRevoke {
+        #[serde(flatten)]
+        outcome: DeviceRevokeResponse,
+    },
+    TokenCreate {
+        #[serde(flatten)]
+        outcome: AutomationTokenOutcome,
+    },
+    Tokens {
+        #[serde(flatten)]
+        outcome: AutomationTokenList,
+    },
+    TokenRevoke {
+        #[serde(flatten)]
+        outcome: AutomationTokenRevokeResponse,
     },
     Doctor {
         #[serde(flatten)]
@@ -166,6 +270,121 @@ async fn run(args: impl IntoIterator<Item = OsString>) -> ExitCode {
                 exit: ExitCode::SUCCESS,
             })
         }
+        Some(Command::Claim { username }) => {
+            identity::claim(&username, cli.json)
+                .await
+                .map(|outcome| CommandOutput {
+                    text: claim_text(&outcome),
+                    payload: ResultPayload::Claim { outcome },
+                    exit: ExitCode::SUCCESS,
+                })
+        }
+        Some(Command::Login { username }) => {
+            identity::login(&username, cli.json)
+                .await
+                .map(|outcome| CommandOutput {
+                    text: login_text(&outcome),
+                    payload: ResultPayload::Login { outcome },
+                    exit: ExitCode::SUCCESS,
+                })
+        }
+        Some(Command::Identity { command: None }) => {
+            identity::info().await.map(|outcome| CommandOutput {
+                text: format!("{} ({})", outcome.username, outcome.user_id),
+                payload: ResultPayload::Identity { outcome },
+                exit: ExitCode::SUCCESS,
+            })
+        }
+        Some(Command::Identity {
+            command: Some(IdentityCommand::Backup),
+        }) => identity::backup(cli.json)
+            .await
+            .map(|outcome| CommandOutput {
+                text: backup_text(&outcome),
+                payload: ResultPayload::IdentityBackup { outcome },
+                exit: ExitCode::SUCCESS,
+            }),
+        Some(Command::Identity {
+            command: Some(IdentityCommand::Recover { username }),
+        }) => identity::recover(&username, cli.json)
+            .await
+            .map(|outcome| CommandOutput {
+                text: recovery_text(&outcome),
+                payload: ResultPayload::IdentityRecovery { outcome },
+                exit: ExitCode::SUCCESS,
+            }),
+        Some(Command::Identity {
+            command: Some(IdentityCommand::Delete { yes }),
+        }) => identity::delete_account(cli.json, yes)
+            .await
+            .map(|outcome| CommandOutput {
+                text: format!("Deleted {}.", outcome.username),
+                payload: ResultPayload::IdentityDelete { outcome },
+                exit: ExitCode::SUCCESS,
+            }),
+        Some(Command::Devices { command: None }) => {
+            identity::devices().await.map(|outcome| CommandOutput {
+                text: devices_text(&outcome),
+                payload: ResultPayload::Devices { outcome },
+                exit: ExitCode::SUCCESS,
+            })
+        }
+        Some(Command::Devices {
+            command: Some(DevicesCommand::Revoke { session_id }),
+        }) => identity::revoke_device(&session_id)
+            .await
+            .map(|outcome| CommandOutput {
+                text: format!(
+                    "{} {}",
+                    if outcome.revoked {
+                        "Revoked"
+                    } else {
+                        "Already inactive"
+                    },
+                    outcome.session_id
+                ),
+                payload: ResultPayload::DeviceRevoke { outcome },
+                exit: ExitCode::SUCCESS,
+            }),
+        Some(Command::Tokens { command: None }) => {
+            identity::automation_tokens()
+                .await
+                .map(|outcome| CommandOutput {
+                    text: tokens_text(&outcome),
+                    payload: ResultPayload::Tokens { outcome },
+                    exit: ExitCode::SUCCESS,
+                })
+        }
+        Some(Command::Tokens {
+            command:
+                Some(TokenCommand::Create {
+                    scopes,
+                    expires_in_seconds,
+                }),
+        }) => identity::create_automation_token(scopes, expires_in_seconds)
+            .await
+            .map(|outcome| CommandOutput {
+                text: token_text(&outcome),
+                payload: ResultPayload::TokenCreate { outcome },
+                exit: ExitCode::SUCCESS,
+            }),
+        Some(Command::Tokens {
+            command: Some(TokenCommand::Revoke { token_id }),
+        }) => identity::revoke_automation_token(&token_id)
+            .await
+            .map(|outcome| CommandOutput {
+                text: format!(
+                    "{} {}",
+                    if outcome.revoked {
+                        "Revoked"
+                    } else {
+                        "Already inactive"
+                    },
+                    outcome.token_id
+                ),
+                payload: ResultPayload::TokenRevoke { outcome },
+                exit: ExitCode::SUCCESS,
+            }),
         Some(Command::Search { query }) => {
             public::search(&query).await.map(|outcome| CommandOutput {
                 text: search_text(&outcome),
@@ -240,7 +459,7 @@ fn guidance_output(guidance: Guidance) -> CommandOutput {
         Guidance::SetupRequired => CommandOutput {
             payload: ResultPayload::Guidance {
                 state: "setup_required",
-                next_command: Some("denju setup"),
+                next_command: Some("denju setup".to_owned()),
             },
             text: "Denju is ready to set up.\nNext: denju setup".to_owned(),
             exit: ExitCode::SUCCESS,
@@ -248,11 +467,30 @@ fn guidance_output(guidance: Guidance) -> CommandOutput {
         Guidance::RepairRequired => CommandOutput {
             payload: ResultPayload::Guidance {
                 state: "repair_required",
-                next_command: Some("denju doctor"),
+                next_command: Some("denju doctor".to_owned()),
             },
             text: "Denju needs repair.\nNext: denju doctor".to_owned(),
             exit: ExitCode::SUCCESS,
         },
+        Guidance::ClaimAvailable => CommandOutput {
+            payload: ResultPayload::Guidance {
+                state: "identity_available",
+                next_command: Some("denju claim @username".to_owned()),
+            },
+            text: "Denju is healthy.\nNext: denju claim @username".to_owned(),
+            exit: ExitCode::SUCCESS,
+        },
+        Guidance::LoginRequired(username) => {
+            let next = format!("denju login {username}");
+            CommandOutput {
+                payload: ResultPayload::Guidance {
+                    state: "login_required",
+                    next_command: Some(next.clone()),
+                },
+                text: format!("Denju is healthy, but {username} is logged out.\nNext: {next}"),
+                exit: ExitCode::SUCCESS,
+            }
+        }
         Guidance::Healthy => CommandOutput {
             payload: ResultPayload::Guidance {
                 state: "healthy",
@@ -283,6 +521,69 @@ fn setup_text(outcome: &SetupOutcome) -> String {
         lines.push(format!("Next: denju import {}", quote_command_arg(path)));
     }
     lines.join("\n")
+}
+
+fn claim_text(outcome: &ClaimOutcome) -> String {
+    format!(
+        "Claimed {}.\nRecovery secret: {}\nStore this secret now; Denju cannot show it again.",
+        outcome.identity.username, outcome.recovery_secret
+    )
+}
+
+fn login_text(outcome: &LoginOutcome) -> String {
+    format!("Logged in as {}.", outcome.identity.username)
+}
+
+fn backup_text(outcome: &BackupOutcome) -> String {
+    format!(
+        "Recovery secret replaced.\nRecovery secret: {}\nStore this secret now; the previous secret no longer works.",
+        outcome.recovery_secret
+    )
+}
+
+fn recovery_text(outcome: &RecoveryOutcome) -> String {
+    format!(
+        "Recovered {}.\nRecovery secret: {}\nStore this replacement secret now.",
+        outcome.identity.username, outcome.recovery_secret
+    )
+}
+
+fn devices_text(outcome: &DeviceList) -> String {
+    if outcome.devices.is_empty() {
+        return "No active devices.".to_owned();
+    }
+    outcome
+        .devices
+        .iter()
+        .map(|device| {
+            format!(
+                "{}{}  {}",
+                device.session_id,
+                if device.current { " *" } else { "" },
+                device.device_name
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn tokens_text(outcome: &AutomationTokenList) -> String {
+    if outcome.tokens.is_empty() {
+        return "No active automation tokens.".to_owned();
+    }
+    outcome
+        .tokens
+        .iter()
+        .map(|token| format!("{}  {}", token.token_id, token.scopes.join(",")))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn token_text(outcome: &AutomationTokenOutcome) -> String {
+    format!(
+        "Created token {}.\nToken secret: {}\nStore this secret now; Denju cannot show it again.",
+        outcome.token.token_id, outcome.secret
+    )
 }
 
 fn doctor_text(outcome: &DoctorOutcome) -> String {

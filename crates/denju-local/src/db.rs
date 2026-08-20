@@ -72,6 +72,20 @@ CREATE INDEX IF NOT EXISTS subscriptions_skill_name_idx
 PRAGMA user_version = 2;
 "#;
 
+const MIGRATION_V3: &str = r#"
+CREATE TABLE IF NOT EXISTS identity_state (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    user_id TEXT NOT NULL,
+    namespace_id TEXT NOT NULL,
+    username TEXT NOT NULL,
+    session_id TEXT,
+    session_backend TEXT,
+    updated_at_unix_ms INTEGER NOT NULL
+);
+
+PRAGMA user_version = 3;
+"#;
+
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;
 
 #[derive(Clone)]
@@ -123,6 +137,83 @@ impl LocalDatabase {
                     },
                 )
                 .optional()?)
+        })
+        .await
+    }
+
+    pub async fn clear_installation(&self) -> Result<(), LocalDbError> {
+        self.call(|connection| {
+            connection.execute("DELETE FROM installation WHERE singleton=1", [])?;
+            Ok(())
+        })
+        .await
+    }
+
+    pub async fn identity(&self) -> Result<Option<IdentityRecord>, LocalDbError> {
+        self.call(|connection| {
+            Ok(connection
+                .query_row(
+                    "SELECT user_id, namespace_id, username, session_id, session_backend \
+                     FROM identity_state WHERE singleton=1",
+                    [],
+                    |row| {
+                        Ok(IdentityRecord {
+                            user_id: row.get(0)?,
+                            namespace_id: row.get(1)?,
+                            username: row.get(2)?,
+                            session_id: row.get(3)?,
+                            session_backend: row.get(4)?,
+                        })
+                    },
+                )
+                .optional()?)
+        })
+        .await
+    }
+
+    pub async fn save_identity(
+        &self,
+        identity: IdentityRecord,
+        now_unix_ms: i64,
+    ) -> Result<(), LocalDbError> {
+        self.call(move |connection| {
+            connection.execute(
+                "INSERT INTO identity_state \
+                 (singleton,user_id,namespace_id,username,session_id,session_backend,updated_at_unix_ms) \
+                 VALUES (1,?1,?2,?3,?4,?5,?6) \
+                 ON CONFLICT(singleton) DO UPDATE SET \
+                   user_id=excluded.user_id, namespace_id=excluded.namespace_id, username=excluded.username, \
+                   session_id=excluded.session_id, session_backend=excluded.session_backend, \
+                   updated_at_unix_ms=excluded.updated_at_unix_ms",
+                params![
+                    identity.user_id,
+                    identity.namespace_id,
+                    identity.username,
+                    identity.session_id,
+                    identity.session_backend,
+                    now_unix_ms,
+                ],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
+    pub async fn clear_identity(&self) -> Result<(), LocalDbError> {
+        self.call(|connection| {
+            connection.execute("DELETE FROM identity_state WHERE singleton=1", [])?;
+            Ok(())
+        })
+        .await
+    }
+
+    pub async fn clear_identity_session(&self, now_unix_ms: i64) -> Result<(), LocalDbError> {
+        self.call(move |connection| {
+            connection.execute(
+                "UPDATE identity_state SET session_id=NULL,session_backend=NULL,updated_at_unix_ms=?1 WHERE singleton=1",
+                params![now_unix_ms],
+            )?;
+            Ok(())
         })
         .await
     }
@@ -465,6 +556,14 @@ impl LocalDatabase {
         .await
     }
 
+    pub async fn clear_subscriptions(&self) -> Result<(), LocalDbError> {
+        self.call(|connection| {
+            connection.execute("DELETE FROM subscriptions", [])?;
+            Ok(())
+        })
+        .await
+    }
+
     pub async fn materialization_journals(
         &self,
     ) -> Result<Vec<MaterializationJournal>, LocalDbError> {
@@ -635,7 +734,7 @@ fn open_connection(path: &Path) -> Result<Connection, LocalDbError> {
         "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON;",
     )?;
     let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    if version > 2 {
+    if version > 3 {
         return Err(LocalDbError::UnsupportedSchema(version));
     }
     if version == 0 {
@@ -644,6 +743,10 @@ fn open_connection(path: &Path) -> Result<Connection, LocalDbError> {
     let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
     if version == 1 {
         connection.execute_batch(MIGRATION_V2)?;
+    }
+    let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version == 2 {
+        connection.execute_batch(MIGRATION_V3)?;
     }
     Ok(connection)
 }
@@ -655,6 +758,15 @@ pub struct InstallationRecord {
     pub author_principal_id: String,
     pub credential_backend: String,
     pub created_at_unix_ms: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IdentityRecord {
+    pub user_id: String,
+    pub namespace_id: String,
+    pub username: String,
+    pub session_id: Option<String>,
+    pub session_backend: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

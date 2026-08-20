@@ -1,13 +1,13 @@
-use std::{collections::BTreeSet, str::FromStr};
+use std::{collections::BTreeSet, fs, str::FromStr};
 
 use denju_client::{ClientError, RegistryClient};
 use denju_core::{OperationId, ResourceId, RevisionId};
 use denju_local::{
     CredentialBackend, CredentialManager, DesiredSkillMaterialization, InstallCredential,
-    InstallationRecord, LocalDatabase, LocalPaths, ResolvedHarnessRoots, SubscriptionRecord,
-    materialize_skill_snapshot, prepare_harness_roots, reconcile_harness_projections,
-    recover_materializations, remove_canonical_skill, remove_subscription_projection,
-    resolve_harness_roots,
+    InstallationRecord, LocalDatabase, LocalPaths, ResolvedHarnessRoots, SessionCredential,
+    SubscriptionRecord, materialize_skill_snapshot, prepare_harness_roots,
+    reconcile_harness_projections, recover_materializations, remove_canonical_skill,
+    remove_subscription_projection, resolve_harness_roots,
 };
 use denju_wire::{
     ApiErrorCode, CliErrorCode, PublicSkill, PublicSkillDetail, PublicSkillSearchResponse,
@@ -141,6 +141,28 @@ pub async fn unsubscribe(locator: &str) -> Result<UnsubscribeOutcome, RuntimeErr
 pub(crate) async fn sync_once() -> Result<SyncOutcome, RuntimeError> {
     let context = installed_context(true).await?;
     sync_with_context(context).await
+}
+
+pub(crate) async fn clear_local_managed_state() -> Result<usize, RuntimeError> {
+    let paths = LocalPaths::discover().map_err(local_error)?;
+    let db = LocalDatabase::open(&paths.state_db)
+        .await
+        .map_err(local_error)?;
+    let recorded = db.harness_config().await.map_err(local_error)?;
+    let roots = resolve_harness_roots(&paths, recorded.as_ref()).map_err(local_error)?;
+    let subscriptions = db.subscriptions().await.map_err(local_error)?;
+    for record in &subscriptions {
+        remove_subscription_projection(&paths, &roots, record).map_err(local_error)?;
+        remove_canonical_skill(&paths, &record.owner, &record.skill_name).map_err(local_error)?;
+    }
+    db.clear_subscriptions().await.map_err(local_error)?;
+    for directory in [&paths.generations, &paths.derived, &paths.objects] {
+        if directory.exists() {
+            fs::remove_dir_all(directory).map_err(local_error)?;
+        }
+        fs::create_dir_all(directory).map_err(local_error)?;
+    }
+    Ok(subscriptions.len())
 }
 
 async fn sync_with_context(context: InstalledContext) -> Result<SyncOutcome, RuntimeError> {
@@ -327,8 +349,8 @@ async fn installed_context(authenticated: bool) -> Result<InstalledContext, Runt
     let origin = Url::parse(&installation.registry_origin)
         .map_err(|error| RuntimeError::new(CliErrorCode::LocalState, error.to_string()))?;
     let client = if authenticated {
-        let credential = load_credential(&paths, &installation)?;
-        RegistryClient::authenticated(origin, credential.bearer_token()).map_err(client_error)?
+        let bearer = load_active_bearer(&paths, &db, &installation).await?;
+        RegistryClient::authenticated(origin, bearer).map_err(client_error)?
     } else {
         RegistryClient::new(origin).map_err(client_error)?
     };
@@ -362,6 +384,33 @@ fn load_credential(
         })?;
     CredentialManager::load(paths, backend)
         .map_err(|error| RuntimeError::new(CliErrorCode::CredentialUnavailable, error.to_string()))
+}
+
+async fn load_active_bearer(
+    paths: &LocalPaths,
+    db: &LocalDatabase,
+    installation: &InstallationRecord,
+) -> Result<String, RuntimeError> {
+    if let Some(identity) = db.identity().await.map_err(local_error)? {
+        let backend_name = identity.session_backend.as_deref().ok_or_else(|| {
+            RuntimeError::new(
+                CliErrorCode::CredentialUnavailable,
+                format!("{} is not logged in on this device", identity.username),
+            )
+            .recovery(format!("denju login {}", identity.username))
+        })?;
+        let backend = CredentialBackend::from_str(backend_name).map_err(|error| {
+            RuntimeError::new(CliErrorCode::CredentialUnavailable, error.to_string())
+        })?;
+        let session: SessionCredential =
+            CredentialManager::load_session(paths, backend).map_err(|error| {
+                RuntimeError::new(CliErrorCode::CredentialUnavailable, error.to_string())
+                    .recovery("denju login <@username>")
+            })?;
+        Ok(session.bearer_token())
+    } else {
+        Ok(load_credential(paths, installation)?.bearer_token())
+    }
 }
 
 fn client_error(error: ClientError) -> RuntimeError {

@@ -4,9 +4,13 @@ use std::str::FromStr;
 
 use denju_core::BlobId;
 use denju_wire::{
-    ApiError, CreateInstallationRequest, CreateInstallationResponse, PublicSkillDetail,
-    PublicSkillSearchResponse, RegistryCapabilities, SnapshotDownload, SubscriptionCatalog,
-    SubscriptionMutationRequest, SubscriptionMutationResponse,
+    AccountDeleteRequest, AccountDeleteResponse, ApiError, AutomationTokenCreateRequest,
+    AutomationTokenCreateResponse, AutomationTokenList, AutomationTokenRevokeRequest,
+    AutomationTokenRevokeResponse, ClaimIdentityRequest, CreateInstallationRequest,
+    CreateInstallationResponse, DeviceList, DeviceRevokeRequest, DeviceRevokeResponse,
+    IdentityBackupRequest, IdentityInfo, IdentitySessionResponse, LoginRequest, PublicSkillDetail,
+    PublicSkillSearchResponse, RecoveryResetRequest, RegistryCapabilities, SnapshotDownload,
+    SubscriptionCatalog, SubscriptionMutationRequest, SubscriptionMutationResponse,
 };
 use reqwest::{Client, RequestBuilder, StatusCode};
 use thiserror::Error;
@@ -59,6 +63,85 @@ impl RegistryClient {
             .send()
             .await?;
         decode_response(response).await
+    }
+
+    pub async fn claim_identity(
+        &self,
+        request: &ClaimIdentityRequest,
+    ) -> Result<IdentitySessionResponse, ClientError> {
+        self.authenticated_post_json("v1/identity/claim", request)
+            .await
+    }
+
+    pub async fn login(
+        &self,
+        request: &LoginRequest,
+    ) -> Result<IdentitySessionResponse, ClientError> {
+        self.authenticated_post_json("v1/identity/login", request)
+            .await
+    }
+
+    pub async fn recovery_reset(
+        &self,
+        request: &RecoveryResetRequest,
+    ) -> Result<IdentitySessionResponse, ClientError> {
+        self.authenticated_post_json("v1/identity/recover", request)
+            .await
+    }
+
+    pub async fn identity_backup(
+        &self,
+        request: &IdentityBackupRequest,
+    ) -> Result<(), ClientError> {
+        let builder = self
+            .http
+            .post(self.endpoint("v1/identity/backup")?)
+            .json(request);
+        let response = self.with_auth(builder)?.send().await?;
+        decode_empty_response(response).await
+    }
+
+    pub async fn identity(&self) -> Result<IdentityInfo, ClientError> {
+        self.authenticated_get_json("v1/identity").await
+    }
+
+    pub async fn devices(&self) -> Result<DeviceList, ClientError> {
+        self.authenticated_get_json("v1/devices").await
+    }
+
+    pub async fn revoke_device(
+        &self,
+        request: &DeviceRevokeRequest,
+    ) -> Result<DeviceRevokeResponse, ClientError> {
+        self.authenticated_post_json("v1/devices/revoke", request)
+            .await
+    }
+
+    pub async fn create_automation_token(
+        &self,
+        request: &AutomationTokenCreateRequest,
+    ) -> Result<AutomationTokenCreateResponse, ClientError> {
+        self.authenticated_post_json("v1/tokens", request).await
+    }
+
+    pub async fn automation_tokens(&self) -> Result<AutomationTokenList, ClientError> {
+        self.authenticated_get_json("v1/tokens").await
+    }
+
+    pub async fn revoke_automation_token(
+        &self,
+        request: &AutomationTokenRevokeRequest,
+    ) -> Result<AutomationTokenRevokeResponse, ClientError> {
+        self.authenticated_post_json("v1/tokens/revoke", request)
+            .await
+    }
+
+    pub async fn delete_account(
+        &self,
+        request: &AccountDeleteRequest,
+    ) -> Result<AccountDeleteResponse, ClientError> {
+        self.authenticated_post_json("v1/account/delete", request)
+            .await
     }
 
     pub async fn search_public_skills(
@@ -161,6 +244,27 @@ impl RegistryClient {
         decode_response(response).await
     }
 
+    async fn authenticated_get_json<T>(&self, path: &str) -> Result<T, ClientError>
+    where
+        T: serde::de::DeserializeOwned,
+    {
+        let response = self
+            .with_auth(self.http.get(self.endpoint(path)?))?
+            .send()
+            .await?;
+        decode_response(response).await
+    }
+
+    async fn authenticated_post_json<T, R>(&self, path: &str, request: &T) -> Result<R, ClientError>
+    where
+        T: serde::Serialize + ?Sized,
+        R: serde::de::DeserializeOwned,
+    {
+        let builder = self.http.post(self.endpoint(path)?).json(request);
+        let response = self.with_auth(builder)?.send().await?;
+        decode_response(response).await
+    }
+
     async fn subscription_mutation(
         &self,
         path: &str,
@@ -200,6 +304,23 @@ where
         return Err(ClientError::Registry(api_error));
     }
     if status == StatusCode::SERVICE_UNAVAILABLE {
+        Err(ClientError::Unavailable(
+            "registry is temporarily unavailable".to_owned(),
+        ))
+    } else {
+        Err(ClientError::UnexpectedStatus(status))
+    }
+}
+
+async fn decode_empty_response(response: reqwest::Response) -> Result<(), ClientError> {
+    let status = response.status();
+    if status.is_success() {
+        return Ok(());
+    }
+    let api_error = response.json::<ApiError>().await.ok();
+    if let Some(api_error) = api_error {
+        Err(ClientError::Registry(api_error))
+    } else if status == StatusCode::SERVICE_UNAVAILABLE {
         Err(ClientError::Unavailable(
             "registry is temporarily unavailable".to_owned(),
         ))

@@ -8,14 +8,14 @@ Public reads:
 - `GET /v1/search?q=<query>&limit=<1..50>&cursor=<optional>`
 - `GET /v1/skills/show?locator=@owner/name`
 
-Anonymous-installation authority:
+Direct-subscription authority:
 
 - `POST /v1/installations`
 - `GET /v1/subscriptions`
 - `POST /v1/subscriptions`
 - `POST /v1/subscriptions/remove`
 
-Installation subscription endpoints authenticate with the opaque installation bearer credential created by setup. A returned subscribed skill contains current public metadata, the semantic manifest, and a short-lived snapshot download authorization. Possession of a blob or snapshot hash alone is not an authorization mechanism.
+Before identity claim/login, subscription endpoints authenticate with the opaque installation bearer credential created by setup and persist installation-scoped desired state. After claim/login, a revocable user session bearer addresses account-wide desired state; anonymous direct subscriptions from that installation are adopted transactionally by the account. Automation credentials do not manage direct subscriptions. A returned subscribed skill contains current public metadata, the semantic manifest, and a short-lived snapshot download authorization. Possession of a blob or snapshot hash alone is not an authorization mechanism.
 
 Subscription mutations carry a UUIDv7 `operation_id`, `resource_id`, `expected_generation`, and endpoint-domain-separated RFC-8785 request hash. Exact retries return the committed outcome; conflicting operation reuse or stale generations fail without changing the subscription.
 

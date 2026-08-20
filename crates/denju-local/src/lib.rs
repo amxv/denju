@@ -8,11 +8,13 @@ mod paths;
 mod projection;
 mod service;
 
-pub use credentials::{CredentialBackend, CredentialError, CredentialManager, InstallCredential};
+pub use credentials::{
+    CredentialBackend, CredentialError, CredentialManager, InstallCredential, SessionCredential,
+};
 pub use db::{
-    BootstrapJournal, BootstrapJournalPayload, HarnessConfig, InstallationRecord, JournalState,
-    LocalDatabase, LocalDbError, MaterializationJournal, MaterializationJournalPayload,
-    ServiceRecord, SubscriptionRecord,
+    BootstrapJournal, BootstrapJournalPayload, HarnessConfig, IdentityRecord, InstallationRecord,
+    JournalState, LocalDatabase, LocalDbError, MaterializationJournal,
+    MaterializationJournalPayload, ServiceRecord, SubscriptionRecord,
 };
 pub use harness::{
     HarnessEnvironment, HarnessError, ResolvedHarnessRoots, detect_unmanaged_skills,

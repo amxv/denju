@@ -53,6 +53,8 @@ pub struct DoctorOutcome {
 pub enum Guidance {
     SetupRequired,
     RepairRequired,
+    ClaimAvailable,
+    LoginRequired(String),
     Healthy,
 }
 
@@ -102,6 +104,14 @@ pub async fn guidance() -> Guidance {
     };
     if !service.running {
         return Guidance::RepairRequired;
+    }
+    match db.identity().await {
+        Ok(None) => return Guidance::ClaimAvailable,
+        Ok(Some(identity)) if identity.session_id.is_none() => {
+            return Guidance::LoginRequired(identity.username);
+        }
+        Err(_) => return Guidance::RepairRequired,
+        Ok(Some(_)) => {}
     }
     Guidance::Healthy
 }
@@ -235,6 +245,27 @@ pub async fn doctor() -> Result<DoctorOutcome, RuntimeError> {
     CredentialManager::load(&paths, backend).map_err(credential_error)?;
     if backend == CredentialBackend::File {
         CredentialManager::verify_file_permissions(&paths).map_err(credential_error)?;
+    }
+    if let Some(identity) = db.identity().await.map_err(local_error)? {
+        if let Some(session_backend) = identity.session_backend.as_deref() {
+            let session_backend =
+                CredentialBackend::from_str(session_backend).map_err(credential_error)?;
+            let session = CredentialManager::load_session(&paths, session_backend)
+                .map_err(credential_error)?;
+            if session_backend == CredentialBackend::File {
+                CredentialManager::verify_session_file_permissions(&paths)
+                    .map_err(credential_error)?;
+            }
+            let origin = Url::parse(&installation.registry_origin).map_err(registry_error)?;
+            let client = RegistryClient::authenticated(origin, session.bearer_token())
+                .map_err(registry_error)?;
+            client.identity().await.map_err(registry_error)?;
+        } else {
+            issues.push(format!(
+                "{} has no active session; run denju login {}",
+                identity.username, identity.username
+            ));
+        }
     }
 
     let recorded = db.harness_config().await.map_err(local_error)?;

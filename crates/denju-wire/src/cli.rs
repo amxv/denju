@@ -95,6 +95,8 @@ pub enum CliErrorCode {
     ServiceUnavailable,
     NotFound,
     ContentVerification,
+    InteractiveRequired,
+    ConfirmationRequired,
     Internal,
 }
 

@@ -15,7 +15,8 @@ use thiserror::Error;
 use crate::LocalPaths;
 
 const KEYRING_SERVICE: &str = "denju";
-const KEYRING_USER: &str = "installation";
+const KEYRING_INSTALL_USER: &str = "installation";
+const KEYRING_SESSION_USER: &str = "session";
 static CREDENTIAL_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 #[derive(Clone, PartialEq, Eq)]
@@ -43,6 +44,44 @@ impl InstallCredential {
 
     fn to_hex(&self) -> String {
         hex::encode(self.0)
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct SessionCredential([u8; 32]);
+
+impl SessionCredential {
+    pub fn generate() -> Self {
+        Self(random())
+    }
+
+    pub const fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+
+    pub fn sha256_hex(&self) -> String {
+        hex::encode(Sha256::digest(self.0))
+    }
+
+    pub fn bearer_token(&self) -> String {
+        hex::encode(self.0)
+    }
+
+    fn to_hex(&self) -> String {
+        hex::encode(self.0)
+    }
+}
+
+impl FromStr for SessionCredential {
+    type Err = CredentialError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let bytes = hex::decode(value.trim()).map_err(CredentialError::InvalidCredential)?;
+        Ok(Self(
+            bytes
+                .try_into()
+                .map_err(|_| CredentialError::InvalidCredentialLength)?,
+        ))
     }
 }
 
@@ -96,7 +135,7 @@ impl CredentialManager {
     ) -> Result<CredentialBackend, CredentialError> {
         let _guard = credential_lock()?;
         if !force_file {
-            match store_native(credential) {
+            match store_native(KEYRING_INSTALL_USER, credential.as_bytes()) {
                 Ok(()) => return Ok(CredentialBackend::OsNative),
                 Err(error) if file_fallback_allowed() => {
                     let _ = error;
@@ -104,7 +143,7 @@ impl CredentialManager {
                 Err(error) => return Err(error),
             }
         }
-        store_file(paths, credential)?;
+        store_secret_file(credential_file(paths), &credential.to_hex())?;
         Ok(CredentialBackend::File)
     }
 
@@ -114,25 +153,96 @@ impl CredentialManager {
     ) -> Result<InstallCredential, CredentialError> {
         let _guard = credential_lock()?;
         match backend {
-            CredentialBackend::OsNative => load_native(),
+            CredentialBackend::OsNative => {
+                Ok(InstallCredential(load_native(KEYRING_INSTALL_USER)?))
+            }
             CredentialBackend::File => load_file(paths),
         }
     }
 
-    pub fn verify_file_permissions(paths: &LocalPaths) -> Result<(), CredentialError> {
-        let path = credential_file(paths);
-        if !path.exists() {
-            return Err(CredentialError::MissingCredential);
-        }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mode = fs::metadata(path)?.permissions().mode();
-            if mode & 0o077 != 0 {
-                return Err(CredentialError::InsecurePermissions(mode & 0o777));
+    pub fn store_session(
+        paths: &LocalPaths,
+        credential: &SessionCredential,
+        force_file: bool,
+    ) -> Result<CredentialBackend, CredentialError> {
+        let _guard = credential_lock()?;
+        if !force_file {
+            match store_native(KEYRING_SESSION_USER, credential.as_bytes()) {
+                Ok(()) => return Ok(CredentialBackend::OsNative),
+                Err(error) if file_fallback_allowed() => {
+                    let _ = error;
+                }
+                Err(error) => return Err(error),
             }
         }
-        Ok(())
+        store_secret_file(session_credential_file(paths), &credential.to_hex())?;
+        Ok(CredentialBackend::File)
+    }
+
+    pub fn load_session(
+        paths: &LocalPaths,
+        backend: CredentialBackend,
+    ) -> Result<SessionCredential, CredentialError> {
+        let _guard = credential_lock()?;
+        match backend {
+            CredentialBackend::OsNative => {
+                Ok(SessionCredential(load_native(KEYRING_SESSION_USER)?))
+            }
+            CredentialBackend::File => {
+                verify_owner_only_file(&session_credential_file(paths))?;
+                fs::read_to_string(session_credential_file(paths))?.parse()
+            }
+        }
+    }
+
+    pub fn delete_session(
+        paths: &LocalPaths,
+        backend: CredentialBackend,
+    ) -> Result<(), CredentialError> {
+        let _guard = credential_lock()?;
+        match backend {
+            CredentialBackend::OsNative => {
+                configure_native_store()?;
+                match Entry::new(KEYRING_SERVICE, KEYRING_SESSION_USER)?.delete_credential() {
+                    Ok(()) | Err(keyring_core::Error::NoEntry) => Ok(()),
+                    Err(error) => Err(error.into()),
+                }
+            }
+            CredentialBackend::File => match fs::remove_file(session_credential_file(paths)) {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(error.into()),
+            },
+        }
+    }
+
+    pub fn delete_installation(
+        paths: &LocalPaths,
+        backend: CredentialBackend,
+    ) -> Result<(), CredentialError> {
+        let _guard = credential_lock()?;
+        match backend {
+            CredentialBackend::OsNative => {
+                configure_native_store()?;
+                match Entry::new(KEYRING_SERVICE, KEYRING_INSTALL_USER)?.delete_credential() {
+                    Ok(()) | Err(keyring_core::Error::NoEntry) => Ok(()),
+                    Err(error) => Err(error.into()),
+                }
+            }
+            CredentialBackend::File => match fs::remove_file(credential_file(paths)) {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(error.into()),
+            },
+        }
+    }
+
+    pub fn verify_file_permissions(paths: &LocalPaths) -> Result<(), CredentialError> {
+        verify_owner_only_file(&credential_file(paths))
+    }
+
+    pub fn verify_session_file_permissions(paths: &LocalPaths) -> Result<(), CredentialError> {
+        verify_owner_only_file(&session_credential_file(paths))
     }
 }
 
@@ -143,20 +253,18 @@ fn credential_lock() -> Result<std::sync::MutexGuard<'static, ()>, CredentialErr
         .map_err(|_| CredentialError::LockPoisoned)
 }
 
-fn store_native(credential: &InstallCredential) -> Result<(), CredentialError> {
+fn store_native(user: &str, secret: &[u8]) -> Result<(), CredentialError> {
     configure_native_store()?;
-    Entry::new(KEYRING_SERVICE, KEYRING_USER)?.set_secret(credential.as_bytes())?;
+    Entry::new(KEYRING_SERVICE, user)?.set_secret(secret)?;
     Ok(())
 }
 
-fn load_native() -> Result<InstallCredential, CredentialError> {
+fn load_native(user: &str) -> Result<[u8; 32], CredentialError> {
     configure_native_store()?;
-    let bytes = Entry::new(KEYRING_SERVICE, KEYRING_USER)?.get_secret()?;
-    Ok(InstallCredential(
-        bytes
-            .try_into()
-            .map_err(|_| CredentialError::InvalidCredentialLength)?,
-    ))
+    let bytes = Entry::new(KEYRING_SERVICE, user)?.get_secret()?;
+    bytes
+        .try_into()
+        .map_err(|_| CredentialError::InvalidCredentialLength)
 }
 
 fn configure_native_store() -> Result<(), CredentialError> {
@@ -176,9 +284,10 @@ fn configure_native_store() -> Result<(), CredentialError> {
     Ok(())
 }
 
-fn store_file(paths: &LocalPaths, credential: &InstallCredential) -> Result<(), CredentialError> {
-    fs::create_dir_all(&paths.credentials)?;
-    let path = credential_file(paths);
+fn store_secret_file(path: PathBuf, value: &str) -> Result<(), CredentialError> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
     #[cfg(unix)]
     let mut file = {
         use std::os::unix::fs::OpenOptionsExt;
@@ -195,7 +304,7 @@ fn store_file(paths: &LocalPaths, credential: &InstallCredential) -> Result<(), 
         .truncate(true)
         .write(true)
         .open(&path)?;
-    file.write_all(credential.to_hex().as_bytes())?;
+    file.write_all(value.as_bytes())?;
     file.sync_all()?;
     #[cfg(unix)]
     {
@@ -210,8 +319,27 @@ fn load_file(paths: &LocalPaths) -> Result<InstallCredential, CredentialError> {
     fs::read_to_string(credential_file(paths))?.parse()
 }
 
+fn verify_owner_only_file(path: &PathBuf) -> Result<(), CredentialError> {
+    if !path.exists() {
+        return Err(CredentialError::MissingCredential);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata(path)?.permissions().mode();
+        if mode & 0o077 != 0 {
+            return Err(CredentialError::InsecurePermissions(mode & 0o777));
+        }
+    }
+    Ok(())
+}
+
 fn credential_file(paths: &LocalPaths) -> PathBuf {
     paths.credentials.join("install-token")
+}
+
+fn session_credential_file(paths: &LocalPaths) -> PathBuf {
+    paths.credentials.join("session-token")
 }
 
 const fn file_fallback_allowed() -> bool {
@@ -262,5 +390,23 @@ mod tests {
         assert_eq!(backend, CredentialBackend::File);
         assert!(CredentialManager::load(&paths, backend).unwrap() == credential);
         CredentialManager::verify_file_permissions(&paths).unwrap();
+    }
+
+    #[test]
+    fn session_file_is_separate_owner_only_and_revocable() {
+        let home = tempdir().unwrap();
+        let paths = LocalPaths::from_home(home.path().to_owned());
+        let installation = InstallCredential::generate();
+        let session = SessionCredential::generate();
+        CredentialManager::store(&paths, &installation, true).unwrap();
+        let backend = CredentialManager::store_session(&paths, &session, true).unwrap();
+        assert_eq!(backend, CredentialBackend::File);
+        assert!(CredentialManager::load_session(&paths, backend).unwrap() == session);
+        CredentialManager::verify_session_file_permissions(&paths).unwrap();
+        assert!(credential_file(&paths).is_file());
+        assert!(session_credential_file(&paths).is_file());
+        CredentialManager::delete_session(&paths, backend).unwrap();
+        assert!(!session_credential_file(&paths).exists());
+        assert!(credential_file(&paths).is_file());
     }
 }

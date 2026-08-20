@@ -89,6 +89,25 @@ fn help_is_available_in_text_and_json_modes() {
     );
 }
 
+#[test]
+fn json_identity_commands_never_prompt_for_human_secrets() {
+    for args in [
+        vec!["--json", "claim", "@alice"],
+        vec!["--json", "login", "@alice"],
+        vec!["--json", "identity", "backup"],
+        vec!["--json", "identity", "recover", "@alice"],
+        vec!["--json", "identity", "delete", "--yes"],
+    ] {
+        let output = denju(&args);
+        assert_eq!(output.status.code(), Some(1));
+        assert!(stderr(&output).is_empty());
+        assert_eq!(stdout(&output).lines().count(), 1);
+        let value: Value = serde_json::from_str(stdout(&output).trim()).expect("valid JSON error");
+        assert_eq!(value["ok"], false);
+        assert_eq!(value["error"]["code"], "interactive_required");
+    }
+}
+
 fn denju(args: &[&str]) -> Output {
     let home = tempdir().expect("isolated test home");
     Command::new(env!("CARGO_BIN_EXE_denju"))
