@@ -23,6 +23,7 @@ pub use skill::{
     validate_skill_name,
 };
 pub use snapshot::{
-    DeterministicSkillSnapshot, OwnedSkillEntry, SkillManifest, SkillManifestEntry, SnapshotError,
-    build_deterministic_skill_snapshot, build_skill_manifest, validate_skill_snapshot,
+    DeterministicSkillSnapshot, OwnedSkillEntry, SkillManifest, SkillManifestEntry,
+    SkillManifestTree, SnapshotError, build_deterministic_skill_snapshot, build_skill_manifest,
+    validate_declared_skill_manifest, validate_skill_snapshot,
 };

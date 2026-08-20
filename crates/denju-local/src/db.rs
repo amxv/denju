@@ -86,6 +86,25 @@ CREATE TABLE IF NOT EXISTS identity_state (
 PRAGMA user_version = 3;
 "#;
 
+const MIGRATION_V4: &str = r#"
+CREATE TABLE IF NOT EXISTS owned_skills (
+    resource_id TEXT PRIMARY KEY,
+    locator TEXT NOT NULL UNIQUE,
+    owner TEXT NOT NULL,
+    skill_name TEXT NOT NULL,
+    resource_generation INTEGER NOT NULL,
+    desired_revision_id TEXT NOT NULL,
+    harness_name TEXT,
+    materialized_revision_id TEXT,
+    updated_at_unix_ms INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS owned_skills_skill_name_idx
+    ON owned_skills (skill_name, resource_id);
+
+PRAGMA user_version = 4;
+"#;
+
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;
 
 #[derive(Clone)]
@@ -447,6 +466,104 @@ impl LocalDatabase {
         .await
     }
 
+    pub async fn owned_skills(&self) -> Result<Vec<OwnedSkillRecord>, LocalDbError> {
+        self.call(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT resource_id, locator, owner, skill_name, resource_generation, desired_revision_id, \
+                        harness_name, materialized_revision_id \
+                 FROM owned_skills ORDER BY owner, skill_name, resource_id",
+            )?;
+            let rows = statement.query_map([], |row| {
+                Ok(OwnedSkillRecord {
+                    resource_id: row.get(0)?,
+                    locator: row.get(1)?,
+                    owner: row.get(2)?,
+                    skill_name: row.get(3)?,
+                    resource_generation: row.get(4)?,
+                    desired_revision_id: row.get(5)?,
+                    harness_name: row.get(6)?,
+                    materialized_revision_id: row.get(7)?,
+                })
+            })?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(LocalDbError::from)
+        })
+        .await
+    }
+
+    pub async fn managed_skills(&self) -> Result<Vec<ManagedSkillRecord>, LocalDbError> {
+        self.call(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT resource_id, locator, owner, skill_name, harness_name, materialized_revision_id \
+                 FROM subscriptions \
+                 UNION ALL \
+                 SELECT resource_id, locator, owner, skill_name, harness_name, materialized_revision_id \
+                 FROM owned_skills \
+                 ORDER BY owner, skill_name, resource_id",
+            )?;
+            let rows = statement.query_map([], |row| {
+                Ok(ManagedSkillRecord {
+                    resource_id: row.get(0)?,
+                    locator: row.get(1)?,
+                    owner: row.get(2)?,
+                    skill_name: row.get(3)?,
+                    harness_name: row.get(4)?,
+                    materialized_revision_id: row.get(5)?,
+                })
+            })?;
+            let records = rows.collect::<Result<Vec<_>, _>>()?;
+            for pair in records.windows(2) {
+                if pair[0].resource_id == pair[1].resource_id {
+                    return Err(LocalDbError::Corrupt(format!(
+                        "resource {} has multiple local desired-state owners",
+                        pair[0].resource_id
+                    )));
+                }
+            }
+            Ok(records)
+        })
+        .await
+    }
+
+    pub async fn upsert_owned_skill_desired(
+        &self,
+        record: OwnedSkillRecord,
+        now_unix_ms: i64,
+    ) -> Result<(), LocalDbError> {
+        self.call(move |connection| {
+            connection.execute(
+                "INSERT INTO owned_skills \
+                 (resource_id, locator, owner, skill_name, resource_generation, desired_revision_id, updated_at_unix_ms) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
+                 ON CONFLICT(resource_id) DO UPDATE SET \
+                   locator=excluded.locator, owner=excluded.owner, skill_name=excluded.skill_name, \
+                   resource_generation=excluded.resource_generation, desired_revision_id=excluded.desired_revision_id, \
+                   updated_at_unix_ms=excluded.updated_at_unix_ms",
+                params![
+                    record.resource_id,
+                    record.locator,
+                    record.owner,
+                    record.skill_name,
+                    record.resource_generation,
+                    record.desired_revision_id,
+                    now_unix_ms,
+                ],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
+    pub async fn remove_owned_skill(&self, resource_id: String) -> Result<(), LocalDbError> {
+        self.call(move |connection| {
+            connection.execute(
+                "DELETE FROM owned_skills WHERE resource_id=?1",
+                params![resource_id],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
     pub async fn subscription(
         &self,
         resource_id: String,
@@ -507,18 +624,22 @@ impl LocalDatabase {
         .await
     }
 
-    pub async fn mark_subscription_materialized(
+    pub async fn mark_skill_materialized(
         &self,
         resource_id: String,
         revision_id: String,
         now_unix_ms: i64,
     ) -> Result<(), LocalDbError> {
         self.call(move |connection| {
-            let changed = connection.execute(
+            let subscription_changed = connection.execute(
                 "UPDATE subscriptions SET materialized_revision_id=?1, updated_at_unix_ms=?2 WHERE resource_id=?3",
                 params![revision_id, now_unix_ms, resource_id],
             )?;
-            if changed != 1 {
+            let owned_changed = connection.execute(
+                "UPDATE owned_skills SET materialized_revision_id=?1, updated_at_unix_ms=?2 WHERE resource_id=?3",
+                params![revision_id, now_unix_ms, resource_id],
+            )?;
+            if subscription_changed + owned_changed != 1 {
                 return Err(rusqlite::Error::QueryReturnedNoRows.into());
             }
             Ok(())
@@ -526,16 +647,105 @@ impl LocalDatabase {
         .await
     }
 
-    pub async fn set_subscription_harness_name(
+    pub async fn set_managed_harness_name(
         &self,
         resource_id: String,
         harness_name: String,
         now_unix_ms: i64,
     ) -> Result<(), LocalDbError> {
         self.call(move |connection| {
-            let changed = connection.execute(
+            let subscription_changed = connection.execute(
                 "UPDATE subscriptions SET harness_name=?1, updated_at_unix_ms=?2 WHERE resource_id=?3",
                 params![harness_name, now_unix_ms, resource_id],
+            )?;
+            let owned_changed = connection.execute(
+                "UPDATE owned_skills SET harness_name=?1, updated_at_unix_ms=?2 WHERE resource_id=?3",
+                params![harness_name, now_unix_ms, resource_id],
+            )?;
+            if subscription_changed + owned_changed != 1 {
+                return Err(rusqlite::Error::QueryReturnedNoRows.into());
+            }
+            Ok(())
+        })
+        .await
+    }
+
+    pub async fn import_journal_for_source(
+        &self,
+        source_path: String,
+    ) -> Result<Option<ImportJournal>, LocalDbError> {
+        self.call(move |connection| {
+            let mut statement = connection.prepare(
+                "SELECT operation_id, state, payload_json FROM operation_journal \
+                 WHERE kind='import_skill' AND state != 'complete' ORDER BY created_at_unix_ms",
+            )?;
+            let rows = statement.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })?;
+            for row in rows {
+                let (operation_id, state, payload_json) = row?;
+                let payload: ImportJournalPayload = serde_json::from_str(&payload_json)?;
+                if payload.source_path == source_path {
+                    return Ok(Some(ImportJournal {
+                        operation_id: operation_id.parse().map_err(
+                            |error: denju_core::IdError| LocalDbError::Corrupt(error.to_string()),
+                        )?,
+                        state: state.parse()?,
+                        payload,
+                    }));
+                }
+            }
+            Ok(None)
+        })
+        .await
+    }
+
+    pub async fn create_import_journal(
+        &self,
+        operation_id: OperationId,
+        payload: ImportJournalPayload,
+        now_unix_ms: i64,
+    ) -> Result<(), LocalDbError> {
+        let payload = serde_json::to_string(&payload)?;
+        self.call(move |connection| {
+            connection.execute(
+                "INSERT INTO operation_journal \
+                 (operation_id, kind, state, payload_json, created_at_unix_ms, updated_at_unix_ms) \
+                 VALUES (?1, 'import_skill', 'planned', ?2, ?3, ?3)",
+                params![operation_id.to_string(), payload, now_unix_ms],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
+    pub async fn update_import_journal(
+        &self,
+        operation_id: OperationId,
+        expected: JournalState,
+        next: JournalState,
+        payload: ImportJournalPayload,
+        now_unix_ms: i64,
+    ) -> Result<(), LocalDbError> {
+        if expected.next() != Some(next) {
+            return Err(LocalDbError::InvalidJournalTransition { expected, next });
+        }
+        let payload = serde_json::to_string(&payload)?;
+        self.call(move |connection| {
+            let changed = connection.execute(
+                "UPDATE operation_journal SET state=?1,payload_json=?2,updated_at_unix_ms=?3 \
+                 WHERE operation_id=?4 AND kind='import_skill' AND state=?5",
+                params![
+                    next.as_str(),
+                    payload,
+                    now_unix_ms,
+                    operation_id.to_string(),
+                    expected.as_str(),
+                ],
             )?;
             if changed != 1 {
                 return Err(rusqlite::Error::QueryReturnedNoRows.into());
@@ -734,7 +944,7 @@ fn open_connection(path: &Path) -> Result<Connection, LocalDbError> {
         "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON;",
     )?;
     let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    if version > 3 {
+    if version > 4 {
         return Err(LocalDbError::UnsupportedSchema(version));
     }
     if version == 0 {
@@ -747,6 +957,10 @@ fn open_connection(path: &Path) -> Result<Connection, LocalDbError> {
     let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
     if version == 2 {
         connection.execute_batch(MIGRATION_V3)?;
+    }
+    let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version == 3 {
+        connection.execute_batch(MIGRATION_V4)?;
     }
     Ok(connection)
 }
@@ -794,6 +1008,49 @@ pub struct SubscriptionRecord {
     pub desired_revision_id: String,
     pub harness_name: Option<String>,
     pub materialized_revision_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnedSkillRecord {
+    pub resource_id: String,
+    pub locator: String,
+    pub owner: String,
+    pub skill_name: String,
+    pub resource_generation: i64,
+    pub desired_revision_id: String,
+    pub harness_name: Option<String>,
+    pub materialized_revision_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManagedSkillRecord {
+    pub resource_id: String,
+    pub locator: String,
+    pub owner: String,
+    pub skill_name: String,
+    pub harness_name: Option<String>,
+    pub materialized_revision_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImportJournal {
+    pub operation_id: OperationId,
+    pub state: JournalState,
+    pub payload: ImportJournalPayload,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImportJournalPayload {
+    pub source_path: String,
+    pub skill_name: String,
+    pub request_hash: String,
+    pub manifest_json: String,
+    pub snapshot_sha256: String,
+    pub snapshot_size_bytes: u64,
+    pub snapshot_path: String,
+    pub resource_id: Option<String>,
+    pub locator: Option<String>,
+    pub revision_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -972,6 +1229,112 @@ mod tests {
             db.claim_lease("skill:a".into(), "daemon".into(), 151, 50)
                 .await
                 .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn owned_skills_share_projection_state_without_becoming_subscriptions() {
+        let dir = tempdir().unwrap();
+        let db = LocalDatabase::open(dir.path().join("state.db"))
+            .await
+            .unwrap();
+        let owned_id = "01890f47-6a1c-7cc2-98c1-5f6c1ed8a3a1".to_owned();
+        db.upsert_owned_skill_desired(
+            OwnedSkillRecord {
+                resource_id: owned_id.clone(),
+                locator: "@alice/owned".to_owned(),
+                owner: "alice".to_owned(),
+                skill_name: "owned".to_owned(),
+                resource_generation: 1,
+                desired_revision_id: "11".repeat(32),
+                harness_name: None,
+                materialized_revision_id: None,
+            },
+            1,
+        )
+        .await
+        .unwrap();
+        db.upsert_subscription_desired(
+            SubscriptionRecord {
+                resource_id: "01890f47-6a1d-7ad0-8f43-9a4d8c29f002".to_owned(),
+                locator: "@bob/public".to_owned(),
+                owner: "bob".to_owned(),
+                skill_name: "public".to_owned(),
+                resource_generation: 1,
+                release_version: 1,
+                desired_revision_id: "22".repeat(32),
+                harness_name: None,
+                materialized_revision_id: None,
+            },
+            1,
+        )
+        .await
+        .unwrap();
+
+        db.mark_skill_materialized(owned_id.clone(), "11".repeat(32), 2)
+            .await
+            .unwrap();
+        db.set_managed_harness_name(owned_id.clone(), "owned".to_owned(), 3)
+            .await
+            .unwrap();
+
+        assert_eq!(db.subscriptions().await.unwrap().len(), 1);
+        let owned = db.owned_skills().await.unwrap();
+        assert_eq!(owned.len(), 1);
+        assert_eq!(owned[0].resource_id, owned_id);
+        assert_eq!(owned[0].harness_name.as_deref(), Some("owned"));
+        assert_eq!(db.managed_skills().await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn import_journal_resumes_only_until_complete() {
+        let dir = tempdir().unwrap();
+        let db = LocalDatabase::open(dir.path().join("state.db"))
+            .await
+            .unwrap();
+        let operation_id = OperationId::from_uuid(Uuid::now_v7()).unwrap();
+        let source = dir.path().join("source/review").display().to_string();
+        let payload = ImportJournalPayload {
+            source_path: source.clone(),
+            skill_name: "review".to_owned(),
+            request_hash: "11".repeat(32),
+            manifest_json: "{}".to_owned(),
+            snapshot_sha256: "22".repeat(32),
+            snapshot_size_bytes: 42,
+            snapshot_path: dir.path().join("snapshot.tar.zst").display().to_string(),
+            resource_id: None,
+            locator: None,
+            revision_id: None,
+        };
+        db.create_import_journal(operation_id, payload.clone(), 1)
+            .await
+            .unwrap();
+        assert_eq!(
+            db.import_journal_for_source(source.clone())
+                .await
+                .unwrap()
+                .unwrap()
+                .state,
+            JournalState::Planned
+        );
+
+        let mut expected = JournalState::Planned;
+        for (next, now) in [
+            (JournalState::Staged, 2),
+            (JournalState::Verified, 3),
+            (JournalState::Switched, 4),
+            (JournalState::Complete, 5),
+        ] {
+            db.update_import_journal(operation_id, expected, next, payload.clone(), now)
+                .await
+                .unwrap();
+            expected = next;
+        }
+        assert!(
+            db.import_journal_for_source(source)
+                .await
+                .unwrap()
+                .is_none()
         );
     }
 }

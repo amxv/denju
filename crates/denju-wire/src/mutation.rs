@@ -15,6 +15,7 @@ const TOKEN_REVOKE_DOMAIN: &[u8] = b"denju:http:v1:automation-token-revoke\0";
 const ACCOUNT_DELETE_DOMAIN: &[u8] = b"denju:http:v1:account-delete\0";
 const SUBSCRIBE_DOMAIN: &[u8] = b"denju:http:v1:subscribe\0";
 const UNSUBSCRIBE_DOMAIN: &[u8] = b"denju:http:v1:unsubscribe\0";
+const PRIVATE_SKILL_IMPORT_DOMAIN: &[u8] = b"denju:http:v1:private-skill-import\0";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct RequestHash([u8; 32]);
@@ -162,6 +163,39 @@ pub fn subscription_request_hash(
     Ok(RequestHash::from_bytes(hasher.finalize().into()))
 }
 
+pub fn private_skill_import_request_hash<T: Serialize>(
+    operation_id: &str,
+    expected_generation: u64,
+    name: &str,
+    manifest: &T,
+    snapshot_sha256: &str,
+    snapshot_size_bytes: u64,
+) -> Result<RequestHash, RequestHashError> {
+    #[derive(Serialize)]
+    struct ImportHashInput<'a, T> {
+        operation_id: &'a str,
+        expected_generation: u64,
+        name: &'a str,
+        manifest: &'a T,
+        snapshot_sha256: &'a str,
+        snapshot_size_bytes: u64,
+    }
+
+    let canonical = serde_json_canonicalizer::to_vec(&ImportHashInput {
+        operation_id,
+        expected_generation,
+        name,
+        manifest,
+        snapshot_sha256,
+        snapshot_size_bytes,
+    })
+    .map_err(|error| RequestHashError::Canonicalization(error.to_string()))?;
+    let mut hasher = Sha256::new();
+    hasher.update(PRIVATE_SKILL_IMPORT_DOMAIN);
+    hasher.update(canonical);
+    Ok(RequestHash::from_bytes(hasher.finalize().into()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -215,5 +249,30 @@ mod tests {
             .map(|domain| identity_mutation_request_hash(operation, domain, &payload).unwrap())
             .collect::<std::collections::HashSet<_>>();
         assert_eq!(hashes.len(), domains.len());
+    }
+
+    #[test]
+    fn private_import_hash_binds_manifest_and_snapshot() {
+        let operation = "01890f47-6a1c-7cc2-98c1-5f6c1ed8a3a1";
+        let manifest = serde_json::json!({"root_tree_id": "11", "entries": []});
+        let left = private_skill_import_request_hash(
+            operation,
+            0,
+            "review",
+            &manifest,
+            &"22".repeat(32),
+            42,
+        )
+        .unwrap();
+        let right = private_skill_import_request_hash(
+            operation,
+            0,
+            "review",
+            &manifest,
+            &"22".repeat(32),
+            43,
+        )
+        .unwrap();
+        assert_ne!(left, right);
     }
 }

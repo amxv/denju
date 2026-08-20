@@ -7,14 +7,16 @@ mod materialize;
 mod paths;
 mod projection;
 mod service;
+mod source;
 
 pub use credentials::{
     CredentialBackend, CredentialError, CredentialManager, InstallCredential, SessionCredential,
 };
 pub use db::{
-    BootstrapJournal, BootstrapJournalPayload, HarnessConfig, IdentityRecord, InstallationRecord,
-    JournalState, LocalDatabase, LocalDbError, MaterializationJournal,
-    MaterializationJournalPayload, ServiceRecord, SubscriptionRecord,
+    BootstrapJournal, BootstrapJournalPayload, HarnessConfig, IdentityRecord, ImportJournal,
+    ImportJournalPayload, InstallationRecord, JournalState, LocalDatabase, LocalDbError,
+    ManagedSkillRecord, MaterializationJournal, MaterializationJournalPayload, OwnedSkillRecord,
+    ServiceRecord, SubscriptionRecord,
 };
 pub use harness::{
     HarnessEnvironment, HarnessError, ResolvedHarnessRoots, detect_unmanaged_skills,
@@ -30,6 +32,8 @@ pub use paths::{
     verify_native_directory_links,
 };
 pub use projection::{
-    ProjectionError, reconcile_harness_projections, remove_subscription_projection,
+    ProjectionError, reconcile_harness_projections, remove_managed_skill_projection,
+    remove_subscription_projection,
 };
 pub use service::{ServiceError, ServiceInstallMode, ServiceKind, ServiceManager, ServiceStatus};
+pub use source::{SourceError, read_skill_source};

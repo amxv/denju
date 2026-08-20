@@ -46,6 +46,14 @@ HOME="$TEST_HOME" CODEX_HOME=.codex CLAUDE_CONFIG_DIR=.claude \
 
 Phase-scoped integration fixtures may seed public releases through the hidden `denju-server seed-public` development command. That command writes the same PostgreSQL/S3 release model read by the public HTTP API; it is not a second in-memory catalog or a user-facing publishing path.
 
+The hidden provider-conformance probe exercises the exact generic object-store adapter used by the registry. With the normal `cargo xtask dev` environment values exported, run:
+
+```bash
+cargo run -p denju-server -- check-object-store
+```
+
+The probe covers a presigned staging PUT, verified reads, canonical write/retry, presigned GET, and idempotent deletion. Garage is the deterministic local/reference provider. The same probe is used against R2 when deployment credentials are available; provider-specific product behavior must not be added to make one backend pass.
+
 ## Work on the docs
 
 The docs app is isolated under `docs/` and consumes the shared ZueDocs package. Run Astro validation serially:

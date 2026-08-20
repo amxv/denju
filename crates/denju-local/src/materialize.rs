@@ -108,7 +108,7 @@ async fn materialize_with_lease(
         now_unix_ms(),
     )
     .await?;
-    db.mark_subscription_materialized(
+    db.mark_skill_materialized(
         desired.resource_id.to_string(),
         desired.revision_id.to_string(),
         now_unix_ms(),
@@ -153,7 +153,7 @@ pub async fn recover_materializations(
                     now_unix_ms(),
                 )
                 .await?;
-                db.mark_subscription_materialized(
+                db.mark_skill_materialized(
                     journal.payload.resource_id.clone(),
                     journal.payload.revision_id.clone(),
                     now_unix_ms(),
@@ -176,7 +176,7 @@ pub async fn recover_materializations(
                         journal.payload.resource_id
                     )));
                 }
-                db.mark_subscription_materialized(
+                db.mark_skill_materialized(
                     journal.payload.resource_id.clone(),
                     journal.payload.revision_id.clone(),
                     now_unix_ms(),

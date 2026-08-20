@@ -53,6 +53,7 @@ pub enum ApiErrorCode {
     GenerationConflict,
     Unauthorized,
     NotFound,
+    QuotaExceeded,
     Internal,
     Unavailable,
 }

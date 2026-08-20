@@ -4,15 +4,15 @@ use denju_client::{ClientError, RegistryClient};
 use denju_core::{OperationId, ResourceId, RevisionId};
 use denju_local::{
     CredentialBackend, CredentialManager, DesiredSkillMaterialization, InstallCredential,
-    InstallationRecord, LocalDatabase, LocalPaths, ResolvedHarnessRoots, SessionCredential,
-    SubscriptionRecord, materialize_skill_snapshot, prepare_harness_roots,
+    InstallationRecord, LocalDatabase, LocalPaths, OwnedSkillRecord, ResolvedHarnessRoots,
+    SessionCredential, SubscriptionRecord, materialize_skill_snapshot, prepare_harness_roots,
     reconcile_harness_projections, recover_materializations, remove_canonical_skill,
-    remove_subscription_projection, resolve_harness_roots,
+    remove_managed_skill_projection, remove_subscription_projection, resolve_harness_roots,
 };
 use denju_wire::{
-    ApiErrorCode, CliErrorCode, PublicSkill, PublicSkillDetail, PublicSkillSearchResponse,
-    SubscribedSkill, SubscriptionMutationKind, SubscriptionMutationRequest,
-    subscription_request_hash,
+    ApiErrorCode, CliErrorCode, PrivateSkill, PublicSkill, PublicSkillDetail,
+    PublicSkillSearchResponse, RegistryLimits, SubscribedSkill, SubscriptionMutationKind,
+    SubscriptionMutationRequest, subscription_request_hash,
 };
 use serde::Serialize;
 use url::Url;
@@ -213,7 +213,7 @@ async fn sync_with_context(context: InstalledContext) -> Result<SyncOutcome, Run
         if already_current {
             continue;
         }
-        if remote.snapshot.size_bytes > context.max_transfer_bytes {
+        if remote.snapshot.size_bytes > context.limits.max_transfer_bytes {
             return Err(RuntimeError::new(
                 CliErrorCode::ContentVerification,
                 format!(
@@ -246,6 +246,59 @@ async fn sync_with_context(context: InstalledContext) -> Result<SyncOutcome, Run
         materialized += 1;
     }
 
+    let mut owned_desired = 0;
+    if context
+        .db
+        .identity()
+        .await
+        .map_err(local_error)?
+        .is_some_and(|identity| identity.session_backend.is_some())
+    {
+        let owned = context
+            .client
+            .private_skills()
+            .await
+            .map_err(client_error)?;
+        owned_desired = owned.skills.len();
+        let remote_ids = owned
+            .skills
+            .iter()
+            .map(|skill| skill.resource_id.as_str())
+            .collect::<BTreeSet<_>>();
+        let existing_owned = context.db.owned_skills().await.map_err(local_error)?;
+        for record in &existing_owned {
+            if remote_ids.contains(record.resource_id.as_str()) {
+                continue;
+            }
+            let managed = context
+                .db
+                .managed_skills()
+                .await
+                .map_err(local_error)?
+                .into_iter()
+                .find(|managed| managed.resource_id == record.resource_id)
+                .ok_or_else(|| {
+                    RuntimeError::new(
+                        CliErrorCode::LocalState,
+                        format!("owned resource {} lost managed state", record.resource_id),
+                    )
+                })?;
+            remove_managed_skill_projection(&context.paths, &context.roots, &managed)
+                .map_err(local_error)?;
+            remove_canonical_skill(&context.paths, &record.owner, &record.skill_name)
+                .map_err(local_error)?;
+            context
+                .db
+                .remove_owned_skill(record.resource_id.clone())
+                .await
+                .map_err(local_error)?;
+            removed += 1;
+        }
+        for remote in &owned.skills {
+            materialized += sync_owned_skill(&context, remote).await?;
+        }
+    }
+
     let projections = reconcile_harness_projections(&context.paths, &context.db, &context.roots)
         .await
         .map_err(local_error)?
@@ -256,11 +309,90 @@ async fn sync_with_context(context: InstalledContext) -> Result<SyncOutcome, Run
         })
         .collect();
     Ok(SyncOutcome {
-        desired: catalog.skills.len(),
+        desired: catalog.skills.len() + owned_desired,
         materialized,
         removed,
         projections,
     })
+}
+
+async fn sync_owned_skill(
+    context: &InstalledContext,
+    remote: &PrivateSkill,
+) -> Result<usize, RuntimeError> {
+    let existing = context
+        .db
+        .owned_skills()
+        .await
+        .map_err(local_error)?
+        .into_iter()
+        .find(|record| record.resource_id == remote.resource_id);
+    let resource_generation = i64::try_from(remote.generation).map_err(|_| {
+        RuntimeError::new(
+            CliErrorCode::LocalState,
+            "owned resource generation exceeds local storage",
+        )
+    })?;
+    context
+        .db
+        .upsert_owned_skill_desired(
+            OwnedSkillRecord {
+                resource_id: remote.resource_id.clone(),
+                locator: remote.locator.clone(),
+                owner: remote.owner.clone(),
+                skill_name: remote.name.clone(),
+                resource_generation,
+                desired_revision_id: remote.revision_id.clone(),
+                harness_name: None,
+                materialized_revision_id: None,
+            },
+            now_unix_ms(),
+        )
+        .await
+        .map_err(local_error)?;
+    let already_current = existing.as_ref().is_some_and(|record| {
+        record.materialized_revision_id.as_deref() == Some(remote.revision_id.as_str())
+            && context
+                .paths
+                .skills
+                .join(&remote.owner)
+                .join(&remote.name)
+                .exists()
+    });
+    if already_current {
+        return Ok(0);
+    }
+    if remote.snapshot.size_bytes > context.limits.max_transfer_bytes {
+        return Err(RuntimeError::new(
+            CliErrorCode::ContentVerification,
+            format!(
+                "snapshot for {} exceeds registry transfer limit",
+                remote.locator
+            ),
+        ));
+    }
+    let bytes = context
+        .client
+        .download_snapshot(&remote.snapshot)
+        .await
+        .map_err(client_error)?;
+    let desired = DesiredSkillMaterialization {
+        resource_id: ResourceId::from_str(&remote.resource_id).map_err(local_error)?,
+        owner: remote.owner.clone(),
+        skill_name: remote.name.clone(),
+        revision_id: RevisionId::from_str(&remote.revision_id).map_err(local_error)?,
+        manifest: remote
+            .manifest
+            .to_core()
+            .map_err(|error| RuntimeError::new(CliErrorCode::ContentVerification, error))?,
+    };
+    materialize_skill_snapshot(&context.paths, &context.db, &desired, &bytes)
+        .await
+        .map_err(|error| {
+            RuntimeError::new(CliErrorCode::ContentVerification, error.to_string())
+                .recovery("denju sync")
+        })?;
+    Ok(1)
 }
 
 async fn upsert_desired(db: &LocalDatabase, remote: &SubscribedSkill) -> Result<(), RuntimeError> {
@@ -319,15 +451,17 @@ async fn mutate_subscription(
     Ok(())
 }
 
-struct InstalledContext {
-    paths: LocalPaths,
-    db: LocalDatabase,
-    roots: ResolvedHarnessRoots,
-    client: RegistryClient,
-    max_transfer_bytes: u64,
+pub(crate) struct InstalledContext {
+    pub(crate) paths: LocalPaths,
+    pub(crate) db: LocalDatabase,
+    pub(crate) roots: ResolvedHarnessRoots,
+    pub(crate) client: RegistryClient,
+    pub(crate) limits: RegistryLimits,
 }
 
-async fn installed_context(authenticated: bool) -> Result<InstalledContext, RuntimeError> {
+pub(crate) async fn installed_context(
+    authenticated: bool,
+) -> Result<InstalledContext, RuntimeError> {
     let paths = LocalPaths::discover().map_err(local_error)?;
     if !paths.state_db.is_file() {
         return Err(
@@ -370,7 +504,7 @@ async fn installed_context(authenticated: bool) -> Result<InstalledContext, Runt
         db,
         roots,
         client,
-        max_transfer_bytes: capabilities.limits.max_transfer_bytes,
+        limits: capabilities.limits,
     })
 }
 
@@ -413,7 +547,7 @@ async fn load_active_bearer(
     }
 }
 
-fn client_error(error: ClientError) -> RuntimeError {
+pub(crate) fn client_error(error: ClientError) -> RuntimeError {
     match &error {
         ClientError::Registry(api) if api.code == ApiErrorCode::NotFound => {
             RuntimeError::new(CliErrorCode::NotFound, api.message.clone())
@@ -422,12 +556,15 @@ fn client_error(error: ClientError) -> RuntimeError {
             RuntimeError::new(CliErrorCode::ContentVerification, error.to_string())
                 .recovery("denju sync")
         }
+        ClientError::Registry(api) if api.code == ApiErrorCode::QuotaExceeded => {
+            RuntimeError::new(CliErrorCode::QuotaExceeded, api.message.clone())
+        }
         _ => RuntimeError::new(CliErrorCode::RegistryUnavailable, error.to_string())
             .recovery("denju doctor"),
     }
 }
 
-fn local_error(error: impl std::fmt::Display) -> RuntimeError {
+pub(crate) fn local_error(error: impl std::fmt::Display) -> RuntimeError {
     RuntimeError::new(CliErrorCode::LocalState, error.to_string()).recovery("denju doctor")
 }
 

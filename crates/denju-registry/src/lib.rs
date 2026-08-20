@@ -1,6 +1,7 @@
 //! Registry use cases plus PostgreSQL and S3-compatible persistence boundaries.
 
 mod identity;
+mod ingest;
 
 use std::{str::FromStr, time::Duration};
 
@@ -26,8 +27,9 @@ use url::Url;
 use uuid::Uuid;
 
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
-const EXPECTED_SCHEMA_VERSION: i64 = 3;
+const EXPECTED_SCHEMA_VERSION: i64 = 4;
 const SNAPSHOT_URL_TTL: Duration = Duration::from_secs(5 * 60);
+const STAGING_URL_TTL: Duration = Duration::from_secs(10 * 60);
 
 #[derive(Debug, Clone)]
 pub struct RegistrySettings {
@@ -90,6 +92,70 @@ impl Registry {
             .fetch_one(&self.pool)
             .await?;
         self.objects.head_bucket().await?;
+        Ok(())
+    }
+
+    /// Exercise the generic S3-compatible provider boundary used by Denju. This is a
+    /// deployment/development conformance probe, not a product-data path: it verifies
+    /// presigned staging upload, SDK reads/writes, presigned reads, promotion-style copy
+    /// semantics, and idempotent deletion against the configured provider.
+    pub async fn verify_object_store_provider(&self) -> Result<(), RegistryError> {
+        let payload = b"denju-s3-provider-conformance-v1\n";
+        let payload_hash = BlobId::hash(payload);
+        let run = Uuid::now_v7();
+        let staging_key = format!("conformance/{run}/staging/{payload_hash}");
+        let canonical_key = format!("conformance/{run}/canonical/{payload_hash}");
+
+        let upload_url = self
+            .objects
+            .presign_put(&staging_key, payload.len() as u64)
+            .await?;
+        let upload = reqwest::Client::new()
+            .put(upload_url)
+            .body(payload.to_vec())
+            .send()
+            .await
+            .map_err(|error| RegistryError::ObjectStore(error.to_string()))?;
+        if !upload.status().is_success() {
+            return Err(RegistryError::ObjectStore(format!(
+                "presigned provider upload returned {}",
+                upload.status()
+            )));
+        }
+        let staged = self.objects.get(&staging_key).await?;
+        if staged != payload {
+            return Err(RegistryError::ObjectStore(
+                "provider returned different staged bytes".to_owned(),
+            ));
+        }
+
+        self.objects.put(&canonical_key, &staged).await?;
+        // A retry of the canonical write must remain safe for immutable content.
+        self.objects.put(&canonical_key, &staged).await?;
+        let download_url = self.objects.presign_get(&canonical_key).await?;
+        let downloaded = reqwest::get(download_url)
+            .await
+            .map_err(|error| RegistryError::ObjectStore(error.to_string()))?;
+        if !downloaded.status().is_success() {
+            return Err(RegistryError::ObjectStore(format!(
+                "presigned provider download returned {}",
+                downloaded.status()
+            )));
+        }
+        let downloaded = downloaded
+            .bytes()
+            .await
+            .map_err(|error| RegistryError::ObjectStore(error.to_string()))?;
+        if downloaded.as_ref() != payload {
+            return Err(RegistryError::ObjectStore(
+                "provider returned different canonical bytes".to_owned(),
+            ));
+        }
+
+        self.objects.delete(&staging_key).await?;
+        self.objects.delete(&canonical_key).await?;
+        // S3 DELETE is intentionally idempotent and Denju relies on safe retries.
+        self.objects.delete(&canonical_key).await?;
         Ok(())
     }
 
@@ -729,6 +795,51 @@ impl ObjectStore {
             .await
             .map_err(|error| RegistryError::ObjectStore(error.to_string()))?;
         Ok(())
+    }
+
+    async fn get(&self, key: &str) -> Result<Vec<u8>, RegistryError> {
+        let output = self
+            .client
+            .get_object()
+            .bucket(&self.bucket)
+            .key(key)
+            .send()
+            .await
+            .map_err(|error| RegistryError::ObjectStore(error.to_string()))?;
+        output
+            .body
+            .collect()
+            .await
+            .map(|bytes| bytes.into_bytes().to_vec())
+            .map_err(|error| RegistryError::ObjectStore(error.to_string()))
+    }
+
+    async fn delete(&self, key: &str) -> Result<(), RegistryError> {
+        self.client
+            .delete_object()
+            .bucket(&self.bucket)
+            .key(key)
+            .send()
+            .await
+            .map_err(|error| RegistryError::ObjectStore(error.to_string()))?;
+        Ok(())
+    }
+
+    async fn presign_put(&self, key: &str, size_bytes: u64) -> Result<String, RegistryError> {
+        let config = PresigningConfig::expires_in(STAGING_URL_TTL)
+            .map_err(|error| RegistryError::ObjectStore(error.to_string()))?;
+        let size = i64::try_from(size_bytes)
+            .map_err(|_| RegistryError::ObjectStore("object is too large to upload".to_owned()))?;
+        let request = self
+            .client
+            .put_object()
+            .bucket(&self.bucket)
+            .key(key)
+            .content_length(size)
+            .presigned(config)
+            .await
+            .map_err(|error| RegistryError::ObjectStore(error.to_string()))?;
+        Ok(request.uri().to_string())
     }
 
     async fn presign_get(&self, key: &str) -> Result<String, RegistryError> {

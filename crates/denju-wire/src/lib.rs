@@ -3,6 +3,7 @@
 mod api;
 mod cli;
 mod identity;
+mod ingest;
 mod mutation;
 mod public;
 
@@ -18,9 +19,15 @@ pub use identity::{
     DeviceList, DeviceRevokeRequest, DeviceRevokeResponse, IdentityBackupRequest, IdentityInfo,
     IdentitySessionResponse, LoginRequest, RecoveryResetRequest,
 };
+pub use ingest::{
+    PrivateSkill, PrivateSkillCatalog, PrivateSkillImportCommitRequest,
+    PrivateSkillImportPrepareResponse, PrivateSkillImportRequest, PrivateSkillImportResponse,
+    StagedBlobUpload,
+};
 pub use mutation::{
     IdentityMutationDomain, RequestHash, RequestHashError, SubscriptionMutationKind,
-    create_installation_request_hash, identity_mutation_request_hash, subscription_request_hash,
+    create_installation_request_hash, identity_mutation_request_hash,
+    private_skill_import_request_hash, subscription_request_hash,
 };
 pub use public::{
     PublicSkill, PublicSkillDetail, PublicSkillManifest, PublicSkillManifestEntry,

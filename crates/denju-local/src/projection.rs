@@ -13,8 +13,8 @@ use uuid::Uuid;
 use walkdir::WalkDir;
 
 use crate::{
-    LocalDatabase, LocalDbError, LocalPaths, ResolvedHarnessRoots, SubscriptionRecord,
-    create_native_directory_link, detect_unmanaged_skills,
+    LocalDatabase, LocalDbError, LocalPaths, ManagedSkillRecord, ResolvedHarnessRoots,
+    SubscriptionRecord, create_native_directory_link, detect_unmanaged_skills,
     materialize::{MaterializationError, remove_owned_link},
 };
 
@@ -26,10 +26,10 @@ pub async fn reconcile_harness_projections(
     db: &LocalDatabase,
     roots: &ResolvedHarnessRoots,
 ) -> Result<Vec<(String, String)>, ProjectionError> {
-    let subscriptions = db.subscriptions().await?;
+    let managed_records = db.managed_skills().await?;
     let reserved = unmanaged_names(roots)?;
     let mut managed = Vec::new();
-    for record in &subscriptions {
+    for record in &managed_records {
         if record.materialized_revision_id.is_none() {
             continue;
         }
@@ -45,7 +45,7 @@ pub async fn reconcile_harness_projections(
     // Remove only invocation paths whose desired name changed. Collision transitions are
     // fail-closed: every old canonical invocation is removed before any new aliases appear,
     // while unchanged links remain continuously visible across background sync cycles.
-    for record in &subscriptions {
+    for record in &managed_records {
         let desired = assignments
             .iter()
             .find(|assignment| assignment.resource_id.to_string() == record.resource_id)
@@ -55,14 +55,14 @@ pub async fn reconcile_harness_projections(
             .as_deref()
             .is_some_and(|current| Some(current) != desired)
         {
-            remove_subscription_projection(paths, roots, record)?;
+            remove_managed_projection(paths, roots, &record.owner, record.harness_name.as_deref())?;
         }
     }
 
     let mut projected = Vec::with_capacity(assignments.len());
 
     for assignment in assignments {
-        let record = subscriptions
+        let record = managed_records
             .iter()
             .find(|record| record.resource_id == assignment.resource_id.to_string())
             .ok_or_else(|| {
@@ -88,7 +88,7 @@ pub async fn reconcile_harness_projections(
         create_projection_link(paths, &target, &codex)?;
         let claude = roots.claude_root.join(&assignment.harness_name);
         create_projection_link(paths, &target, &claude)?;
-        db.set_subscription_harness_name(
+        db.set_managed_harness_name(
             record.resource_id.clone(),
             assignment.harness_name.clone(),
             now_unix_ms(),
@@ -104,10 +104,27 @@ pub fn remove_subscription_projection(
     roots: &ResolvedHarnessRoots,
     record: &SubscriptionRecord,
 ) -> Result<(), ProjectionError> {
-    let Some(harness_name) = record.harness_name.as_deref() else {
+    remove_managed_projection(paths, roots, &record.owner, record.harness_name.as_deref())
+}
+
+pub fn remove_managed_skill_projection(
+    paths: &LocalPaths,
+    roots: &ResolvedHarnessRoots,
+    record: &ManagedSkillRecord,
+) -> Result<(), ProjectionError> {
+    remove_managed_projection(paths, roots, &record.owner, record.harness_name.as_deref())
+}
+
+fn remove_managed_projection(
+    paths: &LocalPaths,
+    roots: &ResolvedHarnessRoots,
+    owner: &str,
+    harness_name: Option<&str>,
+) -> Result<(), ProjectionError> {
+    let Some(harness_name) = harness_name else {
         return Ok(());
     };
-    let codex = roots.codex_root.join(&record.owner).join(harness_name);
+    let codex = roots.codex_root.join(owner).join(harness_name);
     remove_managed_projection_link(paths, &codex)?;
     if let Some(owner_dir) = codex.parent() {
         let _ = fs::remove_dir(owner_dir);
@@ -128,7 +145,7 @@ fn unmanaged_names(roots: &ResolvedHarnessRoots) -> Result<BTreeSet<String>, Pro
 
 fn derived_view(
     paths: &LocalPaths,
-    record: &SubscriptionRecord,
+    record: &ManagedSkillRecord,
     canonical: &Path,
     harness_name: &str,
 ) -> Result<PathBuf, ProjectionError> {
@@ -323,7 +340,7 @@ mod tests {
         )
         .await
         .unwrap();
-        db.mark_subscription_materialized(resource_id.to_string(), revision.to_owned(), 2)
+        db.mark_skill_materialized(resource_id.to_string(), revision.to_owned(), 2)
             .await
             .unwrap();
     }

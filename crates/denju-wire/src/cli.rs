@@ -94,6 +94,7 @@ pub enum CliErrorCode {
     CredentialUnavailable,
     ServiceUnavailable,
     NotFound,
+    QuotaExceeded,
     ContentVerification,
     InteractiveRequired,
     ConfirmationRequired,

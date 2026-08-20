@@ -36,6 +36,14 @@ pub(super) enum AuthActor {
     },
 }
 
+#[derive(Debug, Clone)]
+pub(super) struct UserAuthority {
+    pub user_id: Uuid,
+    pub namespace_id: Uuid,
+    pub namespace_slug: String,
+    pub author_principal_id: Uuid,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum IdentityOperationActor {
     Installation(Uuid),
@@ -58,6 +66,51 @@ impl IdentityOperationActor {
 }
 
 impl Registry {
+    pub(super) async fn user_authority(
+        &self,
+        bearer: &str,
+        automation_scope: &str,
+    ) -> Result<UserAuthority, ApiError> {
+        let user_id = match self.authenticate_actor(bearer).await? {
+            AuthActor::Session { user_id, .. } => user_id,
+            AuthActor::Automation { user_id, scopes }
+                if scopes.iter().any(|scope| {
+                    scope == automation_scope || scope == "skills:*" || scope == "*"
+                }) =>
+            {
+                user_id
+            }
+            AuthActor::Automation { .. } => {
+                return Err(ApiError::new(
+                    ApiErrorCode::Unauthorized,
+                    format!("automation credential requires scope {automation_scope}"),
+                ));
+            }
+            AuthActor::Installation { .. } => {
+                return Err(ApiError::new(
+                    ApiErrorCode::Unauthorized,
+                    "a claimed user identity is required",
+                ));
+            }
+        };
+        let row = sqlx::query(
+            "SELECT u.namespace_id,n.slug,u.author_principal_id FROM users u \
+             JOIN namespaces n ON n.id=u.namespace_id \
+             WHERE u.id=$1 AND u.deleted_at IS NULL",
+        )
+        .bind(user_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal_api_error)?
+        .ok_or_else(invalid_credentials)?;
+        Ok(UserAuthority {
+            user_id,
+            namespace_id: row.get(0),
+            namespace_slug: row.get(1),
+            author_principal_id: row.get(2),
+        })
+    }
+
     pub async fn claim_identity(
         &self,
         installation_bearer: &str,

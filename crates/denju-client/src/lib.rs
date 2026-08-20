@@ -8,9 +8,12 @@ use denju_wire::{
     AutomationTokenCreateResponse, AutomationTokenList, AutomationTokenRevokeRequest,
     AutomationTokenRevokeResponse, ClaimIdentityRequest, CreateInstallationRequest,
     CreateInstallationResponse, DeviceList, DeviceRevokeRequest, DeviceRevokeResponse,
-    IdentityBackupRequest, IdentityInfo, IdentitySessionResponse, LoginRequest, PublicSkillDetail,
+    IdentityBackupRequest, IdentityInfo, IdentitySessionResponse, LoginRequest,
+    PrivateSkillCatalog, PrivateSkillImportCommitRequest, PrivateSkillImportPrepareResponse,
+    PrivateSkillImportRequest, PrivateSkillImportResponse, PublicSkillDetail,
     PublicSkillSearchResponse, RecoveryResetRequest, RegistryCapabilities, SnapshotDownload,
-    SubscriptionCatalog, SubscriptionMutationRequest, SubscriptionMutationResponse,
+    StagedBlobUpload, SubscriptionCatalog, SubscriptionMutationRequest,
+    SubscriptionMutationResponse,
 };
 use reqwest::{Client, RequestBuilder, StatusCode};
 use thiserror::Error;
@@ -192,6 +195,62 @@ impl RegistryClient {
             .send()
             .await?;
         decode_response(response).await
+    }
+
+    pub async fn prepare_private_skill_import(
+        &self,
+        request: &PrivateSkillImportRequest,
+    ) -> Result<PrivateSkillImportPrepareResponse, ClientError> {
+        self.authenticated_post_json("v1/private-skills/imports/prepare", request)
+            .await
+    }
+
+    pub async fn commit_private_skill_import(
+        &self,
+        request: &PrivateSkillImportCommitRequest,
+    ) -> Result<PrivateSkillImportResponse, ClientError> {
+        self.authenticated_post_json("v1/private-skills/imports/commit", request)
+            .await
+    }
+
+    pub async fn private_skills(&self) -> Result<PrivateSkillCatalog, ClientError> {
+        self.authenticated_get_json("v1/private-skills").await
+    }
+
+    pub async fn upload_staged_blob(
+        &self,
+        descriptor: &StagedBlobUpload,
+        bytes: &[u8],
+    ) -> Result<(), ClientError> {
+        if u64::try_from(bytes.len()).ok() != Some(descriptor.size_bytes) {
+            return Err(ClientError::ContentMismatch(
+                "staged upload size does not match registry intent".to_owned(),
+            ));
+        }
+        let expected = BlobId::from_str(&descriptor.blob_id)
+            .map_err(|error| ClientError::ContentMismatch(error.to_string()))?;
+        if BlobId::hash(bytes) != expected {
+            return Err(ClientError::ContentMismatch(
+                "staged upload SHA-256 does not match registry intent".to_owned(),
+            ));
+        }
+        let url = Url::parse(&descriptor.url)
+            .map_err(|error| ClientError::InvalidDownloadUrl(error.to_string()))?;
+        if !matches!(url.scheme(), "http" | "https") {
+            return Err(ClientError::InvalidDownloadUrl(url.to_string()));
+        }
+        let response = self
+            .http
+            .put(url)
+            .header(reqwest::header::CONTENT_LENGTH, descriptor.size_bytes)
+            .body(bytes.to_vec())
+            .send()
+            .await?;
+        if response.status().is_success() {
+            Ok(())
+        } else {
+            Err(ClientError::UnexpectedStatus(response.status()))
+        }
     }
 
     pub async fn download_snapshot(

@@ -7,7 +7,8 @@ use tar::{Builder, EntryType, Header, HeaderMode};
 use thiserror::Error;
 
 use crate::{
-    BlobId, SkillEntry, SkillValidationError, TreeEntry, TreeEntryKind, TreeError, TreeId,
+    BlobId, PortableEntry, PortableEntryKind, PortablePathError, PortableTreeError, SkillEntry,
+    SkillValidationError, TreeEntry, TreeEntryKind, TreeError, TreeId, validate_portable_tree,
     validate_skill_directory,
 };
 
@@ -57,6 +58,22 @@ impl OwnedSkillEntry {
 pub struct SkillManifest {
     root_tree: TreeId,
     entries: Vec<SkillManifestEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillManifestTree {
+    id: TreeId,
+    entries: Vec<TreeEntry>,
+}
+
+impl SkillManifestTree {
+    pub const fn id(&self) -> TreeId {
+        self.id
+    }
+
+    pub fn entries(&self) -> &[TreeEntry] {
+        &self.entries
+    }
 }
 
 impl SkillManifest {
@@ -148,7 +165,73 @@ pub fn build_skill_manifest(
         .collect::<Result<Vec<_>, SnapshotError>>()?;
     manifest_entries.sort_by(|left, right| left.path().as_bytes().cmp(right.path().as_bytes()));
 
+    let trees = build_manifest_tree_objects(&manifest_entries)?;
+    let root_tree = trees
+        .iter()
+        .find(|(path, _)| path.is_empty())
+        .map(|(_, tree)| tree.id())
+        .ok_or_else(|| SnapshotError::MissingChildTree("<root>".to_owned()))?;
+    Ok(SkillManifest {
+        root_tree,
+        entries: manifest_entries,
+    })
+}
+
+/// Validate a manifest received without object bytes. This proves the portable path/link
+/// profile and every tree transcript, while byte/frontmatter validation remains the caller's
+/// responsibility once the referenced blobs have been staged and verified.
+pub fn validate_declared_skill_manifest(
+    manifest: &SkillManifest,
+) -> Result<Vec<SkillManifestTree>, SnapshotError> {
+    let portable = manifest
+        .entries()
+        .iter()
+        .map(|entry| match entry {
+            SkillManifestEntry::File {
+                path, executable, ..
+            } => PortableEntry::new(
+                path,
+                PortableEntryKind::File {
+                    executable: *executable,
+                },
+            ),
+            SkillManifestEntry::Directory { path } => {
+                PortableEntry::new(path, PortableEntryKind::Directory)
+            }
+            SkillManifestEntry::Symlink { path, target } => PortableEntry::new(
+                path,
+                PortableEntryKind::Symlink {
+                    target: target.clone(),
+                },
+            ),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    validate_portable_tree(portable)?;
+    if !manifest
+        .entries()
+        .iter()
+        .any(|entry| matches!(entry, SkillManifestEntry::File { path, .. } if path == "SKILL.md"))
+    {
+        return Err(SnapshotError::Skill(SkillValidationError::MissingSkillMd));
+    }
+
+    let trees = build_manifest_tree_objects(manifest.entries())?;
+    let root = trees
+        .iter()
+        .find(|(path, _)| path.is_empty())
+        .map(|(_, tree)| tree.id())
+        .ok_or_else(|| SnapshotError::MissingChildTree("<root>".to_owned()))?;
+    if root != manifest.root_tree() {
+        return Err(SnapshotError::DeclaredRootMismatch);
+    }
+    Ok(trees.into_iter().map(|(_, tree)| tree).collect())
+}
+
+fn build_manifest_tree_objects(
+    manifest_entries: &[SkillManifestEntry],
+) -> Result<Vec<(String, SkillManifestTree)>, SnapshotError> {
     let mut tree_ids = BTreeMap::<String, TreeId>::new();
+    let mut output = Vec::new();
     let mut directories = manifest_entries
         .iter()
         .filter_map(|entry| match entry {
@@ -165,7 +248,7 @@ pub fn build_skill_manifest(
 
     for directory in directories {
         let mut children = Vec::new();
-        for entry in &manifest_entries {
+        for entry in manifest_entries {
             let (parent, name) = split_parent(entry.path());
             if parent != directory {
                 continue;
@@ -188,16 +271,17 @@ pub fn build_skill_manifest(
             };
             children.push(TreeEntry::new(name, kind)?);
         }
-        tree_ids.insert(directory, TreeId::from_entries(&children)?);
+        let id = TreeId::from_entries(&children)?;
+        tree_ids.insert(directory.clone(), id);
+        output.push((
+            directory,
+            SkillManifestTree {
+                id,
+                entries: children,
+            },
+        ));
     }
-
-    let root_tree = *tree_ids
-        .get("")
-        .ok_or_else(|| SnapshotError::MissingChildTree("<root>".to_owned()))?;
-    Ok(SkillManifest {
-        root_tree,
-        entries: manifest_entries,
-    })
+    Ok(output)
 }
 
 pub fn build_deterministic_skill_snapshot(
@@ -337,6 +421,10 @@ pub enum SnapshotError {
     Skill(#[from] SkillValidationError),
     #[error("invalid semantic tree: {0}")]
     Tree(#[from] TreeError),
+    #[error("invalid portable path: {0}")]
+    PortablePath(#[from] PortablePathError),
+    #[error("invalid portable tree: {0}")]
+    PortableTree(#[from] PortableTreeError),
     #[error("snapshot I/O error: {0}")]
     Io(#[from] io::Error),
     #[error("snapshot entry is too large for the current platform")]
@@ -351,6 +439,8 @@ pub enum SnapshotError {
     MissingSymlinkTarget,
     #[error("snapshot bytes do not match the authoritative semantic manifest")]
     ManifestMismatch,
+    #[error("declared manifest root tree does not match its semantic entries")]
+    DeclaredRootMismatch,
 }
 
 #[cfg(test)]
@@ -404,6 +494,26 @@ mod tests {
         assert!(matches!(
             validate_skill_snapshot("review", snapshot.manifest(), corrupt.bytes()),
             Err(SnapshotError::ManifestMismatch)
+        ));
+    }
+
+    #[test]
+    fn declared_manifest_recomputes_tree_identity_without_blob_bytes() {
+        let snapshot = build_deterministic_skill_snapshot("review", &fixture()).unwrap();
+        let trees = validate_declared_skill_manifest(snapshot.manifest()).unwrap();
+        assert!(
+            trees
+                .iter()
+                .any(|tree| tree.id() == snapshot.manifest().root_tree())
+        );
+
+        let changed = SkillManifest::from_declared_parts(
+            TreeId::from_bytes([9; 32]),
+            snapshot.manifest().entries().to_vec(),
+        );
+        assert!(matches!(
+            validate_declared_skill_manifest(&changed),
+            Err(SnapshotError::DeclaredRootMismatch)
         ));
     }
 }

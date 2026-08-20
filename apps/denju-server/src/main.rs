@@ -22,9 +22,11 @@ use denju_wire::{
     AutomationTokenRevokeRequest, AutomationTokenRevokeResponse, ClaimIdentityRequest,
     CreateInstallationRequest, CreateInstallationResponse, DeviceList, DeviceRevokeRequest,
     DeviceRevokeResponse, IdentityBackupRequest, IdentityInfo, IdentitySessionResponse,
-    LoginRequest, PublicSkillDetail, PublicSkillSearchResponse, RecoveryResetRequest,
-    RegistryCapabilities, RegistryLimits, SubscriptionCatalog, SubscriptionMutationKind,
-    SubscriptionMutationRequest, SubscriptionMutationResponse,
+    LoginRequest, PrivateSkillCatalog, PrivateSkillImportCommitRequest,
+    PrivateSkillImportPrepareResponse, PrivateSkillImportRequest, PrivateSkillImportResponse,
+    PublicSkillDetail, PublicSkillSearchResponse, RecoveryResetRequest, RegistryCapabilities,
+    RegistryLimits, SubscriptionCatalog, SubscriptionMutationKind, SubscriptionMutationRequest,
+    SubscriptionMutationResponse,
 };
 use serde::Deserialize;
 use url::Url;
@@ -41,6 +43,8 @@ struct Cli {
 enum Command {
     Serve,
     Migrate,
+    #[command(hide = true)]
+    CheckObjectStore,
     #[command(hide = true)]
     SeedPublic {
         #[arg(long)]
@@ -64,6 +68,7 @@ async fn main() -> ExitCode {
     let result = match cli.command.unwrap_or(Command::Serve) {
         Command::Serve => serve(config).await,
         Command::Migrate => migrate(&config).await,
+        Command::CheckObjectStore => check_object_store(&config).await,
         Command::SeedPublic { owner, path } => seed_public(&config, &owner, &path).await,
     };
     match result {
@@ -73,6 +78,18 @@ async fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+async fn check_object_store(config: &ServerConfig) -> Result<(), String> {
+    let registry = Registry::connect(config.registry_settings())
+        .await
+        .map_err(|error| error.to_string())?;
+    registry
+        .verify_object_store_provider()
+        .await
+        .map_err(|error| error.to_string())?;
+    println!("object-store provider conformance passed");
+    Ok(())
 }
 
 async fn seed_public(config: &ServerConfig, owner: &str, path: &Path) -> Result<(), String> {
@@ -137,6 +154,15 @@ async fn serve(config: ServerConfig) -> Result<(), String> {
         .route("/v1/account/delete", post(delete_account))
         .route("/v1/search", get(search_public_skills))
         .route("/v1/skills/show", get(show_public_skill))
+        .route("/v1/private-skills", get(private_skills))
+        .route(
+            "/v1/private-skills/imports/prepare",
+            post(prepare_private_skill_import),
+        )
+        .route(
+            "/v1/private-skills/imports/commit",
+            post(commit_private_skill_import),
+        )
         .route(
             "/v1/subscriptions",
             get(subscription_catalog).post(subscribe),
@@ -328,6 +354,44 @@ async fn show_public_skill(
         .map_err(ApiResponseError)
 }
 
+async fn private_skills(
+    State(registry): State<Arc<Registry>>,
+    headers: HeaderMap,
+) -> Result<Json<PrivateSkillCatalog>, ApiResponseError> {
+    let bearer = bearer_token(&headers)?;
+    registry
+        .private_skill_catalog(bearer)
+        .await
+        .map(Json)
+        .map_err(ApiResponseError)
+}
+
+async fn prepare_private_skill_import(
+    State(registry): State<Arc<Registry>>,
+    headers: HeaderMap,
+    Json(request): Json<PrivateSkillImportRequest>,
+) -> Result<Json<PrivateSkillImportPrepareResponse>, ApiResponseError> {
+    let bearer = bearer_token(&headers)?;
+    registry
+        .prepare_private_skill_import(bearer, &request)
+        .await
+        .map(Json)
+        .map_err(ApiResponseError)
+}
+
+async fn commit_private_skill_import(
+    State(registry): State<Arc<Registry>>,
+    headers: HeaderMap,
+    Json(request): Json<PrivateSkillImportCommitRequest>,
+) -> Result<Json<PrivateSkillImportResponse>, ApiResponseError> {
+    let bearer = bearer_token(&headers)?;
+    registry
+        .commit_private_skill_import(bearer, &request)
+        .await
+        .map(Json)
+        .map_err(ApiResponseError)
+}
+
 async fn subscribe(
     State(registry): State<Arc<Registry>>,
     headers: HeaderMap,
@@ -422,6 +486,7 @@ impl IntoResponse for ApiResponseError {
             ApiErrorCode::GenerationConflict => StatusCode::CONFLICT,
             ApiErrorCode::Unauthorized => StatusCode::UNAUTHORIZED,
             ApiErrorCode::NotFound => StatusCode::NOT_FOUND,
+            ApiErrorCode::QuotaExceeded => StatusCode::PAYLOAD_TOO_LARGE,
             ApiErrorCode::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
             ApiErrorCode::Internal => StatusCode::INTERNAL_SERVER_ERROR,
         };

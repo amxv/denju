@@ -1,8 +1,9 @@
 mod identity;
+mod owned;
 mod public;
 mod setup;
 
-use std::{ffi::OsString, process::ExitCode};
+use std::{ffi::OsString, path::PathBuf, process::ExitCode};
 
 use clap::{ArgAction, Parser, Subcommand};
 use denju_wire::{
@@ -13,6 +14,7 @@ use identity::{
     AutomationTokenOutcome, BackupOutcome, ClaimOutcome, DeleteOutcome, LoginOutcome,
     RecoveryOutcome,
 };
+use owned::ImportOutcome;
 use public::{SubscribeOutcome, SyncOutcome, UnsubscribeOutcome};
 use serde::Serialize;
 use setup::{DoctorOutcome, Guidance, RuntimeError, SetupOutcome};
@@ -30,6 +32,7 @@ Commands:\n\
   tokens  List, create, or revoke scoped automation credentials\n\
   search  Search public Agent Skills\n\
   show    Show one public skill\n\
+  import  Transfer a local skill into your private Denju workspace\n\
   subscribe   Subscribe to a public skill and materialize it\n\
   unsubscribe Remove a direct skill subscription\n\
   sync    Reconcile subscriptions and harness projections\n\
@@ -90,6 +93,9 @@ enum Command {
     },
     Show {
         locator: String,
+    },
+    Import {
+        path: PathBuf,
     },
     Subscribe {
         locator: String,
@@ -200,6 +206,10 @@ enum ResultPayload {
     Show {
         #[serde(flatten)]
         outcome: PublicSkillDetail,
+    },
+    Import {
+        #[serde(flatten)]
+        outcome: ImportOutcome,
     },
     Subscribe {
         #[serde(flatten)]
@@ -399,6 +409,11 @@ async fn run(args: impl IntoIterator<Item = OsString>) -> ExitCode {
                 exit: ExitCode::SUCCESS,
             })
         }
+        Some(Command::Import { path }) => owned::import(&path).await.map(|outcome| CommandOutput {
+            text: format!("Imported {} as {}", outcome.locator, outcome.harness_name),
+            payload: ResultPayload::Import { outcome },
+            exit: ExitCode::SUCCESS,
+        }),
         Some(Command::Subscribe { locator }) => {
             public::subscribe(&locator)
                 .await
