@@ -1,4 +1,7 @@
-use std::{fs, io, path::PathBuf};
+use std::{
+    fs, io,
+    path::{Path, PathBuf},
+};
 
 use thiserror::Error;
 
@@ -64,7 +67,7 @@ pub fn verify_native_directory_links(paths: &LocalPaths) -> Result<(), LocalPath
     let _ = fs::remove_file(&link);
     let _ = fs::remove_dir_all(&target);
     fs::create_dir_all(&target)?;
-    create_directory_link(&target, &link).map_err(LocalPathError::NativeLinkUnavailable)?;
+    create_native_directory_link(&target, &link).map_err(LocalPathError::NativeLinkUnavailable)?;
     let metadata = fs::symlink_metadata(&link)?;
     let valid_native_link = metadata.file_type().is_symlink() || cfg!(windows) && link.is_dir();
     if !valid_native_link {
@@ -84,12 +87,12 @@ fn cleanup_link_check(target: &PathBuf, link: &PathBuf) {
 }
 
 #[cfg(unix)]
-fn create_directory_link(target: &PathBuf, link: &PathBuf) -> io::Result<()> {
+pub fn create_native_directory_link(target: &Path, link: &Path) -> io::Result<()> {
     std::os::unix::fs::symlink(target, link)
 }
 
 #[cfg(windows)]
-fn create_directory_link(target: &PathBuf, link: &PathBuf) -> io::Result<()> {
+pub fn create_native_directory_link(target: &Path, link: &Path) -> io::Result<()> {
     match std::os::windows::fs::symlink_dir(target, link) {
         Ok(()) => Ok(()),
         Err(symlink_error) => {

@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "skill_name": "review",
+  "entries": [
+    {
+      "kind": "file",
+      "path": "SKILL.md",
+      "utf8": "---\nname: review\ndescription: Alice's deterministic review skill.\nmetadata:\n  source: phase3-live\n---\n# Alice Review\n\nUse Alice's review process.\n",
+      "executable": false
+    },
+    {
+      "kind": "directory",
+      "path": "scripts"
+    },
+    {
+      "kind": "file",
+      "path": "scripts/check.sh",
+      "utf8": "#!/bin/sh\necho alice\n",
+      "executable": true
+    }
+  ],
+  "root_tree_id": "c02894f8842a2c881719e731daa7e1c8df0a5bf9184e592a845c2cb806aa86e6",
+  "snapshot_sha256": "c4ded5bb5af3677a134b0cdc6d115ca69c59caeb6260888e045ac4404f9b7972",
+  "snapshot_size": 244
+}

@@ -52,6 +52,26 @@ CREATE TABLE IF NOT EXISTS work_leases (
 PRAGMA user_version = 1;
 "#;
 
+const MIGRATION_V2: &str = r#"
+CREATE TABLE IF NOT EXISTS subscriptions (
+    resource_id TEXT PRIMARY KEY,
+    locator TEXT NOT NULL UNIQUE,
+    owner TEXT NOT NULL,
+    skill_name TEXT NOT NULL,
+    resource_generation INTEGER NOT NULL,
+    release_version INTEGER NOT NULL,
+    desired_revision_id TEXT NOT NULL,
+    harness_name TEXT,
+    materialized_revision_id TEXT,
+    updated_at_unix_ms INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS subscriptions_skill_name_idx
+    ON subscriptions (skill_name, resource_id);
+
+PRAGMA user_version = 2;
+"#;
+
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;
 
 #[derive(Clone)]
@@ -311,6 +331,233 @@ impl LocalDatabase {
         .await
     }
 
+    pub async fn subscriptions(&self) -> Result<Vec<SubscriptionRecord>, LocalDbError> {
+        self.call(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT resource_id, locator, owner, skill_name, resource_generation, release_version, \
+                        desired_revision_id, harness_name, materialized_revision_id \
+                 FROM subscriptions ORDER BY owner, skill_name, resource_id",
+            )?;
+            let rows = statement.query_map([], |row| {
+                Ok(SubscriptionRecord {
+                    resource_id: row.get(0)?,
+                    locator: row.get(1)?,
+                    owner: row.get(2)?,
+                    skill_name: row.get(3)?,
+                    resource_generation: row.get::<_, i64>(4)?,
+                    release_version: row.get::<_, i64>(5)?,
+                    desired_revision_id: row.get(6)?,
+                    harness_name: row.get(7)?,
+                    materialized_revision_id: row.get(8)?,
+                })
+            })?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(LocalDbError::from)
+        })
+        .await
+    }
+
+    pub async fn subscription(
+        &self,
+        resource_id: String,
+    ) -> Result<Option<SubscriptionRecord>, LocalDbError> {
+        self.call(move |connection| {
+            Ok(connection
+                .query_row(
+                    "SELECT resource_id, locator, owner, skill_name, resource_generation, release_version, \
+                            desired_revision_id, harness_name, materialized_revision_id \
+                     FROM subscriptions WHERE resource_id=?1",
+                    params![resource_id],
+                    |row| {
+                        Ok(SubscriptionRecord {
+                            resource_id: row.get(0)?,
+                            locator: row.get(1)?,
+                            owner: row.get(2)?,
+                            skill_name: row.get(3)?,
+                            resource_generation: row.get(4)?,
+                            release_version: row.get(5)?,
+                            desired_revision_id: row.get(6)?,
+                            harness_name: row.get(7)?,
+                            materialized_revision_id: row.get(8)?,
+                        })
+                    },
+                )
+                .optional()?)
+        })
+        .await
+    }
+
+    pub async fn upsert_subscription_desired(
+        &self,
+        record: SubscriptionRecord,
+        now_unix_ms: i64,
+    ) -> Result<(), LocalDbError> {
+        self.call(move |connection| {
+            connection.execute(
+                "INSERT INTO subscriptions \
+                 (resource_id, locator, owner, skill_name, resource_generation, release_version, desired_revision_id, updated_at_unix_ms) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) \
+                 ON CONFLICT(resource_id) DO UPDATE SET \
+                   locator=excluded.locator, owner=excluded.owner, skill_name=excluded.skill_name, \
+                   resource_generation=excluded.resource_generation, release_version=excluded.release_version, \
+                   desired_revision_id=excluded.desired_revision_id, updated_at_unix_ms=excluded.updated_at_unix_ms",
+                params![
+                    record.resource_id,
+                    record.locator,
+                    record.owner,
+                    record.skill_name,
+                    record.resource_generation,
+                    record.release_version,
+                    record.desired_revision_id,
+                    now_unix_ms,
+                ],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
+    pub async fn mark_subscription_materialized(
+        &self,
+        resource_id: String,
+        revision_id: String,
+        now_unix_ms: i64,
+    ) -> Result<(), LocalDbError> {
+        self.call(move |connection| {
+            let changed = connection.execute(
+                "UPDATE subscriptions SET materialized_revision_id=?1, updated_at_unix_ms=?2 WHERE resource_id=?3",
+                params![revision_id, now_unix_ms, resource_id],
+            )?;
+            if changed != 1 {
+                return Err(rusqlite::Error::QueryReturnedNoRows.into());
+            }
+            Ok(())
+        })
+        .await
+    }
+
+    pub async fn set_subscription_harness_name(
+        &self,
+        resource_id: String,
+        harness_name: String,
+        now_unix_ms: i64,
+    ) -> Result<(), LocalDbError> {
+        self.call(move |connection| {
+            let changed = connection.execute(
+                "UPDATE subscriptions SET harness_name=?1, updated_at_unix_ms=?2 WHERE resource_id=?3",
+                params![harness_name, now_unix_ms, resource_id],
+            )?;
+            if changed != 1 {
+                return Err(rusqlite::Error::QueryReturnedNoRows.into());
+            }
+            Ok(())
+        })
+        .await
+    }
+
+    pub async fn remove_subscription(&self, resource_id: String) -> Result<(), LocalDbError> {
+        self.call(move |connection| {
+            connection.execute(
+                "DELETE FROM subscriptions WHERE resource_id=?1",
+                params![resource_id],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
+    pub async fn materialization_journals(
+        &self,
+    ) -> Result<Vec<MaterializationJournal>, LocalDbError> {
+        self.call(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT operation_id, state, payload_json FROM operation_journal \
+                 WHERE kind='materialize_skill' AND state != 'complete' ORDER BY created_at_unix_ms",
+            )?;
+            let rows = statement.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })?;
+            let mut journals = Vec::new();
+            for row in rows {
+                let (operation_id, state, payload) = row?;
+                journals.push(MaterializationJournal {
+                    operation_id: operation_id.parse().map_err(|error: denju_core::IdError| {
+                        LocalDbError::Corrupt(error.to_string())
+                    })?,
+                    state: state.parse()?,
+                    payload: serde_json::from_str(&payload)?,
+                });
+            }
+            Ok(journals)
+        })
+        .await
+    }
+
+    pub async fn create_materialization_journal(
+        &self,
+        operation_id: OperationId,
+        payload: MaterializationJournalPayload,
+        now_unix_ms: i64,
+    ) -> Result<(), LocalDbError> {
+        let payload = serde_json::to_string(&payload)?;
+        self.call(move |connection| {
+            connection.execute(
+                "INSERT INTO operation_journal \
+                 (operation_id, kind, state, payload_json, created_at_unix_ms, updated_at_unix_ms) \
+                 VALUES (?1, 'materialize_skill', 'planned', ?2, ?3, ?3)",
+                params![operation_id.to_string(), payload, now_unix_ms],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
+    pub async fn update_materialization_journal(
+        &self,
+        operation_id: OperationId,
+        expected: JournalState,
+        next: JournalState,
+        now_unix_ms: i64,
+    ) -> Result<(), LocalDbError> {
+        if expected.next() != Some(next) {
+            return Err(LocalDbError::InvalidJournalTransition { expected, next });
+        }
+        self.call(move |connection| {
+            let changed = connection.execute(
+                "UPDATE operation_journal SET state=?1, updated_at_unix_ms=?2 \
+                 WHERE operation_id=?3 AND kind='materialize_skill' AND state=?4",
+                params![
+                    next.as_str(),
+                    now_unix_ms,
+                    operation_id.to_string(),
+                    expected.as_str()
+                ],
+            )?;
+            if changed != 1 {
+                return Err(rusqlite::Error::QueryReturnedNoRows.into());
+            }
+            Ok(())
+        })
+        .await
+    }
+
+    pub async fn discard_materialization_journal(
+        &self,
+        operation_id: OperationId,
+    ) -> Result<(), LocalDbError> {
+        self.call(move |connection| {
+            connection.execute(
+                "DELETE FROM operation_journal WHERE operation_id=?1 AND kind='materialize_skill' AND state IN ('planned','staged')",
+                params![operation_id.to_string()],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
     pub async fn quick_check(&self) -> Result<(), LocalDbError> {
         self.call(|connection| {
             let result: String =
@@ -388,11 +635,15 @@ fn open_connection(path: &Path) -> Result<Connection, LocalDbError> {
         "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON;",
     )?;
     let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    if version > 1 {
+    if version > 2 {
         return Err(LocalDbError::UnsupportedSchema(version));
     }
     if version == 0 {
         connection.execute_batch(MIGRATION_V1)?;
+    }
+    let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version == 1 {
+        connection.execute_batch(MIGRATION_V2)?;
     }
     Ok(connection)
 }
@@ -418,6 +669,35 @@ pub struct ServiceRecord {
     pub persistent: bool,
     pub running: bool,
     pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubscriptionRecord {
+    pub resource_id: String,
+    pub locator: String,
+    pub owner: String,
+    pub skill_name: String,
+    pub resource_generation: i64,
+    pub release_version: i64,
+    pub desired_revision_id: String,
+    pub harness_name: Option<String>,
+    pub materialized_revision_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MaterializationJournal {
+    pub operation_id: OperationId,
+    pub state: JournalState,
+    pub payload: MaterializationJournalPayload,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MaterializationJournalPayload {
+    pub resource_id: String,
+    pub revision_id: String,
+    pub stage_dir: String,
+    pub generation_dir: String,
+    pub canonical_path: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -50,6 +50,9 @@ pub enum ApiErrorCode {
     InvalidRequest,
     InvalidRequestHash,
     OperationConflict,
+    GenerationConflict,
+    Unauthorized,
+    NotFound,
     Internal,
     Unavailable,
 }

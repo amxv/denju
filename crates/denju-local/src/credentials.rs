@@ -34,6 +34,13 @@ impl InstallCredential {
         hex::encode(Sha256::digest(self.0))
     }
 
+    /// Opaque bearer representation used only at the HTTPS client edge. The credential
+    /// type intentionally has no Debug implementation so this value never appears through
+    /// routine structured logging.
+    pub fn bearer_token(&self) -> String {
+        hex::encode(self.0)
+    }
+
     fn to_hex(&self) -> String {
         hex::encode(self.0)
     }

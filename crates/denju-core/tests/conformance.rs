@@ -1,9 +1,9 @@
 use std::str::FromStr;
 
 use denju_core::{
-    AuthorPrincipalId, BlobId, OperationId, PortableEntry, PortableEntryKind, PortablePath,
-    Revision, RevisionId, SkillEntry, TreeEntry, TreeEntryKind, TreeId, validate_portable_tree,
-    validate_skill_directory,
+    AuthorPrincipalId, BlobId, OperationId, OwnedSkillEntry, PortableEntry, PortableEntryKind,
+    PortablePath, Revision, RevisionId, SkillEntry, TreeEntry, TreeEntryKind, TreeId,
+    build_deterministic_skill_snapshot, validate_portable_tree, validate_skill_directory,
 };
 use serde::Deserialize;
 
@@ -63,6 +63,25 @@ struct PortableFixture {
 struct LinkFixture {
     path: String,
     target: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct SnapshotFixture {
+    version: u32,
+    skill_name: String,
+    entries: Vec<SnapshotEntryFixture>,
+    root_tree_id: String,
+    snapshot_sha256: String,
+    snapshot_size: usize,
+}
+
+#[derive(Debug, Deserialize)]
+struct SnapshotEntryFixture {
+    kind: String,
+    path: String,
+    utf8: Option<String>,
+    executable: Option<bool>,
+    target: Option<String>,
 }
 
 #[test]
@@ -208,6 +227,42 @@ fn checked_agent_skill_fixture_preserves_supported_metadata_and_body() {
             .document()
             .body()
             .ends_with(b"remain unchanged by metadata validation.\n")
+    );
+}
+
+#[test]
+fn checked_snapshot_v1_vector_is_byte_deterministic() {
+    let fixture: SnapshotFixture =
+        serde_json::from_str(include_str!("../../../spec/fixtures/snapshot-v1.json"))
+            .expect("valid checked snapshot fixture");
+    assert_eq!(fixture.version, 1);
+    let entries = fixture
+        .entries
+        .into_iter()
+        .map(|entry| match entry.kind.as_str() {
+            "file" => OwnedSkillEntry::File {
+                path: entry.path,
+                bytes: entry.utf8.expect("file bytes").into_bytes(),
+                executable: entry.executable.expect("file executable bit"),
+            },
+            "directory" => OwnedSkillEntry::Directory { path: entry.path },
+            "symlink" => OwnedSkillEntry::Symlink {
+                path: entry.path,
+                target: entry.target.expect("symlink target"),
+            },
+            other => panic!("unknown checked snapshot entry kind: {other}"),
+        })
+        .collect::<Vec<_>>();
+    let snapshot = build_deterministic_skill_snapshot(&fixture.skill_name, &entries)
+        .expect("checked snapshot builds");
+    assert_eq!(
+        snapshot.manifest().root_tree().to_string(),
+        fixture.root_tree_id
+    );
+    assert_eq!(snapshot.bytes().len(), fixture.snapshot_size);
+    assert_eq!(
+        BlobId::hash(snapshot.bytes()).to_string(),
+        fixture.snapshot_sha256
     );
 }
 

@@ -7,11 +7,14 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+aws-credential-types.workspace = true
+aws-sdk-s3.workspace = true
 denju-core = { path = "../denju-core" }
 denju-wire = { path = "../denju-wire" }
 hex.workspace = true
 reqwest.workspace = true
 serde_json.workspace = true
+serde_yaml.workspace = true
 sha2.workspace = true
 sqlx.workspace = true
 thiserror.workspace = true

@@ -27,7 +27,7 @@ Rust is the primary project. The root Bun workspace exists only for the document
 cargo xtask dev
 ```
 
-## Exercise setup safely
+## Exercise setup and public subscriptions safely
 
 For setup development, use an isolated home and the explicit local registry rather than your real harness roots:
 
@@ -39,7 +39,12 @@ HOME="$TEST_HOME" \
   DENJU_TEST_FILE_CREDENTIALS=1 \
   DENJU_TEST_SERVICE_INSTALL_ONLY=1 \
   cargo run -p denju -- setup --registry http://127.0.0.1:7788
+
+HOME="$TEST_HOME" CODEX_HOME=.codex CLAUDE_CONFIG_DIR=.claude \
+  cargo run -p denju -- search review
 ```
+
+Phase-scoped integration fixtures may seed public releases through the hidden `denju-server seed-public` development command. That command writes the same PostgreSQL/S3 release model read by the public HTTP API; it is not a second in-memory catalog or a user-facing publishing path.
 
 ## Work on the docs
 

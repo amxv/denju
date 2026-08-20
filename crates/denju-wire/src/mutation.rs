@@ -5,6 +5,8 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 const CREATE_INSTALLATION_DOMAIN: &[u8] = b"denju:http:v1:create-installation\0";
+const SUBSCRIBE_DOMAIN: &[u8] = b"denju:http:v1:subscribe\0";
+const UNSUBSCRIBE_DOMAIN: &[u8] = b"denju:http:v1:unsubscribe\0";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct RequestHash([u8; 32]);
@@ -69,6 +71,41 @@ pub fn create_installation_request_hash(
     Ok(RequestHash::from_bytes(hasher.finalize().into()))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubscriptionMutationKind {
+    Subscribe,
+    Unsubscribe,
+}
+
+#[derive(Serialize)]
+struct SubscriptionHashInput<'a> {
+    operation_id: &'a str,
+    resource_id: &'a str,
+    expected_generation: u64,
+}
+
+pub fn subscription_request_hash(
+    kind: SubscriptionMutationKind,
+    operation_id: &str,
+    resource_id: &str,
+    expected_generation: u64,
+) -> Result<RequestHash, RequestHashError> {
+    let payload = SubscriptionHashInput {
+        operation_id,
+        resource_id,
+        expected_generation,
+    };
+    let canonical = serde_json_canonicalizer::to_vec(&payload)
+        .map_err(|error| RequestHashError::Canonicalization(error.to_string()))?;
+    let mut hasher = Sha256::new();
+    hasher.update(match kind {
+        SubscriptionMutationKind::Subscribe => SUBSCRIBE_DOMAIN,
+        SubscriptionMutationKind::Unsubscribe => UNSUBSCRIBE_DOMAIN,
+    });
+    hasher.update(canonical);
+    Ok(RequestHash::from_bytes(hasher.finalize().into()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -82,5 +119,24 @@ mod tests {
         .expect("request hash");
         assert_eq!(hash.to_string().len(), 64);
         assert_eq!(hash.to_string().parse::<RequestHash>().unwrap(), hash);
+    }
+
+    #[test]
+    fn subscription_actions_have_distinct_hash_domains() {
+        let subscribe = subscription_request_hash(
+            SubscriptionMutationKind::Subscribe,
+            "01890f47-6a1c-7cc2-98c1-5f6c1ed8a3a1",
+            "01890f47-6a1d-7ad0-8f43-9a4d8c29f002",
+            7,
+        )
+        .unwrap();
+        let unsubscribe = subscription_request_hash(
+            SubscriptionMutationKind::Unsubscribe,
+            "01890f47-6a1c-7cc2-98c1-5f6c1ed8a3a1",
+            "01890f47-6a1d-7ad0-8f43-9a4d8c29f002",
+            7,
+        )
+        .unwrap();
+        assert_ne!(subscribe, unsubscribe);
     }
 }

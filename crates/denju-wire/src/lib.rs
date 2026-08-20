@@ -3,10 +3,19 @@
 mod api;
 mod cli;
 mod mutation;
+mod public;
 
 pub use api::{
     ApiError, ApiErrorCode, CreateInstallationRequest, CreateInstallationResponse,
     RegistryCapabilities, RegistryLimits,
 };
 pub use cli::{CLI_ENVELOPE_VERSION, CliEnvelope, CliError, CliErrorCode};
-pub use mutation::{RequestHash, RequestHashError, create_installation_request_hash};
+pub use mutation::{
+    RequestHash, RequestHashError, SubscriptionMutationKind, create_installation_request_hash,
+    subscription_request_hash,
+};
+pub use public::{
+    PublicSkill, PublicSkillDetail, PublicSkillManifest, PublicSkillManifestEntry,
+    PublicSkillSearchResponse, SnapshotDownload, SubscribedSkill, SubscriptionCatalog,
+    SubscriptionMutationRequest, SubscriptionMutationResponse,
+};

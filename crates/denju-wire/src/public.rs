@@ -1,0 +1,173 @@
+use std::str::FromStr;
+
+use denju_core::{BlobId, SkillManifest, SkillManifestEntry, TreeId};
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PublicSkill {
+    pub resource_id: String,
+    pub locator: String,
+    pub owner: String,
+    pub name: String,
+    pub description: String,
+    pub generation: u64,
+    pub version: u64,
+    pub revision_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PublicSkillSearchResponse {
+    pub items: Vec<PublicSkill>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PublicSkillDetail {
+    #[serde(flatten)]
+    pub skill: PublicSkill,
+    pub manifest: PublicSkillManifest,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PublicSkillManifest {
+    pub root_tree_id: String,
+    pub entries: Vec<PublicSkillManifestEntry>,
+}
+
+impl PublicSkillManifest {
+    pub fn from_core(manifest: &SkillManifest) -> Self {
+        Self {
+            root_tree_id: manifest.root_tree().to_string(),
+            entries: manifest
+                .entries()
+                .iter()
+                .map(PublicSkillManifestEntry::from_core)
+                .collect(),
+        }
+    }
+
+    pub fn to_core(&self) -> Result<SkillManifest, String> {
+        let root_tree = TreeId::from_str(&self.root_tree_id).map_err(|error| error.to_string())?;
+        let entries = self
+            .entries
+            .iter()
+            .map(PublicSkillManifestEntry::to_core)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(SkillManifest::from_declared_parts(root_tree, entries))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PublicSkillManifestEntry {
+    File {
+        path: String,
+        blob_id: String,
+        size: u64,
+        executable: bool,
+    },
+    Directory {
+        path: String,
+    },
+    Symlink {
+        path: String,
+        target: String,
+    },
+}
+
+impl PublicSkillManifestEntry {
+    fn from_core(entry: &SkillManifestEntry) -> Self {
+        match entry {
+            SkillManifestEntry::File {
+                path,
+                blob,
+                size,
+                executable,
+            } => Self::File {
+                path: path.clone(),
+                blob_id: blob.to_string(),
+                size: *size,
+                executable: *executable,
+            },
+            SkillManifestEntry::Directory { path } => Self::Directory { path: path.clone() },
+            SkillManifestEntry::Symlink { path, target } => Self::Symlink {
+                path: path.clone(),
+                target: target.clone(),
+            },
+        }
+    }
+
+    fn to_core(&self) -> Result<SkillManifestEntry, String> {
+        Ok(match self {
+            Self::File {
+                path,
+                blob_id,
+                size,
+                executable,
+            } => SkillManifestEntry::File {
+                path: path.clone(),
+                blob: BlobId::from_str(blob_id).map_err(|error| error.to_string())?,
+                size: *size,
+                executable: *executable,
+            },
+            Self::Directory { path } => SkillManifestEntry::Directory { path: path.clone() },
+            Self::Symlink { path, target } => SkillManifestEntry::Symlink {
+                path: path.clone(),
+                target: target.clone(),
+            },
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SnapshotDownload {
+    pub sha256: String,
+    pub size_bytes: u64,
+    pub url: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubscribedSkill {
+    pub skill: PublicSkill,
+    pub manifest: PublicSkillManifest,
+    pub snapshot: SnapshotDownload,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubscriptionCatalog {
+    pub skills: Vec<SubscribedSkill>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubscriptionMutationRequest {
+    pub operation_id: String,
+    pub resource_id: String,
+    pub expected_generation: u64,
+    pub request_hash: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubscriptionMutationResponse {
+    pub resource_id: String,
+    pub subscribed: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use denju_core::{OwnedSkillEntry, build_skill_manifest};
+
+    use super::*;
+
+    #[test]
+    fn manifest_wire_round_trip_preserves_semantic_contract() {
+        let entries = vec![OwnedSkillEntry::File {
+            path: "SKILL.md".to_owned(),
+            bytes: b"---\nname: review\ndescription: Reviews code.\n---\n".to_vec(),
+            executable: false,
+        }];
+        let manifest = build_skill_manifest("review", &entries).unwrap();
+        let wire = PublicSkillManifest::from_core(&manifest);
+        assert_eq!(wire.to_core().unwrap(), manifest);
+    }
+}

@@ -93,6 +93,8 @@ pub enum CliErrorCode {
     LocalState,
     CredentialUnavailable,
     ServiceUnavailable,
+    NotFound,
+    ContentVerification,
     Internal,
 }
 

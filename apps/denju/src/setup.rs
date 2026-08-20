@@ -64,7 +64,7 @@ pub struct RuntimeError {
 }
 
 impl RuntimeError {
-    fn new(code: CliErrorCode, message: impl Into<String>) -> Self {
+    pub(crate) fn new(code: CliErrorCode, message: impl Into<String>) -> Self {
         Self {
             code,
             message: message.into(),
@@ -72,7 +72,7 @@ impl RuntimeError {
         }
     }
 
-    fn recovery(mut self, command: impl Into<String>) -> Self {
+    pub(crate) fn recovery(mut self, command: impl Into<String>) -> Self {
         self.recovery = Some(command.into());
         self
     }
@@ -293,6 +293,9 @@ pub async fn daemon() -> Result<ExitCode, RuntimeError> {
         if daemon_once() {
             return Ok(ExitCode::SUCCESS);
         }
+        // Remote synchronization is opportunistic background work. The daemon stays alive
+        // through registry/network outages; the foreground `denju sync` path surfaces them.
+        let _ = crate::public::sync_once().await;
         tokio::select! {
             _ = tokio::signal::ctrl_c() => return Ok(ExitCode::SUCCESS),
             _ = tokio::time::sleep(Duration::from_secs(10)) => {}

@@ -1,9 +1,14 @@
 //! Registry HTTP, SSE, authentication, and object-transfer client boundary.
 
+use std::str::FromStr;
+
+use denju_core::BlobId;
 use denju_wire::{
-    ApiError, CreateInstallationRequest, CreateInstallationResponse, RegistryCapabilities,
+    ApiError, CreateInstallationRequest, CreateInstallationResponse, PublicSkillDetail,
+    PublicSkillSearchResponse, RegistryCapabilities, SnapshotDownload, SubscriptionCatalog,
+    SubscriptionMutationRequest, SubscriptionMutationResponse,
 };
-use reqwest::{Client, StatusCode};
+use reqwest::{Client, RequestBuilder, StatusCode};
 use thiserror::Error;
 use url::Url;
 
@@ -11,6 +16,7 @@ use url::Url;
 pub struct RegistryClient {
     http: Client,
     origin: Url,
+    bearer: Option<String>,
 }
 
 impl RegistryClient {
@@ -21,7 +27,17 @@ impl RegistryClient {
         Ok(Self {
             http: Client::builder().build()?,
             origin,
+            bearer: None,
         })
+    }
+
+    pub fn authenticated(origin: Url, bearer: String) -> Result<Self, ClientError> {
+        let mut client = Self::new(origin)?;
+        if bearer.is_empty() {
+            return Err(ClientError::AuthenticationRequired);
+        }
+        client.bearer = Some(bearer);
+        Ok(client)
     }
 
     pub fn origin(&self) -> &Url {
@@ -45,6 +61,86 @@ impl RegistryClient {
         decode_response(response).await
     }
 
+    pub async fn search_public_skills(
+        &self,
+        query: &str,
+        limit: u32,
+        cursor: Option<&str>,
+    ) -> Result<PublicSkillSearchResponse, ClientError> {
+        let mut request = self
+            .http
+            .get(self.endpoint("v1/search")?)
+            .query(&[("q", query), ("limit", &limit.to_string())]);
+        if let Some(cursor) = cursor {
+            request = request.query(&[("cursor", cursor)]);
+        }
+        decode_response(request.send().await?).await
+    }
+
+    pub async fn show_public_skill(&self, locator: &str) -> Result<PublicSkillDetail, ClientError> {
+        let response = self
+            .http
+            .get(self.endpoint("v1/skills/show")?)
+            .query(&[("locator", locator)])
+            .send()
+            .await?;
+        decode_response(response).await
+    }
+
+    pub async fn subscribe(
+        &self,
+        request: &SubscriptionMutationRequest,
+    ) -> Result<SubscriptionMutationResponse, ClientError> {
+        self.subscription_mutation("v1/subscriptions", request)
+            .await
+    }
+
+    pub async fn unsubscribe(
+        &self,
+        request: &SubscriptionMutationRequest,
+    ) -> Result<SubscriptionMutationResponse, ClientError> {
+        self.subscription_mutation("v1/subscriptions/remove", request)
+            .await
+    }
+
+    pub async fn subscriptions(&self) -> Result<SubscriptionCatalog, ClientError> {
+        let response = self
+            .with_auth(self.http.get(self.endpoint("v1/subscriptions")?))?
+            .send()
+            .await?;
+        decode_response(response).await
+    }
+
+    pub async fn download_snapshot(
+        &self,
+        descriptor: &SnapshotDownload,
+    ) -> Result<Vec<u8>, ClientError> {
+        let url = Url::parse(&descriptor.url)
+            .map_err(|error| ClientError::InvalidDownloadUrl(error.to_string()))?;
+        if !matches!(url.scheme(), "http" | "https") {
+            return Err(ClientError::InvalidDownloadUrl(url.to_string()));
+        }
+        let response = self.http.get(url).send().await?;
+        let status = response.status();
+        if !status.is_success() {
+            return Err(ClientError::UnexpectedStatus(status));
+        }
+        let bytes = response.bytes().await?.to_vec();
+        if u64::try_from(bytes.len()).ok() != Some(descriptor.size_bytes) {
+            return Err(ClientError::ContentMismatch(
+                "snapshot size does not match registry metadata".to_owned(),
+            ));
+        }
+        let expected = BlobId::from_str(&descriptor.sha256)
+            .map_err(|error| ClientError::ContentMismatch(error.to_string()))?;
+        if BlobId::hash(&bytes) != expected {
+            return Err(ClientError::ContentMismatch(
+                "snapshot SHA-256 does not match registry metadata".to_owned(),
+            ));
+        }
+        Ok(bytes)
+    }
+
     pub async fn ready(&self) -> Result<(), ClientError> {
         let response = self.http.get(self.endpoint("health/ready")?).send().await?;
         if response.status().is_success() {
@@ -63,6 +159,24 @@ impl RegistryClient {
     {
         let response = self.http.get(self.endpoint(path)?).send().await?;
         decode_response(response).await
+    }
+
+    async fn subscription_mutation(
+        &self,
+        path: &str,
+        request: &SubscriptionMutationRequest,
+    ) -> Result<SubscriptionMutationResponse, ClientError> {
+        let builder = self.http.post(self.endpoint(path)?).json(request);
+        let response = self.with_auth(builder)?.send().await?;
+        decode_response(response).await
+    }
+
+    fn with_auth(&self, builder: RequestBuilder) -> Result<RequestBuilder, ClientError> {
+        let bearer = self
+            .bearer
+            .as_deref()
+            .ok_or(ClientError::AuthenticationRequired)?;
+        Ok(builder.bearer_auth(bearer))
     }
 
     fn endpoint(&self, path: &str) -> Result<Url, ClientError> {
@@ -106,4 +220,10 @@ pub enum ClientError {
     Unavailable(String),
     #[error("registry returned unexpected HTTP status {0}")]
     UnexpectedStatus(StatusCode),
+    #[error("installation authentication is required for this registry operation")]
+    AuthenticationRequired,
+    #[error("invalid snapshot download URL: {0}")]
+    InvalidDownloadUrl(String),
+    #[error("downloaded content failed verification: {0}")]
+    ContentMismatch(String),
 }

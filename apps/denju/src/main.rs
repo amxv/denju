@@ -1,9 +1,12 @@
+mod public;
 mod setup;
 
 use std::{ffi::OsString, process::ExitCode};
 
 use clap::{ArgAction, Parser, Subcommand};
 use denju_wire::{CliEnvelope, CliError, CliErrorCode};
+use denju_wire::{PublicSkillDetail, PublicSkillSearchResponse};
+use public::{SubscribeOutcome, SyncOutcome, UnsubscribeOutcome};
 use serde::Serialize;
 use setup::{DoctorOutcome, Guidance, RuntimeError, SetupOutcome};
 
@@ -13,6 +16,11 @@ Usage: denju [OPTIONS] [COMMAND]\n\
 \n\
 Commands:\n\
   setup   Set up this machine without creating an account\n\
+  search  Search public Agent Skills\n\
+  show    Show one public skill\n\
+  subscribe   Subscribe to a public skill and materialize it\n\
+  unsubscribe Remove a direct skill subscription\n\
+  sync    Reconcile subscriptions and harness projections\n\
   doctor  Check and repair the local Denju installation\n\
 \n\
 Options:\n\
@@ -47,6 +55,19 @@ enum Command {
         #[arg(long, value_name = "URL")]
         registry: Option<String>,
     },
+    Search {
+        query: String,
+    },
+    Show {
+        locator: String,
+    },
+    Subscribe {
+        locator: String,
+    },
+    Unsubscribe {
+        locator: String,
+    },
+    Sync,
     Doctor,
     #[command(hide = true)]
     Daemon,
@@ -67,6 +88,26 @@ enum ResultPayload {
     Doctor {
         #[serde(flatten)]
         outcome: DoctorOutcome,
+    },
+    Search {
+        #[serde(flatten)]
+        outcome: PublicSkillSearchResponse,
+    },
+    Show {
+        #[serde(flatten)]
+        outcome: PublicSkillDetail,
+    },
+    Subscribe {
+        #[serde(flatten)]
+        outcome: SubscribeOutcome,
+    },
+    Unsubscribe {
+        #[serde(flatten)]
+        outcome: UnsubscribeOutcome,
+    },
+    Sync {
+        #[serde(flatten)]
+        outcome: SyncOutcome,
     },
     Version {
         version: &'static str,
@@ -125,6 +166,46 @@ async fn run(args: impl IntoIterator<Item = OsString>) -> ExitCode {
                 exit: ExitCode::SUCCESS,
             })
         }
+        Some(Command::Search { query }) => {
+            public::search(&query).await.map(|outcome| CommandOutput {
+                text: search_text(&outcome),
+                payload: ResultPayload::Search { outcome },
+                exit: ExitCode::SUCCESS,
+            })
+        }
+        Some(Command::Show { locator }) => {
+            public::show(&locator).await.map(|outcome| CommandOutput {
+                text: show_text(&outcome),
+                payload: ResultPayload::Show { outcome },
+                exit: ExitCode::SUCCESS,
+            })
+        }
+        Some(Command::Subscribe { locator }) => {
+            public::subscribe(&locator)
+                .await
+                .map(|outcome| CommandOutput {
+                    text: format!(
+                        "Subscribed {} as {}",
+                        outcome.skill.locator, outcome.harness_name
+                    ),
+                    payload: ResultPayload::Subscribe { outcome },
+                    exit: ExitCode::SUCCESS,
+                })
+        }
+        Some(Command::Unsubscribe { locator }) => {
+            public::unsubscribe(&locator)
+                .await
+                .map(|outcome| CommandOutput {
+                    text: format!("Unsubscribed {}", outcome.locator),
+                    payload: ResultPayload::Unsubscribe { outcome },
+                    exit: ExitCode::SUCCESS,
+                })
+        }
+        Some(Command::Sync) => public::sync_once().await.map(|outcome| CommandOutput {
+            text: sync_text(&outcome),
+            payload: ResultPayload::Sync { outcome },
+            exit: ExitCode::SUCCESS,
+        }),
         Some(Command::Doctor) => setup::doctor().await.map(|outcome| {
             let exit = if outcome.healthy {
                 ExitCode::SUCCESS
@@ -219,6 +300,35 @@ fn doctor_text(outcome: &DoctorOutcome) -> String {
     lines.extend(outcome.issues.iter().map(|item| format!("Issue: {item}")));
     lines.push(format!("Registry: {}", outcome.registry));
     lines.join("\n")
+}
+
+fn search_text(outcome: &PublicSkillSearchResponse) -> String {
+    if outcome.items.is_empty() {
+        return "No public skills found.".to_owned();
+    }
+    outcome
+        .items
+        .iter()
+        .map(|skill| format!("{}  {}", skill.locator, skill.description))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn show_text(outcome: &PublicSkillDetail) -> String {
+    format!(
+        "{}\n{}\nRelease: v{} ({})",
+        outcome.skill.locator,
+        outcome.skill.description,
+        outcome.skill.version,
+        outcome.skill.revision_id
+    )
+}
+
+fn sync_text(outcome: &SyncOutcome) -> String {
+    format!(
+        "Synced {} skills ({} materialized, {} removed).",
+        outcome.desired, outcome.materialized, outcome.removed
+    )
 }
 
 fn quote_command_arg(value: &str) -> String {

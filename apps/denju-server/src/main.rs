@@ -1,19 +1,30 @@
-use std::{net::SocketAddr, process::ExitCode, sync::Arc};
+use std::{
+    fs,
+    net::SocketAddr,
+    path::{Path, PathBuf},
+    process::ExitCode,
+    sync::Arc,
+};
 
 use axum::{
     Json, Router,
-    extract::State,
-    http::StatusCode,
+    extract::{Query, State},
+    http::{HeaderMap, StatusCode, header::AUTHORIZATION},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
 use clap::{Parser, Subcommand};
+use denju_core::{OwnedSkillEntry, build_deterministic_skill_snapshot};
 use denju_registry::{Registry, RegistrySettings};
 use denju_wire::{
     ApiError, ApiErrorCode, CreateInstallationRequest, CreateInstallationResponse,
-    RegistryCapabilities, RegistryLimits,
+    PublicSkillDetail, PublicSkillSearchResponse, RegistryCapabilities, RegistryLimits,
+    SubscriptionCatalog, SubscriptionMutationKind, SubscriptionMutationRequest,
+    SubscriptionMutationResponse,
 };
+use serde::Deserialize;
 use url::Url;
+use walkdir::WalkDir;
 
 #[derive(Debug, Parser)]
 #[command(name = "denju-server", version = build_version())]
@@ -26,6 +37,13 @@ struct Cli {
 enum Command {
     Serve,
     Migrate,
+    #[command(hide = true)]
+    SeedPublic {
+        #[arg(long)]
+        owner: String,
+        #[arg(long)]
+        path: PathBuf,
+    },
 }
 
 #[tokio::main]
@@ -42,6 +60,7 @@ async fn main() -> ExitCode {
     let result = match cli.command.unwrap_or(Command::Serve) {
         Command::Serve => serve(config).await,
         Command::Migrate => migrate(&config).await,
+        Command::SeedPublic { owner, path } => seed_public(&config, &owner, &path).await,
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -50,6 +69,29 @@ async fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+async fn seed_public(config: &ServerConfig, owner: &str, path: &Path) -> Result<(), String> {
+    let registry = Registry::connect(config.registry_settings())
+        .await
+        .map_err(|error| error.to_string())?;
+    registry
+        .validate_schema()
+        .await
+        .map_err(|error| error.to_string())?;
+    let entries = read_skill_directory(path)?;
+    let directory_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "seed path must end in a UTF-8 skill directory name".to_owned())?;
+    let snapshot = build_deterministic_skill_snapshot(directory_name, &entries)
+        .map_err(|error| error.to_string())?;
+    let seeded = registry
+        .seed_public_skill(owner, &snapshot, &entries)
+        .await
+        .map_err(|error| error.to_string())?;
+    println!("{}", seeded.skill.locator);
+    Ok(())
 }
 
 async fn migrate(config: &ServerConfig) -> Result<(), String> {
@@ -76,6 +118,13 @@ async fn serve(config: ServerConfig) -> Result<(), String> {
         .route("/health/ready", get(health_ready))
         .route("/v1/capabilities", get(capabilities))
         .route("/v1/installations", post(create_installation))
+        .route("/v1/search", get(search_public_skills))
+        .route("/v1/skills/show", get(show_public_skill))
+        .route(
+            "/v1/subscriptions",
+            get(subscription_catalog).post(subscribe),
+        )
+        .route("/v1/subscriptions/remove", post(unsubscribe))
         .with_state(registry);
     let listener = tokio::net::TcpListener::bind(config.bind)
         .await
@@ -85,6 +134,93 @@ async fn serve(config: ServerConfig) -> Result<(), String> {
         .with_graceful_shutdown(shutdown_signal())
         .await
         .map_err(|error| error.to_string())
+}
+
+#[derive(Debug, Deserialize)]
+struct SearchQuery {
+    #[serde(default)]
+    q: String,
+    limit: Option<u32>,
+    cursor: Option<String>,
+}
+
+async fn search_public_skills(
+    State(registry): State<Arc<Registry>>,
+    Query(query): Query<SearchQuery>,
+) -> Result<Json<PublicSkillSearchResponse>, ApiResponseError> {
+    registry
+        .search_public_skills(&query.q, query.limit.unwrap_or(20), query.cursor.as_deref())
+        .await
+        .map(Json)
+        .map_err(ApiResponseError)
+}
+
+#[derive(Debug, Deserialize)]
+struct ShowQuery {
+    locator: String,
+}
+
+async fn show_public_skill(
+    State(registry): State<Arc<Registry>>,
+    Query(query): Query<ShowQuery>,
+) -> Result<Json<PublicSkillDetail>, ApiResponseError> {
+    registry
+        .show_public_skill(&query.locator)
+        .await
+        .map(Json)
+        .map_err(ApiResponseError)
+}
+
+async fn subscribe(
+    State(registry): State<Arc<Registry>>,
+    headers: HeaderMap,
+    Json(request): Json<SubscriptionMutationRequest>,
+) -> Result<Json<SubscriptionMutationResponse>, ApiResponseError> {
+    let bearer = bearer_token(&headers)?;
+    registry
+        .mutate_subscription(bearer, SubscriptionMutationKind::Subscribe, &request)
+        .await
+        .map(Json)
+        .map_err(ApiResponseError)
+}
+
+async fn unsubscribe(
+    State(registry): State<Arc<Registry>>,
+    headers: HeaderMap,
+    Json(request): Json<SubscriptionMutationRequest>,
+) -> Result<Json<SubscriptionMutationResponse>, ApiResponseError> {
+    let bearer = bearer_token(&headers)?;
+    registry
+        .mutate_subscription(bearer, SubscriptionMutationKind::Unsubscribe, &request)
+        .await
+        .map(Json)
+        .map_err(ApiResponseError)
+}
+
+async fn subscription_catalog(
+    State(registry): State<Arc<Registry>>,
+    headers: HeaderMap,
+) -> Result<Json<SubscriptionCatalog>, ApiResponseError> {
+    let bearer = bearer_token(&headers)?;
+    registry
+        .subscription_catalog(bearer)
+        .await
+        .map(Json)
+        .map_err(ApiResponseError)
+}
+
+fn bearer_token(headers: &HeaderMap) -> Result<&str, ApiResponseError> {
+    headers
+        .get(AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            ApiResponseError(ApiError::new(
+                ApiErrorCode::Unauthorized,
+                "installation credential required",
+            ))
+        })
 }
 
 async fn health_live() -> StatusCode {
@@ -126,6 +262,9 @@ impl IntoResponse for ApiResponseError {
                 StatusCode::BAD_REQUEST
             }
             ApiErrorCode::OperationConflict => StatusCode::CONFLICT,
+            ApiErrorCode::GenerationConflict => StatusCode::CONFLICT,
+            ApiErrorCode::Unauthorized => StatusCode::UNAUTHORIZED,
+            ApiErrorCode::NotFound => StatusCode::NOT_FOUND,
             ApiErrorCode::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
             ApiErrorCode::Internal => StatusCode::INTERNAL_SERVER_ERROR,
         };
@@ -149,7 +288,7 @@ struct ServerConfig {
 
 impl ServerConfig {
     fn from_env() -> Result<Self, String> {
-        let bind = env_or("DENJU_BIND", "127.0.0.1:7788")
+        let bind = bind_address()
             .parse()
             .map_err(|error| format!("invalid DENJU_BIND: {error}"))?;
         let public_origin = parse_http_url("DENJU_PUBLIC_URL", &required_env("DENJU_PUBLIC_URL")?)?;
@@ -189,19 +328,15 @@ impl ServerConfig {
     }
 
     fn registry_settings(&self) -> RegistrySettings {
-        // S3 credentials are deliberately validated here but are not passed into the
-        // registry domain until Phase 5 introduces object transfers.
-        let _ = (
-            &self.s3_bucket,
-            &self.s3_region,
-            &self.s3_access_key_id,
-            &self.s3_secret_access_key,
-            self.s3_force_path_style,
-        );
         RegistrySettings {
             database_url: self.database_url.clone(),
             public_origin: self.public_origin.clone(),
             object_store_endpoint: self.s3_endpoint.clone(),
+            object_store_bucket: self.s3_bucket.clone(),
+            object_store_region: self.s3_region.clone(),
+            object_store_access_key_id: self.s3_access_key_id.clone(),
+            object_store_secret_access_key: self.s3_secret_access_key.clone(),
+            object_store_force_path_style: self.s3_force_path_style,
             limits: self.limits.clone(),
         }
     }
@@ -228,6 +363,67 @@ fn required_env(name: &str) -> Result<String, String> {
 
 fn env_or(name: &str, default: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| default.to_owned())
+}
+
+fn bind_address() -> String {
+    if let Ok(bind) = std::env::var("DENJU_BIND") {
+        return bind;
+    }
+    if let Ok(port) = std::env::var("PORT") {
+        return format!("0.0.0.0:{port}");
+    }
+    "127.0.0.1:7788".to_owned()
+}
+
+fn read_skill_directory(root: &Path) -> Result<Vec<OwnedSkillEntry>, String> {
+    if !root.is_dir() {
+        return Err(format!("seed path is not a directory: {}", root.display()));
+    }
+    let mut entries = Vec::new();
+    for item in WalkDir::new(root).follow_links(false).min_depth(1) {
+        let item = item.map_err(|error| error.to_string())?;
+        let relative = item
+            .path()
+            .strip_prefix(root)
+            .map_err(|error| error.to_string())?;
+        let path = relative
+            .to_str()
+            .ok_or_else(|| "seed skill contains a non-UTF-8 path".to_owned())?
+            .replace('\\', "/");
+        let file_type = item.file_type();
+        if file_type.is_symlink() {
+            let target = fs::read_link(item.path()).map_err(|error| error.to_string())?;
+            let target = target
+                .to_str()
+                .ok_or_else(|| "seed skill contains a non-UTF-8 symlink target".to_owned())?
+                .replace('\\', "/");
+            entries.push(OwnedSkillEntry::Symlink { path, target });
+        } else if file_type.is_dir() {
+            entries.push(OwnedSkillEntry::Directory { path });
+        } else if file_type.is_file() {
+            let bytes = fs::read(item.path()).map_err(|error| error.to_string())?;
+            #[cfg(unix)]
+            let executable = {
+                use std::os::unix::fs::PermissionsExt;
+                item.metadata()
+                    .map_err(|error| error.to_string())?
+                    .permissions()
+                    .mode()
+                    & 0o111
+                    != 0
+            };
+            #[cfg(not(unix))]
+            let executable = false;
+            entries.push(OwnedSkillEntry::File {
+                path,
+                bytes,
+                executable,
+            });
+        } else {
+            return Err(format!("unsupported seed entry: {}", item.path().display()));
+        }
+    }
+    Ok(entries)
 }
 
 fn env_u64(name: &str, default: u64) -> Result<u64, String> {

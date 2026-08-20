@@ -160,6 +160,36 @@ pub fn parse_skill_document(
     })
 }
 
+/// Build the explicit collision-derived SKILL.md view. The canonical document is
+/// validated first, all YAML fields are retained, and only the Agent Skills name is
+/// changed; the Markdown body bytes remain byte-identical.
+pub fn rewrite_skill_document_name(
+    canonical_parent_name: &str,
+    bytes: &[u8],
+    projected_name: &str,
+) -> Result<Vec<u8>, SkillValidationError> {
+    let document = parse_skill_document(canonical_parent_name, bytes)?;
+    validate_skill_name(projected_name)?;
+    let source = std::str::from_utf8(bytes).map_err(|_| SkillValidationError::SkillMdNotUtf8)?;
+    let (frontmatter_source, body_offset) = split_frontmatter(source)?;
+    let mut value: Value = serde_yaml::from_str(frontmatter_source)
+        .map_err(|error| SkillValidationError::InvalidFrontmatter(error.to_string()))?;
+    let mapping = value
+        .as_mapping_mut()
+        .ok_or(SkillValidationError::FrontmatterMustBeMapping)?;
+    mapping.insert(
+        mapping_key("name"),
+        Value::String(projected_name.to_owned()),
+    );
+    let rendered = serde_yaml::to_string(&value)
+        .map_err(|error| SkillValidationError::InvalidFrontmatter(error.to_string()))?;
+    let mut output = format!("---\n{rendered}---\n").into_bytes();
+    output.extend_from_slice(document.body());
+    debug_assert_eq!(document.body(), &bytes[body_offset..]);
+    parse_skill_document(projected_name, &output)?;
+    Ok(output)
+}
+
 pub fn validate_skill_directory(
     parent_directory_name: &str,
     entries: &[SkillEntry<'_>],
@@ -448,5 +478,23 @@ mod tests {
         let validated = validate_skill_directory("code-review", &entries).expect("valid skill");
         assert_eq!(validated.portable_tree().entries().len(), 4);
         assert_eq!(validated.document().body(), b"# Review\n");
+    }
+
+    #[test]
+    fn derived_name_rewrite_preserves_body_and_metadata() {
+        let source = b"---\nname: review\ndescription: Reviews code.\nmetadata:\n  custom: retained\nallowed-tools: Read\n---\n# Body\r\nKeep exact.\r\n";
+        let rewritten = rewrite_skill_document_name("review", source, "denju-alice-review-a1b2c3")
+            .expect("derived view");
+        let parsed = parse_skill_document("denju-alice-review-a1b2c3", &rewritten).unwrap();
+        assert_eq!(parsed.body(), b"# Body\r\nKeep exact.\r\n");
+        assert_eq!(
+            parsed
+                .frontmatter()
+                .metadata()
+                .get("custom")
+                .map(String::as_str),
+            Some("retained")
+        );
+        assert_eq!(parsed.frontmatter().allowed_tools(), Some("Read"));
     }
 }
