@@ -160,6 +160,22 @@ pub fn parse_skill_document(
     })
 }
 
+/// Read the declared Agent Skills name without assuming the current package locator.
+/// Ordinary validation still uses `parse_skill_document`; this narrower helper exists so
+/// local reconciliation can distinguish an explicit pending rename from malformed content.
+pub fn skill_document_declared_name(bytes: &[u8]) -> Result<String, SkillValidationError> {
+    let source = std::str::from_utf8(bytes).map_err(|_| SkillValidationError::SkillMdNotUtf8)?;
+    let (frontmatter_source, _) = split_frontmatter(source)?;
+    let value: Value = serde_yaml::from_str(frontmatter_source)
+        .map_err(|error| SkillValidationError::InvalidFrontmatter(error.to_string()))?;
+    let mapping = value
+        .as_mapping()
+        .ok_or(SkillValidationError::FrontmatterMustBeMapping)?;
+    let name = required_string(mapping, "name")?;
+    validate_skill_name(&name)?;
+    Ok(name)
+}
+
 /// Build the explicit collision-derived SKILL.md view. The canonical document is
 /// validated first, all YAML fields are retained, and only the Agent Skills name is
 /// changed; the Markdown body bytes remain byte-identical.
@@ -451,6 +467,19 @@ mod tests {
             b"---\nname: code-review\ndescription: Reviews code.\nmetadata:\n  attempts: 2\n---\n",
         );
         assert_eq!(invalid, Err(SkillValidationError::InvalidMetadata));
+    }
+
+    #[test]
+    fn declared_name_is_available_for_pending_rename_detection() {
+        let source = b"---\nname: renamed-skill\ndescription: A pending rename.\n---\n# Body\n";
+        assert_eq!(
+            skill_document_declared_name(source).unwrap(),
+            "renamed-skill"
+        );
+        assert!(matches!(
+            parse_skill_document("old-name", source),
+            Err(SkillValidationError::NameDoesNotMatchDirectory { .. })
+        ));
     }
 
     #[test]

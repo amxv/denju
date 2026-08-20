@@ -209,7 +209,7 @@ pub fn remove_canonical_skill(
     Ok(())
 }
 
-fn write_generation(
+pub(crate) fn write_generation(
     paths: &LocalPaths,
     root: &Path,
     entries: &[OwnedSkillEntry],
@@ -354,7 +354,7 @@ fn read_generation(root: &Path) -> Result<Vec<OwnedSkillEntry>, MaterializationE
     Ok(entries)
 }
 
-fn atomic_switch_directory_link(
+pub(crate) fn atomic_switch_directory_link(
     target: &Path,
     link: &Path,
     operation_id: OperationId,

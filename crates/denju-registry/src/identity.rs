@@ -229,6 +229,7 @@ impl Registry {
         let outcome = IdentitySessionResponse {
             user_id: user_id.to_string(),
             namespace_id: namespace_id.to_string(),
+            author_principal_id: user_author_id.to_string(),
             username: format!("@{username}"),
             session_id: session_id.to_string(),
         };
@@ -282,7 +283,7 @@ impl Registry {
         let installation_id = self.authenticate_installation(installation_bearer).await?;
         let mut tx = self.pool.begin().await.map_err(internal_api_error)?;
         let row = sqlx::query(
-            "SELECT u.id,u.namespace_id,u.password_hash FROM users u \
+            "SELECT u.id,u.namespace_id,u.password_hash,u.author_principal_id FROM users u \
              JOIN namespaces n ON n.id=u.namespace_id WHERE n.slug=$1 AND u.deleted_at IS NULL FOR UPDATE",
         )
         .bind(&username)
@@ -293,6 +294,7 @@ impl Registry {
         let user_id: Uuid = row.get(0);
         let namespace_id: Uuid = row.get(1);
         let password_hash: String = row.get(2);
+        let user_author_id: Uuid = row.get(3);
         verify_password(&request.password, &password_hash)?;
         link_installation_to_user(&mut tx, installation_id, user_id).await?;
         let installation_author = sqlx::query_scalar::<_, Uuid>(
@@ -325,6 +327,7 @@ impl Registry {
         let outcome = IdentitySessionResponse {
             user_id: user_id.to_string(),
             namespace_id: namespace_id.to_string(),
+            author_principal_id: user_author_id.to_string(),
             username: format!("@{username}"),
             session_id: session_id.to_string(),
         };
@@ -391,7 +394,7 @@ impl Registry {
         let new_password_hash = hash_password(&request.new_password)?;
         let mut tx = self.pool.begin().await.map_err(internal_api_error)?;
         let row = sqlx::query(
-            "SELECT u.id,u.namespace_id,u.recovery_secret_hash FROM users u \
+            "SELECT u.id,u.namespace_id,u.recovery_secret_hash,u.author_principal_id FROM users u \
              JOIN namespaces n ON n.id=u.namespace_id WHERE n.slug=$1 AND u.deleted_at IS NULL FOR UPDATE",
         )
         .bind(&username)
@@ -402,6 +405,7 @@ impl Registry {
         let user_id: Uuid = row.get(0);
         let namespace_id: Uuid = row.get(1);
         let stored_recovery: Vec<u8> = row.get(2);
+        let user_author_id: Uuid = row.get(3);
         if stored_recovery.as_slice() != supplied_recovery_hash {
             return Err(invalid_credentials());
         }
@@ -429,6 +433,7 @@ impl Registry {
         let outcome = IdentitySessionResponse {
             user_id: user_id.to_string(),
             namespace_id: namespace_id.to_string(),
+            author_principal_id: user_author_id.to_string(),
             username: format!("@{username}"),
             session_id: session_id.to_string(),
         };
@@ -1024,7 +1029,7 @@ impl Registry {
 
     async fn identity_info(&self, user_id: Uuid) -> Result<IdentityInfo, ApiError> {
         let row = sqlx::query(
-            "SELECT u.namespace_id,n.slug FROM users u JOIN namespaces n ON n.id=u.namespace_id \
+            "SELECT u.namespace_id,n.slug,u.author_principal_id FROM users u JOIN namespaces n ON n.id=u.namespace_id \
              WHERE u.id=$1 AND u.deleted_at IS NULL",
         )
         .bind(user_id)
@@ -1035,6 +1040,7 @@ impl Registry {
         Ok(IdentityInfo {
             user_id: user_id.to_string(),
             namespace_id: row.get::<Uuid, _>(0).to_string(),
+            author_principal_id: row.get::<Uuid, _>(2).to_string(),
             username: format!("@{}", row.get::<String, _>(1)),
         })
     }

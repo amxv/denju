@@ -2,6 +2,7 @@ mod identity;
 mod owned;
 mod public;
 mod setup;
+mod workspace;
 
 use std::{ffi::OsString, path::PathBuf, process::ExitCode};
 

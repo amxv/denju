@@ -6,6 +6,7 @@ mod identity;
 mod ingest;
 mod mutation;
 mod public;
+mod workspace;
 
 pub use api::{
     ApiError, ApiErrorCode, CreateInstallationRequest, CreateInstallationResponse,
@@ -27,10 +28,14 @@ pub use ingest::{
 pub use mutation::{
     IdentityMutationDomain, RequestHash, RequestHashError, SubscriptionMutationKind,
     create_installation_request_hash, identity_mutation_request_hash,
-    private_skill_import_request_hash, subscription_request_hash,
+    private_revision_request_hash, private_skill_import_request_hash, subscription_request_hash,
 };
 pub use public::{
     PublicSkill, PublicSkillDetail, PublicSkillManifest, PublicSkillManifestEntry,
     PublicSkillSearchResponse, SnapshotDownload, SubscribedSkill, SubscriptionCatalog,
     SubscriptionMutationRequest, SubscriptionMutationResponse,
+};
+pub use workspace::{
+    PrivateRevisionCommitRequest, PrivateRevisionPrepareResponse, PrivateRevisionRequest,
+    PrivateRevisionResponse,
 };

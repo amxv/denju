@@ -19,11 +19,12 @@ pub use portable_path::{
 };
 pub use skill::{
     SkillDocument, SkillEntry, SkillFrontmatter, SkillValidationError, ValidatedSkill,
-    parse_skill_document, rewrite_skill_document_name, validate_skill_directory,
-    validate_skill_name,
+    parse_skill_document, rewrite_skill_document_name, skill_document_declared_name,
+    validate_skill_directory, validate_skill_name,
 };
 pub use snapshot::{
     DeterministicSkillSnapshot, OwnedSkillEntry, SkillManifest, SkillManifestEntry,
     SkillManifestTree, SnapshotError, build_deterministic_skill_snapshot, build_skill_manifest,
-    validate_declared_skill_manifest, validate_skill_snapshot,
+    build_skill_manifest_from_hashed_entries, validate_declared_skill_manifest,
+    validate_skill_snapshot,
 };

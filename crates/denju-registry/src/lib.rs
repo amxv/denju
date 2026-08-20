@@ -2,6 +2,7 @@
 
 mod identity;
 mod ingest;
+mod workspace;
 
 use std::{str::FromStr, time::Duration};
 
@@ -27,7 +28,7 @@ use url::Url;
 use uuid::Uuid;
 
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
-const EXPECTED_SCHEMA_VERSION: i64 = 4;
+const EXPECTED_SCHEMA_VERSION: i64 = 5;
 const SNAPSHOT_URL_TTL: Duration = Duration::from_secs(5 * 60);
 const STAGING_URL_TTL: Duration = Duration::from_secs(10 * 60);
 

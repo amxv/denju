@@ -15,6 +15,7 @@ const TOKEN_REVOKE_DOMAIN: &[u8] = b"denju:http:v1:automation-token-revoke\0";
 const ACCOUNT_DELETE_DOMAIN: &[u8] = b"denju:http:v1:account-delete\0";
 const SUBSCRIBE_DOMAIN: &[u8] = b"denju:http:v1:subscribe\0";
 const UNSUBSCRIBE_DOMAIN: &[u8] = b"denju:http:v1:unsubscribe\0";
+const PRIVATE_REVISION_DOMAIN: &[u8] = b"denju:http:v1:private-revision\0";
 const PRIVATE_SKILL_IMPORT_DOMAIN: &[u8] = b"denju:http:v1:private-skill-import\0";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -163,6 +164,35 @@ pub fn subscription_request_hash(
     Ok(RequestHash::from_bytes(hasher.finalize().into()))
 }
 
+pub fn private_revision_request_hash(
+    operation_id: &str,
+    resource_id: &str,
+    expected_generation: u64,
+    expected_parent_revision_id: &str,
+    manifest: &crate::PublicSkillManifest,
+) -> Result<RequestHash, RequestHashError> {
+    #[derive(Serialize)]
+    struct HashInput<'a> {
+        operation_id: &'a str,
+        resource_id: &'a str,
+        expected_generation: u64,
+        expected_parent_revision_id: &'a str,
+        manifest: &'a crate::PublicSkillManifest,
+    }
+    let canonical = serde_json_canonicalizer::to_vec(&HashInput {
+        operation_id,
+        resource_id,
+        expected_generation,
+        expected_parent_revision_id,
+        manifest,
+    })
+    .map_err(|error| RequestHashError::Canonicalization(error.to_string()))?;
+    let mut hasher = Sha256::new();
+    hasher.update(PRIVATE_REVISION_DOMAIN);
+    hasher.update(canonical);
+    Ok(RequestHash::from_bytes(hasher.finalize().into()))
+}
+
 pub fn private_skill_import_request_hash<T: Serialize>(
     operation_id: &str,
     expected_generation: u64,
@@ -274,5 +304,39 @@ mod tests {
         )
         .unwrap();
         assert_ne!(left, right);
+    }
+
+    #[test]
+    fn private_revision_hash_binds_parent_generation_and_manifest() {
+        use denju_core::{OwnedSkillEntry, build_skill_manifest};
+
+        let manifest = crate::PublicSkillManifest::from_core(
+            &build_skill_manifest(
+                "review",
+                &[OwnedSkillEntry::File {
+                    path: "SKILL.md".into(),
+                    bytes: b"---\nname: review\ndescription: Review.\n---\n".to_vec(),
+                    executable: false,
+                }],
+            )
+            .unwrap(),
+        );
+        let a = private_revision_request_hash(
+            "01890f47-6a1c-7cc2-98c1-5f6c1ed8a3a1",
+            "01890f47-6a1d-7ad0-8f43-9a4d8c29f002",
+            7,
+            &"11".repeat(32),
+            &manifest,
+        )
+        .unwrap();
+        let b = private_revision_request_hash(
+            "01890f47-6a1c-7cc2-98c1-5f6c1ed8a3a1",
+            "01890f47-6a1d-7ad0-8f43-9a4d8c29f002",
+            8,
+            &"11".repeat(32),
+            &manifest,
+        )
+        .unwrap();
+        assert_ne!(a, b);
     }
 }

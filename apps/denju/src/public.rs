@@ -3,11 +3,12 @@ use std::{collections::BTreeSet, fs, str::FromStr};
 use denju_client::{ClientError, RegistryClient};
 use denju_core::{OperationId, ResourceId, RevisionId};
 use denju_local::{
-    CredentialBackend, CredentialManager, DesiredSkillMaterialization, InstallCredential,
-    InstallationRecord, LocalDatabase, LocalPaths, OwnedSkillRecord, ResolvedHarnessRoots,
-    SessionCredential, SubscriptionRecord, materialize_skill_snapshot, prepare_harness_roots,
-    reconcile_harness_projections, recover_materializations, remove_canonical_skill,
-    remove_managed_skill_projection, remove_subscription_projection, resolve_harness_roots,
+    CredentialBackend, CredentialManager, DesiredSkillMaterialization, IdentityRecord,
+    InstallCredential, InstallationRecord, LocalDatabase, LocalPaths, OwnedSkillRecord,
+    ResolvedHarnessRoots, SessionCredential, SubscriptionRecord, WorkspaceStatus,
+    materialize_skill_snapshot, prepare_harness_roots, reconcile_harness_projections,
+    recover_materializations, remove_canonical_skill, remove_managed_skill_projection,
+    remove_subscription_projection, resolve_harness_roots,
 };
 use denju_wire::{
     ApiErrorCode, CliErrorCode, PrivateSkill, PublicSkill, PublicSkillDetail,
@@ -139,8 +140,35 @@ pub async fn unsubscribe(locator: &str) -> Result<UnsubscribeOutcome, RuntimeErr
 }
 
 pub(crate) async fn sync_once() -> Result<SyncOutcome, RuntimeError> {
+    // Capture owned edits before the first network request. This is what makes explicit
+    // `denju sync` useful while offline even when the background service is unavailable:
+    // a valid save becomes a durable queued local revision before registry connectivity is
+    // allowed to fail the command.
+    let mut blockers = Vec::new();
+    if let Ok(paths) = LocalPaths::discover()
+        && paths.state_db.is_file()
+    {
+        let db = LocalDatabase::open(&paths.state_db)
+            .await
+            .map_err(local_error)?;
+        let (_workspace_pass, local_blockers) =
+            crate::workspace::capture_local_edits(&paths, &db, false).await?;
+        blockers.extend(local_blockers);
+    }
     let context = installed_context(true).await?;
-    sync_with_context(context).await
+    // An upgraded Phase-5 identity may only learn its user author-principal from the registry
+    // above, so run the idempotent capture once more after authenticated context hydration.
+    let (_workspace_pass, hydrated_blockers) =
+        crate::workspace::capture_local_edits(&context.paths, &context.db, false).await?;
+    blockers.extend(hydrated_blockers);
+    let (_uploaded, upload_blockers) = crate::workspace::drain_queued_revisions(&context).await?;
+    blockers.extend(upload_blockers);
+    let outcome = sync_with_context(context).await?;
+    if let Some(blocker) = blockers.into_iter().next() {
+        Err(blocker)
+    } else {
+        Ok(outcome)
+    }
 }
 
 pub(crate) async fn clear_local_managed_state() -> Result<usize, RuntimeError> {
@@ -350,6 +378,15 @@ async fn sync_owned_skill(
         )
         .await
         .map_err(local_error)?;
+    if let Some(state) = context
+        .db
+        .workspace_state(remote.resource_id.clone())
+        .await
+        .map_err(local_error)?
+        && state.status != WorkspaceStatus::Clean
+    {
+        return Ok(0);
+    }
     let already_current = existing.as_ref().is_some_and(|record| {
         record.materialized_revision_id.as_deref() == Some(remote.revision_id.as_str())
             && context
@@ -360,6 +397,27 @@ async fn sync_owned_skill(
                 .exists()
     });
     if already_current {
+        let root_tree = remote
+            .manifest
+            .to_core()
+            .map_err(|error| RuntimeError::new(CliErrorCode::ContentVerification, error))?
+            .root_tree()
+            .to_string();
+        let working_generation =
+            fs::canonicalize(context.paths.skills.join(&remote.owner).join(&remote.name))
+                .map_err(local_error)?;
+        context
+            .db
+            .ensure_workspace_baseline(
+                remote.resource_id.clone(),
+                resource_generation,
+                remote.revision_id.clone(),
+                root_tree,
+                working_generation.display().to_string(),
+                now_unix_ms(),
+            )
+            .await
+            .map_err(local_error)?;
         return Ok(0);
     }
     if remote.snapshot.size_bytes > context.limits.max_transfer_bytes {
@@ -386,12 +444,41 @@ async fn sync_owned_skill(
             .to_core()
             .map_err(|error| RuntimeError::new(CliErrorCode::ContentVerification, error))?,
     };
-    materialize_skill_snapshot(&context.paths, &context.db, &desired, &bytes)
+    let generation = materialize_skill_snapshot(&context.paths, &context.db, &desired, &bytes)
         .await
         .map_err(|error| {
             RuntimeError::new(CliErrorCode::ContentVerification, error.to_string())
                 .recovery("denju sync")
         })?;
+    context
+        .db
+        .clear_workspace_file_index(remote.resource_id.clone())
+        .await
+        .map_err(local_error)?;
+    context
+        .db
+        .ensure_workspace_baseline(
+            remote.resource_id.clone(),
+            resource_generation,
+            remote.revision_id.clone(),
+            desired.manifest.root_tree().to_string(),
+            generation.display().to_string(),
+            now_unix_ms(),
+        )
+        .await
+        .map_err(local_error)?;
+    context
+        .db
+        .advance_clean_workspace_baseline(
+            remote.resource_id.clone(),
+            resource_generation,
+            remote.revision_id.clone(),
+            desired.manifest.root_tree().to_string(),
+            generation.display().to_string(),
+            now_unix_ms(),
+        )
+        .await
+        .map_err(local_error)?;
     Ok(1)
 }
 
@@ -495,6 +582,26 @@ pub(crate) async fn installed_context(
             CliErrorCode::RegistryUnavailable,
             "registry does not satisfy the Denju v1 capability contract",
         ));
+    }
+    if authenticated
+        && let Some(identity) = db.identity().await.map_err(local_error)?
+        && identity.author_principal_id.is_none()
+        && identity.session_backend.is_some()
+    {
+        let remote = client.identity().await.map_err(client_error)?;
+        db.save_identity(
+            IdentityRecord {
+                user_id: remote.user_id,
+                namespace_id: remote.namespace_id,
+                username: remote.username,
+                session_id: identity.session_id,
+                session_backend: identity.session_backend,
+                author_principal_id: Some(remote.author_principal_id),
+            },
+            now_unix_ms(),
+        )
+        .await
+        .map_err(local_error)?;
     }
     let recorded = db.harness_config().await.map_err(local_error)?;
     let roots = resolve_harness_roots(&paths, recorded.as_ref()).map_err(local_error)?;

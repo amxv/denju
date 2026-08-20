@@ -8,8 +8,8 @@ use thiserror::Error;
 
 use crate::{
     BlobId, PortableEntry, PortableEntryKind, PortablePathError, PortableTreeError, SkillEntry,
-    SkillValidationError, TreeEntry, TreeEntryKind, TreeError, TreeId, validate_portable_tree,
-    validate_skill_directory,
+    SkillValidationError, TreeEntry, TreeEntryKind, TreeError, TreeId, parse_skill_document,
+    validate_portable_tree, validate_skill_directory,
 };
 
 /// One complete, owned entry from a skill tree. This is an in-memory domain value;
@@ -175,6 +175,42 @@ pub fn build_skill_manifest(
         root_tree,
         entries: manifest_entries,
     })
+}
+
+/// Build a complete semantic manifest from file identities already computed by a local
+/// incremental index. This avoids rereading/rehashing unchanged file contents while still
+/// validating the full portable tree and the current `SKILL.md` Agent Skills contract.
+pub fn build_skill_manifest_from_hashed_entries(
+    parent_directory_name: &str,
+    skill_md_bytes: &[u8],
+    mut entries: Vec<SkillManifestEntry>,
+) -> Result<SkillManifest, SnapshotError> {
+    parse_skill_document(parent_directory_name, skill_md_bytes)?;
+    entries.sort_by(|left, right| left.path().as_bytes().cmp(right.path().as_bytes()));
+    let skill_entry = entries
+        .iter()
+        .find_map(|entry| match entry {
+            SkillManifestEntry::File {
+                path, blob, size, ..
+            } if path == "SKILL.md" => Some((*blob, *size)),
+            _ => None,
+        })
+        .ok_or(SnapshotError::Skill(SkillValidationError::MissingSkillMd))?;
+    let skill_size =
+        u64::try_from(skill_md_bytes.len()).map_err(|_| SnapshotError::EntryTooLarge)?;
+    if skill_entry != (BlobId::hash(skill_md_bytes), skill_size) {
+        return Err(SnapshotError::ManifestMismatch);
+    }
+
+    let trees = build_manifest_tree_objects(&entries)?;
+    let root_tree = trees
+        .iter()
+        .find(|(path, _)| path.is_empty())
+        .map(|(_, tree)| tree.id())
+        .ok_or_else(|| SnapshotError::MissingChildTree("<root>".to_owned()))?;
+    let manifest = SkillManifest { root_tree, entries };
+    validate_declared_skill_manifest(&manifest)?;
+    Ok(manifest)
 }
 
 /// Validate a manifest received without object bytes. This proves the portable path/link
@@ -515,5 +551,27 @@ mod tests {
             validate_declared_skill_manifest(&changed),
             Err(SnapshotError::DeclaredRootMismatch)
         ));
+    }
+
+    #[test]
+    fn prehashed_manifest_preserves_existing_object_identity() {
+        let entries = fixture();
+        let original = build_skill_manifest("review", &entries).unwrap();
+        let skill_md = entries
+            .iter()
+            .find_map(|entry| match entry {
+                OwnedSkillEntry::File { path, bytes, .. } if path == "SKILL.md" => {
+                    Some(bytes.as_slice())
+                }
+                _ => None,
+            })
+            .unwrap();
+        let rebuilt = build_skill_manifest_from_hashed_entries(
+            "review",
+            skill_md,
+            original.entries().to_vec(),
+        )
+        .unwrap();
+        assert_eq!(rebuilt, original);
     }
 }

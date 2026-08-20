@@ -9,10 +9,11 @@ use denju_wire::{
     AutomationTokenRevokeResponse, ClaimIdentityRequest, CreateInstallationRequest,
     CreateInstallationResponse, DeviceList, DeviceRevokeRequest, DeviceRevokeResponse,
     IdentityBackupRequest, IdentityInfo, IdentitySessionResponse, LoginRequest,
-    PrivateSkillCatalog, PrivateSkillImportCommitRequest, PrivateSkillImportPrepareResponse,
-    PrivateSkillImportRequest, PrivateSkillImportResponse, PublicSkillDetail,
-    PublicSkillSearchResponse, RecoveryResetRequest, RegistryCapabilities, SnapshotDownload,
-    StagedBlobUpload, SubscriptionCatalog, SubscriptionMutationRequest,
+    PrivateRevisionCommitRequest, PrivateRevisionPrepareResponse, PrivateRevisionRequest,
+    PrivateRevisionResponse, PrivateSkillCatalog, PrivateSkillImportCommitRequest,
+    PrivateSkillImportPrepareResponse, PrivateSkillImportRequest, PrivateSkillImportResponse,
+    PublicSkillDetail, PublicSkillSearchResponse, RecoveryResetRequest, RegistryCapabilities,
+    SnapshotDownload, StagedBlobUpload, SubscriptionCatalog, SubscriptionMutationRequest,
     SubscriptionMutationResponse,
 };
 use reqwest::{Client, RequestBuilder, StatusCode};
@@ -215,6 +216,22 @@ impl RegistryClient {
 
     pub async fn private_skills(&self) -> Result<PrivateSkillCatalog, ClientError> {
         self.authenticated_get_json("v1/private-skills").await
+    }
+
+    pub async fn prepare_private_revision(
+        &self,
+        request: &PrivateRevisionRequest,
+    ) -> Result<PrivateRevisionPrepareResponse, ClientError> {
+        self.authenticated_post_json("v1/private-skills/revisions/prepare", request)
+            .await
+    }
+
+    pub async fn commit_private_revision(
+        &self,
+        request: &PrivateRevisionCommitRequest,
+    ) -> Result<PrivateRevisionResponse, ClientError> {
+        self.authenticated_post_json("v1/private-skills/revisions/commit", request)
+            .await
     }
 
     pub async fn upload_staged_blob(

@@ -8,6 +8,9 @@ mod paths;
 mod projection;
 mod service;
 mod source;
+mod workspace;
+mod workspace_db;
+mod workspace_watch;
 
 pub use credentials::{
     CredentialBackend, CredentialError, CredentialManager, InstallCredential, SessionCredential,
@@ -32,8 +35,17 @@ pub use paths::{
     verify_native_directory_links,
 };
 pub use projection::{
-    ProjectionError, reconcile_harness_projections, remove_managed_skill_projection,
-    remove_subscription_projection,
+    ProjectionError, reconcile_harness_projections, reconcile_owned_derived_projection,
+    recover_workspace_writebacks, remove_managed_skill_projection, remove_subscription_projection,
 };
 pub use service::{ServiceError, ServiceInstallMode, ServiceKind, ServiceManager, ServiceStatus};
 pub use source::{SourceError, read_skill_source};
+pub use workspace::{
+    WorkspaceScan, WorkspaceScanError, WorkspaceScanStats, scan_owned_workspace,
+    workspace_blob_path,
+};
+pub use workspace_db::{
+    DerivedProjectionStateRecord, LocalRevisionRecord, WorkspaceFileRecord, WorkspaceStateRecord,
+    WorkspaceStatus, WorkspaceWritebackJournal, WorkspaceWritebackJournalPayload,
+};
+pub use workspace_watch::{WorkspaceWatchError, WorkspaceWatcher};

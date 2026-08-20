@@ -44,10 +44,10 @@ struct ImportOperationRow {
 }
 
 #[derive(Debug, FromRow)]
-struct StagingRow {
-    blob_id: Vec<u8>,
-    size_bytes: i64,
-    staging_key: String,
+pub(crate) struct StagingRow {
+    pub(crate) blob_id: Vec<u8>,
+    pub(crate) size_bytes: i64,
+    pub(crate) staging_key: String,
 }
 
 #[derive(Debug, FromRow)]
@@ -718,7 +718,7 @@ async fn fetch_staging_rows(
     .map_err(internal_api_error)
 }
 
-fn manifest_blobs(manifest: &SkillManifest) -> Result<BTreeMap<BlobId, u64>, ApiError> {
+pub(crate) fn manifest_blobs(manifest: &SkillManifest) -> Result<BTreeMap<BlobId, u64>, ApiError> {
     let mut blobs = BTreeMap::new();
     for entry in manifest.entries() {
         if let SkillManifestEntry::File { blob, size, .. } = entry
@@ -734,7 +734,7 @@ fn manifest_blobs(manifest: &SkillManifest) -> Result<BTreeMap<BlobId, u64>, Api
     Ok(blobs)
 }
 
-fn owned_entries_from_manifest(
+pub(crate) fn owned_entries_from_manifest(
     manifest: &SkillManifest,
     bytes: &BTreeMap<BlobId, Vec<u8>>,
 ) -> Result<Vec<OwnedSkillEntry>, ApiError> {
@@ -765,7 +765,7 @@ fn owned_entries_from_manifest(
         .collect()
 }
 
-fn verify_blob(blob: BlobId, expected_size: u64, bytes: &[u8]) -> Result<(), ApiError> {
+pub(crate) fn verify_blob(blob: BlobId, expected_size: u64, bytes: &[u8]) -> Result<(), ApiError> {
     if u64::try_from(bytes.len()).ok() != Some(expected_size) || BlobId::hash(bytes) != blob {
         return Err(ApiError::new(
             ApiErrorCode::InvalidRequest,
@@ -775,7 +775,7 @@ fn verify_blob(blob: BlobId, expected_size: u64, bytes: &[u8]) -> Result<(), Api
     Ok(())
 }
 
-async fn enforce_namespace_quota(
+pub(crate) async fn enforce_namespace_quota(
     registry: &Registry,
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     namespace_id: Uuid,
@@ -828,7 +828,7 @@ async fn enforce_namespace_quota(
     Ok(())
 }
 
-async fn persist_canonical_blobs(
+pub(crate) async fn persist_canonical_blobs(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     blobs: &BTreeMap<BlobId, u64>,
 ) -> Result<(), ApiError> {
@@ -864,7 +864,7 @@ async fn persist_canonical_blobs(
     Ok(())
 }
 
-async fn persist_trees(
+pub(crate) async fn persist_trees(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     trees: &[SkillManifestTree],
 ) -> Result<(), ApiError> {
@@ -921,12 +921,12 @@ async fn persist_trees(
     Ok(())
 }
 
-fn canonical_blob_key(blob: BlobId) -> String {
+pub(crate) fn canonical_blob_key(blob: BlobId) -> String {
     let id = blob.to_string();
     format!("blobs/sha256/{}/{id}", &id[..2])
 }
 
-fn ensure_request_hash(stored: &[u8], supplied: RequestHash) -> Result<(), ApiError> {
+pub(crate) fn ensure_request_hash(stored: &[u8], supplied: RequestHash) -> Result<(), ApiError> {
     if stored != supplied.as_bytes() {
         return Err(ApiError::new(
             ApiErrorCode::OperationConflict,
@@ -946,7 +946,7 @@ fn decode_import_outcome(value: Option<Value>) -> Result<PrivateSkillImportRespo
     .map_err(|error| ApiError::new(ApiErrorCode::Internal, error.to_string()))
 }
 
-fn decode_32(value: &[u8], field: &str) -> Result<[u8; 32], ApiError> {
+pub(crate) fn decode_32(value: &[u8], field: &str) -> Result<[u8; 32], ApiError> {
     value.try_into().map_err(|_| {
         ApiError::new(
             ApiErrorCode::Internal,
@@ -955,6 +955,6 @@ fn decode_32(value: &[u8], field: &str) -> Result<[u8; 32], ApiError> {
     })
 }
 
-fn object_store_api_error(error: RegistryError) -> ApiError {
+pub(crate) fn object_store_api_error(error: RegistryError) -> ApiError {
     ApiError::new(ApiErrorCode::Unavailable, error.to_string())
 }

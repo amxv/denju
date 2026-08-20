@@ -105,6 +105,68 @@ CREATE INDEX IF NOT EXISTS owned_skills_skill_name_idx
 PRAGMA user_version = 4;
 "#;
 
+// Phase 6 is deliberately an additive compatibility migration. Keep PRAGMA user_version at 4
+// so the immediately previous Phase-5 binary can still open the database during upgrade
+// rollback; current code feature-detects these additive tables/column instead.
+const PHASE6_ADDITIVE_SCHEMA: &str = r#"
+BEGIN IMMEDIATE;
+ALTER TABLE identity_state ADD COLUMN author_principal_id TEXT;
+
+CREATE TABLE IF NOT EXISTS workspace_state (
+    resource_id TEXT PRIMARY KEY REFERENCES owned_skills(resource_id) ON DELETE CASCADE,
+    base_generation INTEGER NOT NULL CHECK (base_generation > 0),
+    base_revision_id TEXT NOT NULL,
+    local_head_revision_id TEXT NOT NULL,
+    valid_root_tree_id TEXT NOT NULL,
+    working_generation_path TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('clean', 'queued', 'paused_validation', 'pending_rename', 'conflict', 'quota')),
+    error_message TEXT,
+    pending_rename TEXT,
+    updated_at_unix_ms INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS workspace_file_index (
+    resource_id TEXT NOT NULL REFERENCES owned_skills(resource_id) ON DELETE CASCADE,
+    path TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('file', 'directory', 'symlink')),
+    size_bytes INTEGER,
+    mtime_ns INTEGER,
+    executable INTEGER CHECK (executable IS NULL OR executable IN (0, 1)),
+    blob_id TEXT,
+    symlink_target TEXT,
+    PRIMARY KEY (resource_id, path),
+    CHECK (
+        (kind = 'file' AND size_bytes IS NOT NULL AND mtime_ns IS NOT NULL AND executable IS NOT NULL AND blob_id IS NOT NULL AND symlink_target IS NULL)
+        OR (kind = 'directory' AND size_bytes IS NULL AND mtime_ns IS NULL AND executable IS NULL AND blob_id IS NULL AND symlink_target IS NULL)
+        OR (kind = 'symlink' AND size_bytes IS NULL AND mtime_ns IS NULL AND executable IS NULL AND blob_id IS NULL AND symlink_target IS NOT NULL)
+    )
+);
+
+CREATE TABLE IF NOT EXISTS local_revisions (
+    operation_id TEXT PRIMARY KEY,
+    resource_id TEXT NOT NULL REFERENCES owned_skills(resource_id) ON DELETE CASCADE,
+    revision_id TEXT NOT NULL UNIQUE,
+    parent_revision_id TEXT NOT NULL,
+    expected_generation INTEGER NOT NULL CHECK (expected_generation > 0),
+    root_tree_id TEXT NOT NULL,
+    manifest_json TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (state IN ('queued', 'synced')),
+    created_at_unix_ms INTEGER NOT NULL,
+    updated_at_unix_ms INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS local_revisions_queue_idx
+    ON local_revisions (resource_id, state, expected_generation, created_at_unix_ms);
+
+CREATE TABLE IF NOT EXISTS derived_projection_state (
+    resource_id TEXT PRIMARY KEY REFERENCES owned_skills(resource_id) ON DELETE CASCADE,
+    harness_name TEXT NOT NULL,
+    baseline_root_tree_id TEXT NOT NULL,
+    updated_at_unix_ms INTEGER NOT NULL
+);
+COMMIT;
+"#;
+
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;
 
 #[derive(Clone)]
@@ -172,7 +234,7 @@ impl LocalDatabase {
         self.call(|connection| {
             Ok(connection
                 .query_row(
-                    "SELECT user_id, namespace_id, username, session_id, session_backend \
+                    "SELECT user_id, namespace_id, username, session_id, session_backend, author_principal_id \
                      FROM identity_state WHERE singleton=1",
                     [],
                     |row| {
@@ -182,6 +244,7 @@ impl LocalDatabase {
                             username: row.get(2)?,
                             session_id: row.get(3)?,
                             session_backend: row.get(4)?,
+                            author_principal_id: row.get(5)?,
                         })
                     },
                 )
@@ -198,11 +261,11 @@ impl LocalDatabase {
         self.call(move |connection| {
             connection.execute(
                 "INSERT INTO identity_state \
-                 (singleton,user_id,namespace_id,username,session_id,session_backend,updated_at_unix_ms) \
-                 VALUES (1,?1,?2,?3,?4,?5,?6) \
+                 (singleton,user_id,namespace_id,username,session_id,session_backend,author_principal_id,updated_at_unix_ms) \
+                 VALUES (1,?1,?2,?3,?4,?5,?6,?7) \
                  ON CONFLICT(singleton) DO UPDATE SET \
                    user_id=excluded.user_id, namespace_id=excluded.namespace_id, username=excluded.username, \
-                   session_id=excluded.session_id, session_backend=excluded.session_backend, \
+                   session_id=excluded.session_id, session_backend=excluded.session_backend, author_principal_id=excluded.author_principal_id, \
                    updated_at_unix_ms=excluded.updated_at_unix_ms",
                 params![
                     identity.user_id,
@@ -210,6 +273,7 @@ impl LocalDatabase {
                     identity.username,
                     identity.session_id,
                     identity.session_backend,
+                    identity.author_principal_id,
                     now_unix_ms,
                 ],
             )?;
@@ -922,7 +986,7 @@ impl LocalDatabase {
         .await
     }
 
-    async fn call<R, F>(&self, operation: F) -> Result<R, LocalDbError>
+    pub(crate) async fn call<R, F>(&self, operation: F) -> Result<R, LocalDbError>
     where
         R: Send + 'static,
         F: FnOnce(&mut Connection) -> Result<R, LocalDbError> + Send + 'static,
@@ -944,8 +1008,19 @@ fn open_connection(path: &Path) -> Result<Connection, LocalDbError> {
         "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON;",
     )?;
     let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    if version > 4 {
+    if version > 5 {
         return Err(LocalDbError::UnsupportedSchema(version));
+    }
+    // A few pre-commit Phase-6 development databases may have observed provisional version 5.
+    // Normalize only when the complete additive schema is present; this keeps development
+    // fixtures recoverable without accepting an actually unknown schema.
+    if version == 5 {
+        if !phase6_additive_schema_present(&connection)? {
+            return Err(LocalDbError::Corrupt(
+                "local schema version 5 is missing Phase-6 additive objects".to_owned(),
+            ));
+        }
+        connection.pragma_update(None, "user_version", 4_i64)?;
     }
     if version == 0 {
         connection.execute_batch(MIGRATION_V1)?;
@@ -962,7 +1037,55 @@ fn open_connection(path: &Path) -> Result<Connection, LocalDbError> {
     if version == 3 {
         connection.execute_batch(MIGRATION_V4)?;
     }
+    let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version == 4 && !phase6_additive_schema_present(&connection)? {
+        connection.execute_batch(PHASE6_ADDITIVE_SCHEMA)?;
+    }
+    if !phase6_additive_schema_present(&connection)? {
+        return Err(LocalDbError::Corrupt(
+            "Phase-6 additive local schema is incomplete".to_owned(),
+        ));
+    }
     Ok(connection)
+}
+
+fn phase6_additive_schema_present(connection: &Connection) -> Result<bool, LocalDbError> {
+    let author_column = {
+        let mut statement = connection.prepare("PRAGMA table_info(identity_state)")?;
+        let columns = statement.query_map([], |row| row.get::<_, String>(1))?;
+        let mut found = false;
+        for column in columns {
+            if column? == "author_principal_id" {
+                found = true;
+                break;
+            }
+        }
+        found
+    };
+    let required_tables = [
+        "workspace_state",
+        "workspace_file_index",
+        "local_revisions",
+        "derived_projection_state",
+    ];
+    let mut present_tables = 0_usize;
+    for table in required_tables {
+        let exists: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+            params![table],
+            |row| row.get(0),
+        )?;
+        present_tables += usize::from(exists);
+    }
+    if !author_column && present_tables == 0 {
+        return Ok(false);
+    }
+    if author_column && present_tables == required_tables.len() {
+        return Ok(true);
+    }
+    Err(LocalDbError::Corrupt(
+        "Phase-6 additive local schema is partially applied".to_owned(),
+    ))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -981,6 +1104,7 @@ pub struct IdentityRecord {
     pub username: String,
     pub session_id: Option<String>,
     pub session_backend: Option<String>,
+    pub author_principal_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1199,6 +1323,40 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(mode.to_ascii_lowercase(), "wal");
+    }
+
+    #[tokio::test]
+    async fn phase6_additive_schema_preserves_phase5_rollback_version() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("state.db");
+        let connection = Connection::open(&path).unwrap();
+        connection.execute_batch(MIGRATION_V1).unwrap();
+        connection.execute_batch(MIGRATION_V2).unwrap();
+        connection.execute_batch(MIGRATION_V3).unwrap();
+        connection.execute_batch(MIGRATION_V4).unwrap();
+        assert_eq!(
+            connection
+                .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            4
+        );
+        drop(connection);
+
+        let db = LocalDatabase::open(&path).await.unwrap();
+        let (version, phase6_present): (i64, bool) = db
+            .call(|connection| {
+                Ok((
+                    connection.query_row("PRAGMA user_version", [], |row| row.get(0))?,
+                    phase6_additive_schema_present(connection)?,
+                ))
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            version, 4,
+            "Phase-5 rollback must still accept the database"
+        );
+        assert!(phase6_present);
     }
 
     #[tokio::test]

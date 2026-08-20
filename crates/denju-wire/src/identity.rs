@@ -45,6 +45,7 @@ pub struct IdentityBackupRequest {
 pub struct IdentitySessionResponse {
     pub user_id: String,
     pub namespace_id: String,
+    pub author_principal_id: String,
     pub username: String,
     pub session_id: String,
 }
@@ -53,6 +54,7 @@ pub struct IdentitySessionResponse {
 pub struct IdentityInfo {
     pub user_id: String,
     pub namespace_id: String,
+    pub author_principal_id: String,
     pub username: String,
 }
 

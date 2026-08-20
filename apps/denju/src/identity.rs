@@ -494,6 +494,7 @@ async fn persist_session(
                 username: response.username.clone(),
                 session_id: Some(response.session_id.clone()),
                 session_backend: Some(backend.as_str().to_owned()),
+                author_principal_id: Some(response.author_principal_id.clone()),
             },
             now_unix_ms(),
         )

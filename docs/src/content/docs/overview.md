@@ -10,7 +10,7 @@ Denju is an agent-native, CLI-only registry and synchronization system for Agent
 
 ## What exists today
 
-The Rust implementation provides deterministic Agent Skills validation and content identity, anonymous `denju setup`, public skill discovery, account-wide direct subscriptions, verified cold installs from S3-compatible storage, optional password/recovery identity claim and login, authenticated private skill import, revocable devices and scoped automation credentials, durable SQLite-backed local state, Codex and Claude projections, per-user service management, and the PostgreSQL-backed registry foundation used by the CLI.
+The Rust implementation provides deterministic Agent Skills validation and content identity, anonymous `denju setup`, public skill discovery, account-wide direct subscriptions, verified cold installs from S3-compatible storage, optional password/recovery identity claim and login, authenticated private skill import, editable owned workspaces with durable private revisions and multi-device synchronization, revocable devices and scoped automation credentials, durable SQLite-backed local state, Codex and Claude projections, per-user service management, and the PostgreSQL-backed registry foundation used by the CLI.
 
 The repository also contains a thin npm installer for the native binary and this documentation site. Product behavior lives in Rust; JavaScript is not a second implementation path.
 
@@ -27,3 +27,5 @@ Mutable references and registry metadata live in PostgreSQL. Skill bytes are con
 Public reads and direct subscriptions are cold-start safe: restarting the registry process does not change discovery or installation results because PostgreSQL, object storage, and durable installation/account state are authoritative. Anonymous subscriptions are adopted by the account when that installation claims or logs into an identity; another authenticated device then reconciles the same desired state.
 
 Private import uses the same object model. A namespace must prove staged bytes before it can reference them even when another tenant already caused identical physical content to exist. Logical quota accounting therefore remains namespace-specific while the object store can deduplicate verified bytes physically.
+
+Owned workspaces remain writable after import. Valid coherent saves are recorded locally before network execution and advance the private workspace using generation-and-parent compare-and-swap. Offline/quota-blocked revisions remain queued; invalid content remains local and paused; concurrent stale writers preserve their local head rather than using last-write-wins.

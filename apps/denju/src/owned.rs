@@ -210,12 +210,25 @@ pub async fn import(source: &Path) -> Result<ImportOutcome, RuntimeError> {
             revision_id: RevisionId::from_str(&revision_id_text).map_err(local_error)?,
             manifest: manifest.clone(),
         };
-        materialize_skill_snapshot(&context.paths, &context.db, &desired, &snapshot_bytes)
+        let generation =
+            materialize_skill_snapshot(&context.paths, &context.db, &desired, &snapshot_bytes)
+                .await
+                .map_err(|error| {
+                    RuntimeError::new(CliErrorCode::ContentVerification, error.to_string())
+                        .recovery(format!("denju import {}", journal.payload.source_path))
+                })?;
+        context
+            .db
+            .ensure_workspace_baseline(
+                resource_id_text.clone(),
+                1,
+                revision_id_text.clone(),
+                manifest.root_tree().to_string(),
+                generation.display().to_string(),
+                now_unix_ms(),
+            )
             .await
-            .map_err(|error| {
-                RuntimeError::new(CliErrorCode::ContentVerification, error.to_string())
-                    .recovery(format!("denju import {}", journal.payload.source_path))
-            })?;
+            .map_err(local_error)?;
         let projections =
             reconcile_harness_projections(&context.paths, &context.db, &context.roots)
                 .await

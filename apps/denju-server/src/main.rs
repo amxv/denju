@@ -22,11 +22,12 @@ use denju_wire::{
     AutomationTokenRevokeRequest, AutomationTokenRevokeResponse, ClaimIdentityRequest,
     CreateInstallationRequest, CreateInstallationResponse, DeviceList, DeviceRevokeRequest,
     DeviceRevokeResponse, IdentityBackupRequest, IdentityInfo, IdentitySessionResponse,
-    LoginRequest, PrivateSkillCatalog, PrivateSkillImportCommitRequest,
-    PrivateSkillImportPrepareResponse, PrivateSkillImportRequest, PrivateSkillImportResponse,
-    PublicSkillDetail, PublicSkillSearchResponse, RecoveryResetRequest, RegistryCapabilities,
-    RegistryLimits, SubscriptionCatalog, SubscriptionMutationKind, SubscriptionMutationRequest,
-    SubscriptionMutationResponse,
+    LoginRequest, PrivateRevisionCommitRequest, PrivateRevisionPrepareResponse,
+    PrivateRevisionRequest, PrivateRevisionResponse, PrivateSkillCatalog,
+    PrivateSkillImportCommitRequest, PrivateSkillImportPrepareResponse, PrivateSkillImportRequest,
+    PrivateSkillImportResponse, PublicSkillDetail, PublicSkillSearchResponse, RecoveryResetRequest,
+    RegistryCapabilities, RegistryLimits, SubscriptionCatalog, SubscriptionMutationKind,
+    SubscriptionMutationRequest, SubscriptionMutationResponse,
 };
 use serde::Deserialize;
 use url::Url;
@@ -162,6 +163,14 @@ async fn serve(config: ServerConfig) -> Result<(), String> {
         .route(
             "/v1/private-skills/imports/commit",
             post(commit_private_skill_import),
+        )
+        .route(
+            "/v1/private-skills/revisions/prepare",
+            post(prepare_private_revision),
+        )
+        .route(
+            "/v1/private-skills/revisions/commit",
+            post(commit_private_revision),
         )
         .route(
             "/v1/subscriptions",
@@ -387,6 +396,32 @@ async fn commit_private_skill_import(
     let bearer = bearer_token(&headers)?;
     registry
         .commit_private_skill_import(bearer, &request)
+        .await
+        .map(Json)
+        .map_err(ApiResponseError)
+}
+
+async fn prepare_private_revision(
+    State(registry): State<Arc<Registry>>,
+    headers: HeaderMap,
+    Json(request): Json<PrivateRevisionRequest>,
+) -> Result<Json<PrivateRevisionPrepareResponse>, ApiResponseError> {
+    let bearer = bearer_token(&headers)?;
+    registry
+        .prepare_private_revision(bearer, &request)
+        .await
+        .map(Json)
+        .map_err(ApiResponseError)
+}
+
+async fn commit_private_revision(
+    State(registry): State<Arc<Registry>>,
+    headers: HeaderMap,
+    Json(request): Json<PrivateRevisionCommitRequest>,
+) -> Result<Json<PrivateRevisionResponse>, ApiResponseError> {
+    let bearer = bearer_token(&headers)?;
+    registry
+        .commit_private_revision(bearer, &request)
         .await
         .map(Json)
         .map_err(ApiResponseError)

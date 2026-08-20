@@ -6,17 +6,133 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use denju_core::{ResourceId, parse_skill_document, rewrite_skill_document_name};
+use denju_core::{
+    OperationId, OwnedSkillEntry, ResourceId, SkillManifest, build_skill_manifest,
+    parse_skill_document, rewrite_skill_document_name,
+};
 use denju_sync::{ManagedSkillName, allocate_projection_names};
 use thiserror::Error;
 use uuid::Uuid;
 use walkdir::WalkDir;
 
 use crate::{
-    LocalDatabase, LocalDbError, LocalPaths, ManagedSkillRecord, ResolvedHarnessRoots,
-    SubscriptionRecord, create_native_directory_link, detect_unmanaged_skills,
-    materialize::{MaterializationError, remove_owned_link},
+    DerivedProjectionStateRecord, JournalState, LocalDatabase, LocalDbError, LocalPaths,
+    ManagedSkillRecord, OwnedSkillRecord, ResolvedHarnessRoots, SubscriptionRecord,
+    WorkspaceWritebackJournalPayload, create_native_directory_link, detect_unmanaged_skills,
+    materialize::{
+        MaterializationError, atomic_switch_directory_link, remove_owned_link, write_generation,
+    },
+    read_skill_source,
 };
+
+/// Recover collision-derived writeback independently of watcher delivery. Planned/staged
+/// work can be retried from the still-visible derived view; verified/switched work resumes
+/// the atomic canonical switch and durable baseline update idempotently.
+pub async fn recover_workspace_writebacks(
+    paths: &LocalPaths,
+    db: &LocalDatabase,
+) -> Result<(), ProjectionError> {
+    for mut journal in db.workspace_writeback_journals().await? {
+        let payload = &journal.payload;
+        let stage = PathBuf::from(&payload.stage_dir);
+        let generation = PathBuf::from(&payload.generation_dir);
+        let canonical = PathBuf::from(&payload.canonical_path);
+        if !stage.starts_with(&paths.generations)
+            || !generation.starts_with(&paths.generations)
+            || !canonical.starts_with(&paths.skills)
+        {
+            return Err(ProjectionError::Corrupt(
+                "workspace writeback journal points outside Denju managed paths".to_owned(),
+            ));
+        }
+
+        if journal.state == JournalState::Planned {
+            let _ = fs::remove_dir_all(&stage);
+            db.discard_workspace_writeback_journal(journal.operation_id)
+                .await?;
+            continue;
+        }
+
+        if journal.state == JournalState::Staged {
+            if generation.is_dir() {
+                verify_writeback_generation(
+                    &generation,
+                    &payload.skill_name,
+                    &payload.target_root_tree_id,
+                )?;
+            } else if stage.is_dir() {
+                verify_writeback_generation(
+                    &stage,
+                    &payload.skill_name,
+                    &payload.target_root_tree_id,
+                )?;
+                fs::rename(&stage, &generation)?;
+            } else {
+                // The derived projection remains the user's source of truth, so an
+                // interrupted pre-verification stage can be safely retried from scratch.
+                db.discard_workspace_writeback_journal(journal.operation_id)
+                    .await?;
+                continue;
+            }
+            db.update_workspace_writeback_journal(
+                journal.operation_id,
+                JournalState::Staged,
+                JournalState::Verified,
+                now_unix_ms(),
+            )
+            .await?;
+            journal.state = JournalState::Verified;
+        }
+
+        if journal.state == JournalState::Verified {
+            verify_writeback_generation(
+                &generation,
+                &payload.skill_name,
+                &payload.target_root_tree_id,
+            )?;
+            atomic_switch_directory_link(&generation, &canonical, journal.operation_id)?;
+            db.update_workspace_writeback_journal(
+                journal.operation_id,
+                JournalState::Verified,
+                JournalState::Switched,
+                now_unix_ms(),
+            )
+            .await?;
+            journal.state = JournalState::Switched;
+        }
+
+        if journal.state == JournalState::Switched {
+            let actual = fs::canonicalize(&canonical)?;
+            let expected = fs::canonicalize(&generation)?;
+            if actual != expected {
+                atomic_switch_directory_link(&generation, &canonical, journal.operation_id)?;
+            }
+            db.set_workspace_working_generation(
+                payload.resource_id.clone(),
+                generation.display().to_string(),
+                now_unix_ms(),
+            )
+            .await?;
+            db.save_derived_projection_state(
+                DerivedProjectionStateRecord {
+                    resource_id: payload.resource_id.clone(),
+                    harness_name: payload.harness_name.clone(),
+                    baseline_root_tree_id: payload.target_root_tree_id.clone(),
+                },
+                now_unix_ms(),
+            )
+            .await?;
+            db.update_workspace_writeback_journal(
+                journal.operation_id,
+                JournalState::Switched,
+                JournalState::Complete,
+                now_unix_ms(),
+            )
+            .await?;
+        }
+    }
+    Ok(())
+}
 
 /// Rebuild both harness views from local desired state. Old managed invocation links are
 /// removed before new aliases are exposed, so a collision transition can temporarily hide
@@ -27,6 +143,12 @@ pub async fn reconcile_harness_projections(
     roots: &ResolvedHarnessRoots,
 ) -> Result<Vec<(String, String)>, ProjectionError> {
     let managed_records = db.managed_skills().await?;
+    let owned_ids = db
+        .owned_skills()
+        .await?
+        .into_iter()
+        .map(|record| record.resource_id)
+        .collect::<BTreeSet<_>>();
     let reserved = unmanaged_names(roots)?;
     let mut managed = Vec::new();
     for record in &managed_records {
@@ -75,10 +197,12 @@ pub async fn reconcile_harness_projections(
                 record.locator
             )));
         }
-        let target = if assignment.derived {
-            derived_view(paths, record, &canonical, &assignment.harness_name)?
+        let (target, derived_created) = if assignment.derived {
+            let (target, created) =
+                derived_view(paths, record, &canonical, &assignment.harness_name)?;
+            (target, created)
         } else {
-            canonical
+            (canonical, false)
         };
 
         let codex = roots
@@ -94,6 +218,36 @@ pub async fn reconcile_harness_projections(
             now_unix_ms(),
         )
         .await?;
+        if assignment.derived && owned_ids.contains(&record.resource_id) {
+            let existing = db
+                .derived_projection_state(record.resource_id.clone())
+                .await?;
+            if derived_created
+                || existing
+                    .as_ref()
+                    .is_none_or(|state| state.harness_name != assignment.harness_name)
+            {
+                let canonical_root =
+                    fs::canonicalize(paths.skills.join(&record.owner).join(&record.skill_name))?;
+                let canonical_manifest = skill_manifest(&canonical_root, &record.skill_name)?;
+                let derived_manifest = canonicalized_derived_manifest(
+                    &target,
+                    &assignment.harness_name,
+                    &record.skill_name,
+                )?;
+                if canonical_manifest == derived_manifest {
+                    db.save_derived_projection_state(
+                        DerivedProjectionStateRecord {
+                            resource_id: record.resource_id.clone(),
+                            harness_name: assignment.harness_name.clone(),
+                            baseline_root_tree_id: canonical_manifest.root_tree().to_string(),
+                        },
+                        now_unix_ms(),
+                    )
+                    .await?;
+                }
+            }
+        }
         projected.push((record.locator.clone(), assignment.harness_name));
     }
     Ok(projected)
@@ -148,7 +302,7 @@ fn derived_view(
     record: &ManagedSkillRecord,
     canonical: &Path,
     harness_name: &str,
-) -> Result<PathBuf, ProjectionError> {
+) -> Result<(PathBuf, bool), ProjectionError> {
     let revision = record.materialized_revision_id.as_deref().ok_or_else(|| {
         ProjectionError::Corrupt("derived projection has no materialized revision".to_owned())
     })?;
@@ -160,7 +314,7 @@ fn derived_view(
         let skill_md = fs::read(root.join("SKILL.md"))?;
         parse_skill_document(harness_name, &skill_md)
             .map_err(|error| ProjectionError::Corrupt(error.to_string()))?;
-        return Ok(root);
+        return Ok((root, false));
     }
 
     let source = fs::canonicalize(canonical)?;
@@ -171,7 +325,201 @@ fn derived_view(
     let stage = parent.join(format!(".stage-{}", Uuid::now_v7()));
     copy_derived_tree(&source, &stage, &record.skill_name, harness_name)?;
     fs::rename(&stage, &root)?;
-    Ok(root)
+    Ok((root, true))
+}
+
+/// Reconcile one owned collision-derived view before scanning the canonical workspace.
+/// The persisted semantic root records which side last agreed, so polling never guesses which
+/// copy won when both the canonical and the derived view are editable.
+pub async fn reconcile_owned_derived_projection(
+    paths: &LocalPaths,
+    db: &LocalDatabase,
+    record: &OwnedSkillRecord,
+) -> Result<bool, ProjectionError> {
+    let Some(harness_name) = record.harness_name.as_deref() else {
+        return Ok(false);
+    };
+    if harness_name == record.skill_name {
+        return Ok(false);
+    }
+    let Some(materialized_revision) = record.materialized_revision_id.as_deref() else {
+        return Ok(false);
+    };
+    let derived = paths
+        .derived
+        .join(&record.resource_id)
+        .join(format!("{materialized_revision}-{harness_name}"));
+    if !derived.is_dir() {
+        return Ok(false);
+    }
+    let canonical = paths.skills.join(&record.owner).join(&record.skill_name);
+    let canonical_root = fs::canonicalize(&canonical)?;
+    let canonical_manifest = skill_manifest(&canonical_root, &record.skill_name)?;
+    let (derived_manifest, derived_entries) =
+        canonicalized_derived(&derived, harness_name, &record.skill_name)?;
+    let canonical_root_id = canonical_manifest.root_tree().to_string();
+    let derived_root_id = derived_manifest.root_tree().to_string();
+    let baseline = db
+        .derived_projection_state(record.resource_id.clone())
+        .await?;
+
+    if canonical_root_id == derived_root_id {
+        db.save_derived_projection_state(
+            DerivedProjectionStateRecord {
+                resource_id: record.resource_id.clone(),
+                harness_name: harness_name.to_owned(),
+                baseline_root_tree_id: canonical_root_id,
+            },
+            now_unix_ms(),
+        )
+        .await?;
+        return Ok(false);
+    }
+
+    let Some(baseline) = baseline.filter(|state| state.harness_name == harness_name) else {
+        return Err(ProjectionError::DivergedDerivedEdit(record.locator.clone()));
+    };
+    let canonical_changed = canonical_root_id != baseline.baseline_root_tree_id;
+    let derived_changed = derived_root_id != baseline.baseline_root_tree_id;
+    match (canonical_changed, derived_changed) {
+        (false, true) => {
+            let operation = OperationId::from_uuid(Uuid::now_v7())
+                .map_err(|error| ProjectionError::Corrupt(error.to_string()))?;
+            let resource_root = paths.generations.join(&record.resource_id);
+            fs::create_dir_all(&resource_root)?;
+            let stage = resource_root.join(format!(".writeback-{operation}"));
+            let generation = resource_root.join(format!("workspace-{operation}"));
+            let payload = WorkspaceWritebackJournalPayload {
+                resource_id: record.resource_id.clone(),
+                skill_name: record.skill_name.clone(),
+                harness_name: harness_name.to_owned(),
+                target_root_tree_id: derived_root_id.clone(),
+                stage_dir: stage.display().to_string(),
+                generation_dir: generation.display().to_string(),
+                canonical_path: canonical.display().to_string(),
+            };
+            db.create_workspace_writeback_journal(operation, payload, now_unix_ms())
+                .await?;
+            write_generation(paths, &stage, &derived_entries)?;
+            db.update_workspace_writeback_journal(
+                operation,
+                JournalState::Planned,
+                JournalState::Staged,
+                now_unix_ms(),
+            )
+            .await?;
+            verify_writeback_generation(&stage, &record.skill_name, &derived_root_id)?;
+            fs::rename(&stage, &generation)?;
+            db.update_workspace_writeback_journal(
+                operation,
+                JournalState::Staged,
+                JournalState::Verified,
+                now_unix_ms(),
+            )
+            .await?;
+            atomic_switch_directory_link(&generation, &canonical, operation)?;
+            db.update_workspace_writeback_journal(
+                operation,
+                JournalState::Verified,
+                JournalState::Switched,
+                now_unix_ms(),
+            )
+            .await?;
+            db.set_workspace_working_generation(
+                record.resource_id.clone(),
+                generation.display().to_string(),
+                now_unix_ms(),
+            )
+            .await?;
+            db.save_derived_projection_state(
+                DerivedProjectionStateRecord {
+                    resource_id: record.resource_id.clone(),
+                    harness_name: harness_name.to_owned(),
+                    baseline_root_tree_id: derived_root_id,
+                },
+                now_unix_ms(),
+            )
+            .await?;
+            db.update_workspace_writeback_journal(
+                operation,
+                JournalState::Switched,
+                JournalState::Complete,
+                now_unix_ms(),
+            )
+            .await?;
+            Ok(true)
+        }
+        (true, false) => {
+            fs::remove_dir_all(&derived)?;
+            copy_derived_tree(&canonical_root, &derived, &record.skill_name, harness_name)?;
+            db.save_derived_projection_state(
+                DerivedProjectionStateRecord {
+                    resource_id: record.resource_id.clone(),
+                    harness_name: harness_name.to_owned(),
+                    baseline_root_tree_id: canonical_root_id,
+                },
+                now_unix_ms(),
+            )
+            .await?;
+            Ok(false)
+        }
+        (true, true) => Err(ProjectionError::DivergedDerivedEdit(record.locator.clone())),
+        (false, false) => Ok(false),
+    }
+}
+
+fn skill_manifest(root: &Path, skill_name: &str) -> Result<SkillManifest, ProjectionError> {
+    let entries = read_skill_source(root)?;
+    build_skill_manifest(skill_name, &entries)
+        .map_err(|error| ProjectionError::Corrupt(error.to_string()))
+}
+
+fn verify_writeback_generation(
+    root: &Path,
+    skill_name: &str,
+    expected_root_tree_id: &str,
+) -> Result<(), ProjectionError> {
+    let manifest = skill_manifest(root, skill_name)?;
+    if manifest.root_tree().to_string() != expected_root_tree_id {
+        return Err(ProjectionError::Corrupt(
+            "workspace writeback generation failed semantic verification".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn canonicalized_derived_manifest(
+    root: &Path,
+    harness_name: &str,
+    skill_name: &str,
+) -> Result<SkillManifest, ProjectionError> {
+    canonicalized_derived(root, harness_name, skill_name).map(|value| value.0)
+}
+
+fn canonicalized_derived(
+    root: &Path,
+    harness_name: &str,
+    skill_name: &str,
+) -> Result<(SkillManifest, Vec<OwnedSkillEntry>), ProjectionError> {
+    let mut entries = read_skill_source(root)?;
+    let mut found_skill_md = false;
+    for entry in &mut entries {
+        if let OwnedSkillEntry::File { path, bytes, .. } = entry
+            && path == "SKILL.md"
+        {
+            *bytes = rewrite_skill_document_name(harness_name, bytes, skill_name)
+                .map_err(|error| ProjectionError::Corrupt(error.to_string()))?;
+            found_skill_md = true;
+        }
+    }
+    if !found_skill_md {
+        return Err(ProjectionError::Corrupt(
+            "derived projection is missing SKILL.md".to_owned(),
+        ));
+    }
+    let manifest = build_skill_manifest(skill_name, &entries)
+        .map_err(|error| ProjectionError::Corrupt(error.to_string()))?;
+    Ok((manifest, entries))
 }
 
 fn copy_derived_tree(
@@ -200,9 +548,11 @@ fn copy_derived_tree(
                     rewrite_skill_document_name(canonical_name, &canonical, harness_name)
                         .map_err(|error| ProjectionError::Corrupt(error.to_string()))?;
                 fs::write(&target, rewritten)?;
-            } else if fs::hard_link(item.path(), &target).is_err() {
-                // This is an explicit collision-derived generation, not a harness projection
-                // fallback. Cross-device files may be materialized when hard-linking is impossible.
+            } else {
+                // Collision-derived views must remain independently writable until Denju
+                // validates and journals writeback. A hard link would let an edit through
+                // the derived view mutate the canonical working generation before Denju can
+                // determine which side changed.
                 fs::copy(item.path(), &target)?;
             }
         } else {
@@ -288,156 +638,17 @@ pub enum ProjectionError {
     Materialization(#[from] MaterializationError),
     #[error("failed to scan harness skills: {0}")]
     Harness(#[from] crate::HarnessError),
+    #[error("failed to read managed skill content: {0}")]
+    Source(#[from] crate::SourceError),
     #[error("failed to copy derived view: {0}")]
     Walk(walkdir::Error),
     #[error("projection state is corrupt: {0}")]
     Corrupt(String),
     #[error("refusing to overwrite unmanaged projection path {path}", path = .0.display())]
     RefuseOverwrite(PathBuf),
+    #[error("canonical and collision-derived views both changed for {0}")]
+    DivergedDerivedEdit(String),
 }
 
 #[cfg(test)]
-mod tests {
-    use std::str::FromStr;
-
-    use denju_core::ResourceId;
-    use tempfile::tempdir;
-
-    use super::*;
-    use crate::{ensure_local_layout, prepare_harness_roots};
-
-    fn skill_document(name: &str, owner: &str) -> String {
-        format!(
-            "---\nname: {name}\ndescription: Reviews code for {owner}.\nmetadata:\n  owner: {owner}\n---\n# Review\n"
-        )
-    }
-
-    async fn insert_materialized(
-        db: &LocalDatabase,
-        paths: &LocalPaths,
-        id: &str,
-        owner: &str,
-        name: &str,
-        revision: &str,
-    ) {
-        let resource_id = ResourceId::from_str(id).unwrap();
-        let canonical = paths.skills.join(owner).join(name);
-        fs::create_dir_all(&canonical).unwrap();
-        fs::write(canonical.join("SKILL.md"), skill_document(name, owner)).unwrap();
-        db.upsert_subscription_desired(
-            SubscriptionRecord {
-                resource_id: resource_id.to_string(),
-                locator: format!("@{owner}/{name}"),
-                owner: owner.to_owned(),
-                skill_name: name.to_owned(),
-                resource_generation: 1,
-                release_version: 1,
-                desired_revision_id: revision.to_owned(),
-                harness_name: None,
-                materialized_revision_id: None,
-            },
-            1,
-        )
-        .await
-        .unwrap();
-        db.mark_skill_materialized(resource_id.to_string(), revision.to_owned(), 2)
-            .await
-            .unwrap();
-    }
-
-    #[tokio::test]
-    async fn same_agent_skills_name_gets_stable_derived_aliases_in_both_harnesses() {
-        let home = tempdir().unwrap();
-        let paths = LocalPaths::from_home(home.path().to_owned());
-        ensure_local_layout(&paths).unwrap();
-        let roots = ResolvedHarnessRoots {
-            codex_root: home.path().join(".agents/skills/denju"),
-            claude_root: home.path().join(".claude/skills"),
-        };
-        prepare_harness_roots(&roots).unwrap();
-        let db = LocalDatabase::open(&paths.state_db).await.unwrap();
-        insert_materialized(
-            &db,
-            &paths,
-            "01890f47-6a1c-7cc2-98c1-5f6c1ed8a3a1",
-            "alice",
-            "review",
-            "1111111111111111111111111111111111111111111111111111111111111111",
-        )
-        .await;
-        insert_materialized(
-            &db,
-            &paths,
-            "01890f47-6a1d-7ad0-8f43-9a4d8c29f002",
-            "bob",
-            "review",
-            "2222222222222222222222222222222222222222222222222222222222222222",
-        )
-        .await;
-
-        let first = reconcile_harness_projections(&paths, &db, &roots)
-            .await
-            .unwrap();
-        assert_eq!(first.len(), 2);
-        assert!(
-            first
-                .iter()
-                .all(|(_, name)| name != "review" && name.len() <= 64)
-        );
-        for (locator, harness_name) in &first {
-            let owner = locator.trim_start_matches('@').split_once('/').unwrap().0;
-            let claude = roots.claude_root.join(harness_name);
-            let codex = roots.codex_root.join(owner).join(harness_name);
-            assert!(
-                fs::symlink_metadata(&claude)
-                    .unwrap()
-                    .file_type()
-                    .is_symlink()
-            );
-            assert!(
-                fs::symlink_metadata(&codex)
-                    .unwrap()
-                    .file_type()
-                    .is_symlink()
-            );
-            let projected = fs::read(claude.join("SKILL.md")).unwrap();
-            parse_skill_document(harness_name, &projected).unwrap();
-        }
-
-        let second = reconcile_harness_projections(&paths, &db, &roots)
-            .await
-            .unwrap();
-        assert_eq!(first, second);
-    }
-
-    #[tokio::test]
-    async fn projection_cleanup_refuses_user_replacement() {
-        let home = tempdir().unwrap();
-        let paths = LocalPaths::from_home(home.path().to_owned());
-        ensure_local_layout(&paths).unwrap();
-        let roots = ResolvedHarnessRoots {
-            codex_root: home.path().join(".agents/skills/denju"),
-            claude_root: home.path().join(".claude/skills"),
-        };
-        prepare_harness_roots(&roots).unwrap();
-        let outside = home.path().join("user-skill");
-        fs::create_dir_all(&outside).unwrap();
-        fs::write(outside.join("SKILL.md"), skill_document("review", "user")).unwrap();
-        let link = roots.claude_root.join("review");
-        create_native_directory_link(&outside, &link).unwrap();
-        let record = SubscriptionRecord {
-            resource_id: "01890f47-6a1c-7cc2-98c1-5f6c1ed8a3a1".to_owned(),
-            locator: "@alice/review".to_owned(),
-            owner: "alice".to_owned(),
-            skill_name: "review".to_owned(),
-            resource_generation: 1,
-            release_version: 1,
-            desired_revision_id: "11".repeat(32),
-            harness_name: Some("review".to_owned()),
-            materialized_revision_id: Some("11".repeat(32)),
-        };
-        let error = remove_subscription_projection(&paths, &roots, &record).unwrap_err();
-        assert!(matches!(error, ProjectionError::RefuseOverwrite(_)));
-        assert!(fs::symlink_metadata(link).is_ok());
-    }
-}
+mod tests;

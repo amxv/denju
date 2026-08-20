@@ -54,6 +54,8 @@ cargo run -p denju-server -- check-object-store
 
 The probe covers a presigned staging PUT, verified reads, canonical write/retry, presigned GET, and idempotent deletion. Garage is the deterministic local/reference provider. The same probe is used against R2 when deployment credentials are available; provider-specific product behavior must not be added to make one backend pass.
 
+Owned-workspace tests deliberately cover both the fast watcher path and the authority fallback. Native filesystem notifications only wake bounded/coalesced work; SQLite plus a complete managed-tree scan remains the recovery path after overflow, missed events, daemon restart, or polling fallback. Collision-derived projection writeback has its own journal and must pass interruption recovery at every pre-complete state.
+
 ## Work on the docs
 
 The docs app is isolated under `docs/` and consumes the shared ZueDocs package. Run Astro validation serially:

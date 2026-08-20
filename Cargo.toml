@@ -28,6 +28,7 @@ axum = "0.8.9"
 clap = { version = "4.5", features = ["derive"] }
 hex = "0.4"
 keyring-core = "1.0.0"
+notify = "9.0.0-rc.4"
 rand = "0.10"
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "query", "rustls"] }
 rpassword = "7.5.4"

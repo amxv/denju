@@ -11,7 +11,7 @@ use denju_core::OperationId;
 use denju_local::{
     BootstrapJournal, BootstrapJournalPayload, CredentialBackend, CredentialManager, HarnessConfig,
     InstallCredential, InstallationRecord, JournalState, LocalDatabase, LocalPaths,
-    ResolvedHarnessRoots, ServiceInstallMode, ServiceManager, ServiceStatus,
+    ResolvedHarnessRoots, ServiceInstallMode, ServiceManager, ServiceStatus, WorkspaceWatcher,
     detect_unmanaged_skills, ensure_local_layout, prepare_harness_roots,
     remove_old_codex_projection, resolve_harness_roots, verify_native_directory_links,
 };
@@ -317,6 +317,9 @@ pub async fn daemon() -> Result<ExitCode, RuntimeError> {
 
     fs::write(paths.run.join("daemon.pid"), std::process::id().to_string()).map_err(local_error)?;
     let _guard = RunFileGuard(paths.run.join("daemon.pid"));
+    let mut watcher = WorkspaceWatcher::start(&paths).ok();
+    let mut force_full_hash = false;
+    let mut polling_ticks = 0_u8;
     loop {
         db.quick_check().await.map_err(local_error)?;
         fs::write(paths.run.join("daemon.health"), now_unix_ms().to_string())
@@ -324,12 +327,36 @@ pub async fn daemon() -> Result<ExitCode, RuntimeError> {
         if daemon_once() {
             return Ok(ExitCode::SUCCESS);
         }
+        // Filesystem notifications are only latency hints. This bounded scan is the
+        // authoritative fallback and also lets valid owned edits become durable local
+        // revisions while the registry is temporarily unavailable.
+        let _ = crate::workspace::capture_local_edits(&paths, &db, force_full_hash).await;
         // Remote synchronization is opportunistic background work. The daemon stays alive
         // through registry/network outages; the foreground `denju sync` path surfaces them.
         let _ = crate::public::sync_once().await;
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => return Ok(ExitCode::SUCCESS),
-            _ = tokio::time::sleep(Duration::from_secs(10)) => {}
+        if let Some(native) = watcher.as_mut() {
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => return Ok(ExitCode::SUCCESS),
+                hint = native.changed() => {
+                    // Collapse editor temp-file/write/rename bursts into one coherent scan.
+                    tokio::time::sleep(Duration::from_millis(300)).await;
+                    force_full_hash = native.drain_full_scan_hint(hint);
+                }
+                _ = tokio::time::sleep(Duration::from_secs(10)) => {
+                    polling_ticks = polling_ticks.wrapping_add(1);
+                    // Low-frequency content verification catches timestamp-preserving writes
+                    // and any missed native events without making every poll rehash the tree.
+                    force_full_hash = polling_ticks.is_multiple_of(30);
+                }
+            }
+        } else {
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => return Ok(ExitCode::SUCCESS),
+                _ = tokio::time::sleep(Duration::from_secs(10)) => {
+                    polling_ticks = polling_ticks.wrapping_add(1);
+                    force_full_hash = polling_ticks.is_multiple_of(30);
+                }
+            }
         }
     }
 }
