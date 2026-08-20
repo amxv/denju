@@ -1,0 +1,18 @@
+---
+import { getCollection } from "astro:content";
+import BaseLayout from "zuedocs/layouts/BaseLayout.astro";
+import { docCategories, primaryNav, siteConfig } from "../../data/docs";
+const entries = (await getCollection("docs")).sort((a, b) => a.data.order - b.data.order);
+const grouped = docCategories.map((category) => ({ category, entries: entries.filter((entry) => entry.data.category === category) })).filter((group) => group.entries.length > 0);
+---
+<BaseLayout title={`${siteConfig.name} Docs`} description={siteConfig.description} siteConfig={siteConfig} primaryNav={primaryNav}>
+  <main class="shell" style="padding-block: 5rem;">
+    <h1>Denju docs</h1>
+    {grouped.map((group) => (
+      <section>
+        <h2>{group.category}</h2>
+        <ul>{group.entries.map((entry) => <li><a href={`/docs/${entry.id}`}>{entry.data.title}</a> — {entry.data.description}</li>)}</ul>
+      </section>
+    ))}
+  </main>
+</BaseLayout>

@@ -1,57 +1,46 @@
 # AGENTS.md
 
-Guidance for coding agents working in `denju`.
+Denju is a greenfield Rust implementation. The former Go/Agentbox product is preserved on `legacy/go-agentbox-v0.2.0`; do not recreate or preserve its architecture on `main`.
 
-## Purpose
+## Start here
 
-This repository ships a Go CLI that packages complete directories from an agent
-skills root and shares the archive through the local Agentbox CLI. It is
-distributed as native GitHub release binaries through an npm wrapper.
+1. Read the authoritative product specification at `tmp/gg/denju-product-spec-2026-08-20.md` when your task is part of the Rust workstream.
+2. Read the current implementation plan and progress ledger under `tmp/gg/denju-rust-greenfield/` before changing product behavior.
+3. Read only the phase-scoped Sweep/source regions named by the plan; do not wander through old planning artifacts.
 
-## Architecture
+## Repository map
 
-- `cmd/denju/main.go`: process entrypoint and exit handling.
-- `internal/app/`: flags, validation, help, and workflow orchestration.
-- `internal/bundle/`: deterministic skill validation and `.tar.gz` creation.
-- `internal/agentbox/`: JSON-mode Agentbox CLI adapter.
-- `internal/buildinfo/`: build-time version plumbing.
-- `bin/denju.js`: npm shim for the packaged native binary.
-- `scripts/postinstall.js`: downloads a release binary, with a local Go fallback.
-- `.github/workflows/release.yml`: tag-driven binary and npm release pipeline.
-- `src/`: Astro/ZueDocs documentation site.
+- `apps/denju/` — CLI + background daemon process wiring.
+- `apps/denju-server/` — registry process wiring.
+- `crates/denju-core/` — pure IDs, paths, Merkle/revision/merge domain logic.
+- `crates/denju-wire/` — versioned JSON, CLI structured output, API/SSE contracts.
+- `crates/denju-sync/` — deterministic reconciliation state machine, no I/O.
+- `crates/denju-local/` — SQLite, filesystem generations, watchers, projections, OS services.
+- `crates/denju-client/` — HTTPS/SSE/auth/object-transfer client.
+- `crates/denju-registry/` — registry use cases, PostgreSQL, S3, search, outbox.
+- `crates/denju-testkit/` — shared deterministic fixtures only.
+- `xtask/` — canonical developer/CI commands.
+- `packages/npm/` — thin binary installer/launcher; never a source-build fallback.
+- `docs/` — Astro/ZueDocs site.
 
-## Local commands
+Keep dependencies one-way toward `denju-core`; binaries wire product logic rather than owning it. Do not introduce generic utility crates or traits without a real ownership/I/O boundary.
+
+## Verification
+
+Use the narrowest useful check while iterating, then run the scoped full check before handoff:
 
 ```bash
-make fmt
-make test
-make vet
-make lint
-make check
-make build
-bun run docs:check
-bun run docs:build
+cargo check -p <crate>
+cargo test -p <crate>
+cargo clippy -p <crate> --all-targets -- -D warnings
+cargo xtask check
 ```
 
-Run the two docs commands serially.
+`cargo xtask check` is the canonical repository-wide gate. It runs Rust format/lint/tests plus npm/docs checks. The docs and npm workspaces are intentionally separate from runtime Rust code.
 
-## Product guardrails
+## Safety
 
-- Validate every requested skill before creating an Agentbox thread.
-- Archive full skill directories. Do not omit scripts, references, assets, or
-  executable mode bits.
-- Keep archive paths rooted at plain skill names and reject traversal names.
-- Refuse to overwrite an existing archive.
-- Keep team sharing explicit. Do not publish a thread publicly from this CLI.
-- Keep the Agentbox adapter on `--json` because its response is parsed by code.
-- Preserve the create, attach, then share order so incomplete threads are not
-  exposed to a team.
-
-## Release contract
-
-Release assets are named `<binary>_<goos>_<goarch>[.exe]`. If that convention
-changes, update the workflow and `scripts/postinstall.js` together.
-
-The tag workflow expects `NPM_TOKEN` before the first release. Update
-`src/content/docs/changelog.md`, run all checks, push `main`, and only then push
-a `v*` tag.
+- Keep `tmp/gg/` local and untracked.
+- Never commit credentials, local databases, object blobs, or live private fixtures.
+- Preserve the single Rust implementation path on `main`; no Go or Agentbox fallback.
+- Current source and tests are truth if they have advanced beyond the planning baseline. Amend the plan when a load-bearing assumption proves false instead of silently diverging.

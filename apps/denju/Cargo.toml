@@ -1,0 +1,17 @@
+[package]
+name = "denju"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+denju-client = { path = "../../crates/denju-client" }
+denju-core = { path = "../../crates/denju-core" }
+denju-local = { path = "../../crates/denju-local" }
+denju-sync = { path = "../../crates/denju-sync" }
+denju-wire = { path = "../../crates/denju-wire" }
+
+[lints]
+workspace = true

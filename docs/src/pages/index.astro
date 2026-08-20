@@ -1,0 +1,12 @@
+---
+import BaseLayout from "zuedocs/layouts/BaseLayout.astro";
+import { primaryNav, siteConfig } from "../data/docs";
+---
+<BaseLayout title={`${siteConfig.name} | ${siteConfig.strapline}`} description={siteConfig.description} siteConfig={siteConfig} primaryNav={primaryNav}>
+  <main class="shell" style="padding-block: 7rem; max-width: 760px;">
+    <p>Agent Skills registry + synchronization</p>
+    <h1>Keep every agent on the skills you trust.</h1>
+    <p>Denju is being rebuilt as a native Rust CLI, background synchronization service, and self-hostable registry.</p>
+    <p><a href="/docs">Read the docs →</a></p>
+  </main>
+</BaseLayout>

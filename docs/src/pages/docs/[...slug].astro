@@ -1,0 +1,21 @@
+---
+import { getCollection, render } from "astro:content";
+import BaseLayout from "zuedocs/layouts/BaseLayout.astro";
+import DocsPageLayout from "zuedocs/layouts/DocsPageLayout.astro";
+import { primaryNav, siteConfig } from "../../data/docs";
+
+export async function getStaticPaths() {
+  const entries = await getCollection("docs");
+  return entries.map((entry) => ({ params: { slug: entry.id }, props: { entry } }));
+}
+const { entry } = Astro.props;
+const { Content } = await render(entry);
+---
+<BaseLayout title={`${entry.data.title} | ${siteConfig.name} Docs`} description={entry.data.description} siteConfig={siteConfig} primaryNav={primaryNav}>
+  <main class="shell" style="padding-block: 4rem; max-width: 860px;">
+    <DocsPageLayout title={entry.data.title} description={entry.data.description} category={entry.data.category}>
+      <Content />
+    </DocsPageLayout>
+  </main>
+</BaseLayout>
+<script>import "zuedocs/docsEnhancements";</script>

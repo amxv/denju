@@ -2,48 +2,44 @@
 
 ## Prerequisites
 
-- Go 1.26+
-- Node.js 18+
-- Bun 1+
-- Agentbox CLI for live sharing tests
+- Rust 1.97.1 via `rust-toolchain.toml`
+- Bun 1.3.11
+- Node.js 18+ only for the published npm wrapper checks
 
 ## Local development
 
-```bash
-bun install --frozen-lockfile
-make check
-make build
-./dist/denju --help
-```
-
-Use `--package-only` for local behavior checks that should not create an
-Agentbox thread:
+Install the JavaScript workspaces without running the npm package's release-binary postinstall:
 
 ```bash
-./dist/denju \
-  --package-only \
-  --archive /tmp/example-skills.tar.gz \
-  agentbox
+bun install --ignore-scripts
 ```
 
-Unit tests use temporary skill trees and a fake Agentbox command runner. Do not
-add live network or account mutations to the default test suite.
+Use crate-scoped checks while iterating and the root gate before handoff:
+
+```bash
+cargo check -p denju-core
+cargo test -p denju-core
+cargo xtask check
+```
+
+Build all Rust packages with:
+
+```bash
+cargo build --workspace
+```
 
 ## Documentation
 
+The Astro/ZueDocs app is isolated under `docs/`:
+
 ```bash
+bun run docs:dev
 bun run docs:check
 bun run docs:build
 ```
 
-Run these commands serially and keep command examples synchronized with the CLI.
+## Release shape
 
-## Release process
+A `vX.Y.Z` tag runs the release workflow. It builds native `denju` binaries for macOS, Linux, and Windows on x64 and arm64 runners, publishes a SHA-256 manifest with the GitHub Release, and then publishes the matching `denju-cli` npm wrapper. The npm installer verifies the downloaded binary against that manifest and never compiles from source as a fallback.
 
-1. Run `make check`, `bun run docs:check`, and `bun run docs:build`.
-2. Update `src/content/docs/changelog.md` and push `main`.
-3. Ensure the repository has an `NPM_TOKEN` Actions secret.
-4. Push `vX.Y.Z` or run `make release-tag VERSION=X.Y.Z`.
-
-GitHub Actions builds native binaries, publishes the GitHub release, and then
-publishes `denju-cli` to npm.
+The former Go/Agentbox implementation is preserved on `legacy/go-agentbox-v0.2.0`; do not use it as an implementation template for `main`.

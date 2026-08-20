@@ -1,0 +1,20 @@
+{
+  "name": "@denju/docs",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "astro dev",
+    "check": "astro check",
+    "build": "astro build",
+    "preview": "astro preview"
+  },
+  "dependencies": {
+    "zuedocs": "0.1.26"
+  },
+  "devDependencies": {
+    "@astrojs/check": "^0.9.4",
+    "@types/node": "^24.0.13",
+    "astro": "^7.0.3",
+    "typescript": "^5.9.2"
+  }
+}

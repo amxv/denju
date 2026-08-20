@@ -1,0 +1,29 @@
+[workspace]
+resolver = "3"
+members = [
+  "apps/denju",
+  "apps/denju-server",
+  "crates/denju-core",
+  "crates/denju-wire",
+  "crates/denju-sync",
+  "crates/denju-local",
+  "crates/denju-client",
+  "crates/denju-registry",
+  "crates/denju-testkit",
+  "xtask",
+]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.97"
+license = "Apache-2.0"
+repository = "https://github.com/amxv/denju"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"

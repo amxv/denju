@@ -1,0 +1,41 @@
+{
+  "name": "denju-cli",
+  "version": "0.0.0-development",
+  "description": "Native Denju CLI installer",
+  "license": "Apache-2.0",
+  "author": "amxv",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/amxv/denju.git"
+  },
+  "homepage": "https://denju.ashray.xyz",
+  "bugs": {
+    "url": "https://github.com/amxv/denju/issues"
+  },
+  "bin": {
+    "denju": "bin/denju.js"
+  },
+  "config": {
+    "githubOwner": "amxv",
+    "githubRepo": "denju",
+    "binaryName": "denju"
+  },
+  "files": [
+    "bin/denju.js",
+    "scripts/postinstall.js",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "postinstall": "node scripts/postinstall.js",
+    "check": "node --check bin/denju.js && node --check scripts/postinstall.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "agent-skills",
+    "cli",
+    "rust"
+  ]
+}
