@@ -5,12 +5,14 @@ mod identity_support;
 mod ingest;
 mod lifecycle;
 mod lifecycle_storage;
+mod private_catalog;
 mod public_registry;
 mod realtime;
 mod release;
 mod release_validation;
 mod rename_content;
 mod workspace;
+mod workspace_conflict;
 
 use std::{
     str::FromStr,
@@ -35,7 +37,7 @@ use url::Url;
 use uuid::Uuid;
 
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
-const EXPECTED_SCHEMA_VERSION: i64 = 7;
+const EXPECTED_SCHEMA_VERSION: i64 = 8;
 const SNAPSHOT_URL_TTL: Duration = Duration::from_secs(5 * 60);
 const STAGING_URL_TTL: Duration = Duration::from_secs(10 * 60);
 

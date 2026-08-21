@@ -29,20 +29,20 @@ cargo xtask dev
 
 ## Exercise setup and public subscriptions safely
 
-For setup development, use an isolated home and the explicit local registry rather than your real harness roots:
+For setup or end-to-end development, use Denju's marked test-home mode. Changing only `HOME` is not sufficient because a developer shell may already export absolute `CODEX_HOME` or `CLAUDE_CONFIG_DIR` values.
 
 ```bash
 TEST_HOME="$(mktemp -d)"
-HOME="$TEST_HOME" \
-  CODEX_HOME=.codex \
-  CLAUDE_CONFIG_DIR=.claude \
-  DENJU_TEST_FILE_CREDENTIALS=1 \
-  DENJU_TEST_SERVICE_INSTALL_ONLY=1 \
+touch "$TEST_HOME/.denju-test-home-v1"
+
+DENJU_TEST_HOME="$TEST_HOME" \
   cargo run -p denju -- setup --registry http://127.0.0.1:7788
 
-HOME="$TEST_HOME" CODEX_HOME=.codex CLAUDE_CONFIG_DIR=.claude \
+DENJU_TEST_HOME="$TEST_HOME" \
   cargo run -p denju -- search review
 ```
+
+In test-home mode Denju ignores inherited custom harness roots, keeps Codex and Claude fixtures beneath the marked directory, forces file-backed test credentials, and never starts the real per-user background service. Tests must never use, scan, migrate, project into, or clean a developer's real `~/.agents`, `~/.codex`, `~/.claude`, or custom harness trees.
 
 Phase-scoped integration fixtures may seed public releases through the hidden `denju-server seed-public` development command. That command writes the same PostgreSQL/S3 release model read by the public HTTP API; it is not a second in-memory catalog or a user-facing publishing path.
 

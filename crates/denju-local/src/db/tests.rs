@@ -53,7 +53,116 @@ async fn local_schema_converges_directly_to_current_version() {
         })
         .await
         .unwrap();
-    assert_eq!(version, 6);
+    assert_eq!(version, 7);
+}
+
+#[tokio::test]
+async fn phase9_schema_keeps_phase8_local_revision_insert_shape() {
+    let dir = tempdir().unwrap();
+    let db = LocalDatabase::open(dir.path().join("state.db"))
+        .await
+        .unwrap();
+    db.upsert_owned_skill_desired(
+        OwnedSkillRecord {
+            resource_id: "01890f47-6a1c-7cc2-98c1-5f6c1ed8a3a1".to_owned(),
+            locator: "@alice/review".to_owned(),
+            owner: "alice".to_owned(),
+            skill_name: "review".to_owned(),
+            resource_generation: 1,
+            desired_revision_id: "11".repeat(32),
+            harness_name: None,
+            materialized_revision_id: None,
+        },
+        1,
+    )
+    .await
+    .unwrap();
+
+    db.call(|connection| {
+        connection.execute(
+            "INSERT INTO local_revisions \
+             (operation_id,resource_id,revision_id,parent_revision_id,expected_generation,root_tree_id,manifest_json,state,created_at_unix_ms,updated_at_unix_ms) \
+             VALUES (?1,?2,?3,?4,1,?5,'{}','queued',1,1)",
+            rusqlite::params![
+                "01890f47-6a1d-7ad0-8f43-9a4d8c29f002",
+                "01890f47-6a1c-7cc2-98c1-5f6c1ed8a3a1",
+                "22".repeat(32),
+                "11".repeat(32),
+                "33".repeat(32),
+            ],
+        )?;
+        let merge_parent: Option<String> = connection.query_row(
+            "SELECT merge_parent_revision_id FROM local_revisions WHERE revision_id=?1",
+            rusqlite::params!["22".repeat(32)],
+            |row| row.get(0),
+        )?;
+        assert!(merge_parent.is_none());
+        connection.execute(
+            "UPDATE local_revisions SET state='synced',updated_at_unix_ms=2 WHERE revision_id=?1",
+            rusqlite::params!["22".repeat(32)],
+        )?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn merge_revision_parent_order_round_trips_canonically() {
+    let dir = tempdir().unwrap();
+    let db = LocalDatabase::open(dir.path().join("state.db"))
+        .await
+        .unwrap();
+    let resource_id = "01890f47-6a1c-7cc2-98c1-5f6c1ed8a3a1".to_owned();
+    let active_head = "ff".repeat(32);
+    let detached_head = "00".repeat(32);
+    db.upsert_owned_skill_desired(
+        OwnedSkillRecord {
+            resource_id: resource_id.clone(),
+            locator: "@alice/review".to_owned(),
+            owner: "alice".to_owned(),
+            skill_name: "review".to_owned(),
+            resource_generation: 2,
+            desired_revision_id: active_head.clone(),
+            harness_name: None,
+            materialized_revision_id: None,
+        },
+        1,
+    )
+    .await
+    .unwrap();
+    db.ensure_workspace_baseline(
+        resource_id.clone(),
+        2,
+        active_head.clone(),
+        "33".repeat(32),
+        dir.path().join("generation").display().to_string(),
+        1,
+    )
+    .await
+    .unwrap();
+    db.enqueue_local_revision(
+        crate::LocalRevisionRecord {
+            operation_id: "01890f47-6a1d-7ad0-8f43-9a4d8c29f002".to_owned(),
+            resource_id,
+            revision_id: "44".repeat(32),
+            expected_head_revision_id: active_head.clone(),
+            parent_revision_ids: vec![active_head.clone(), detached_head.clone()],
+            expected_generation: 2,
+            root_tree_id: "55".repeat(32),
+            manifest_json: "{}".to_owned(),
+            state: "queued".to_owned(),
+        },
+        2,
+    )
+    .await
+    .unwrap();
+    let queued = db.queued_local_revisions().await.unwrap().remove(0);
+    assert_eq!(queued.expected_head_revision_id, active_head);
+    assert_eq!(
+        queued.parent_revision_ids,
+        vec![detached_head, "ff".repeat(32)]
+    );
 }
 
 #[tokio::test]

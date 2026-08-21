@@ -10,8 +10,8 @@ use denju_wire::{
     CreateInstallationResponse, DeleteSkillResponse, DeprecateSkillRequest, DeprecateSkillResponse,
     DeviceList, DeviceRevokeRequest, DeviceRevokeResponse, HistoryPruneResponse,
     IdentityBackupRequest, IdentityInfo, IdentitySessionResponse, LoginRequest,
-    PrivateRevisionCommitRequest, PrivateRevisionPrepareResponse, PrivateRevisionRequest,
-    PrivateRevisionResponse, PrivateSkillCatalog, PrivateSkillImportCommitRequest,
+    PrivateRevisionCommitRequest, PrivateRevisionCommitResponse, PrivateRevisionPrepareResponse,
+    PrivateRevisionRequest, PrivateSkillCatalog, PrivateSkillImportCommitRequest,
     PrivateSkillImportPrepareResponse, PrivateSkillImportRequest, PrivateSkillImportResponse,
     PublicSkillDetail, PublicSkillSearchResponse, PublishSkillRequest, PublishSkillResponse,
     RecoveryResetRequest, RegistryCapabilities, RenameSkillRequest, RenameSkillResponse,
@@ -372,7 +372,7 @@ impl RegistryClient {
     pub async fn commit_private_revision(
         &self,
         request: &PrivateRevisionCommitRequest,
-    ) -> Result<PrivateRevisionResponse, ClientError> {
+    ) -> Result<PrivateRevisionCommitResponse, ClientError> {
         self.authenticated_post_json("v1/private-skills/revisions/commit", request)
             .await
     }

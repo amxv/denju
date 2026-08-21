@@ -155,6 +155,36 @@ pub async fn diff(
 }
 
 pub async fn restore(locator: &str, revision: &str) -> Result<RestoreOutcome, RuntimeError> {
+    let context = installed_context(true).await?;
+    if let Some(owned) = context
+        .db
+        .owned_skills()
+        .await
+        .map_err(local_error)?
+        .into_iter()
+        .find(|skill| skill.locator == locator)
+        && context
+            .db
+            .workspace_content_conflict(owned.resource_id)
+            .await
+            .map_err(local_error)?
+            .is_some()
+    {
+        let history = context
+            .client
+            .skill_history(locator)
+            .await
+            .map_err(client_error)?;
+        let target_revision_id = resolve_revision(&history, revision)?;
+        let revision = crate::workspace_merge::resolve_workspace_conflict_with_revision(
+            &context,
+            locator,
+            &target_revision_id,
+        )
+        .await?;
+        return Ok(RestoreOutcome { revision });
+    }
+    drop(context);
     sync_once().await?;
     let context = installed_context(true).await?;
     let history = context

@@ -7,6 +7,7 @@ mod public;
 mod release;
 mod setup;
 mod workspace;
+mod workspace_merge;
 
 use std::{ffi::OsString, path::PathBuf, process::ExitCode};
 
@@ -140,6 +141,7 @@ enum Command {
     Unsubscribe {
         locator: String,
     },
+    Status,
     Sync,
     Doctor,
     #[command(hide = true)]
@@ -308,6 +310,10 @@ enum ResultPayload {
     Unsubscribe {
         #[serde(flatten)]
         outcome: UnsubscribeOutcome,
+    },
+    Status {
+        #[serde(flatten)]
+        outcome: workspace::StatusOutcome,
     },
     Sync {
         #[serde(flatten)]
@@ -664,6 +670,11 @@ async fn run(args: impl IntoIterator<Item = OsString>) -> ExitCode {
                     exit: ExitCode::SUCCESS,
                 })
         }
+        Some(Command::Status) => workspace::status().await.map(|outcome| CommandOutput {
+            text: status_text(&outcome),
+            payload: ResultPayload::Status { outcome },
+            exit: ExitCode::SUCCESS,
+        }),
         Some(Command::Sync) => public::sync_once().await.map(|outcome| CommandOutput {
             text: sync_text(&outcome),
             payload: ResultPayload::Sync { outcome },
@@ -735,6 +746,14 @@ fn guidance_output(guidance: Guidance) -> CommandOutput {
                 exit: ExitCode::SUCCESS,
             }
         }
+        Guidance::Conflict(locator) => CommandOutput {
+            payload: ResultPayload::Guidance {
+                state: "conflict",
+                next_command: Some("denju status".to_owned()),
+            },
+            text: format!("{locator} needs conflict resolution.\nNext: denju status"),
+            exit: ExitCode::SUCCESS,
+        },
         Guidance::Healthy => CommandOutput {
             payload: ResultPayload::Guidance {
                 state: "healthy",
@@ -763,6 +782,35 @@ fn setup_text(outcome: &SetupOutcome) -> String {
     ];
     if let Some(path) = outcome.unmanaged_skills.first() {
         lines.push(format!("Next: denju import {}", quote_command_arg(path)));
+    }
+    lines.join("\n")
+}
+
+fn status_text(outcome: &workspace::StatusOutcome) -> String {
+    if outcome.resources.is_empty() {
+        return "Denju is healthy.".to_owned();
+    }
+    let mut lines = Vec::new();
+    for resource in &outcome.resources {
+        lines.push(format!("{}: {}", resource.locator, resource.state.as_str()));
+        if let Some(message) = &resource.message {
+            lines.push(format!("  {message}"));
+        }
+        if let Some(conflict) = &resource.conflict {
+            if !conflict.conflict_paths.is_empty() {
+                lines.push(format!(
+                    "  Conflicts: {}",
+                    conflict.conflict_paths.join(", ")
+                ));
+            }
+            lines.push(format!(
+                "  Heads: {} {}",
+                conflict.head_revision_ids[0], conflict.head_revision_ids[1]
+            ));
+        }
+        for command in &resource.next_commands {
+            lines.push(format!("  Next: {command}"));
+        }
     }
     lines.join("\n")
 }

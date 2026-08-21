@@ -11,9 +11,10 @@ use denju_core::OperationId;
 use denju_local::{
     BootstrapJournal, BootstrapJournalPayload, CredentialBackend, CredentialManager, HarnessConfig,
     InstallCredential, InstallationRecord, JournalState, LocalDatabase, LocalPaths,
-    ResolvedHarnessRoots, ServiceInstallMode, ServiceManager, ServiceStatus, WorkspaceWatcher,
-    detect_unmanaged_skills, ensure_local_layout, prepare_harness_roots, recover_local_lifecycle,
-    remove_old_codex_projection, resolve_harness_roots, verify_native_directory_links,
+    ResolvedHarnessRoots, ServiceInstallMode, ServiceManager, ServiceStatus, WorkspaceStatus,
+    WorkspaceWatcher, detect_unmanaged_skills, ensure_local_layout, prepare_harness_roots,
+    recover_local_lifecycle, remove_old_codex_projection, resolve_harness_roots,
+    verify_native_directory_links,
 };
 use denju_wire::{
     CliErrorCode, CreateInstallationRequest, RegistryCapabilities, create_installation_request_hash,
@@ -55,6 +56,7 @@ pub enum Guidance {
     RepairRequired,
     ClaimAvailable,
     LoginRequired(String),
+    Conflict(String),
     Healthy,
 }
 
@@ -112,6 +114,24 @@ pub async fn guidance() -> Guidance {
         }
         Err(_) => return Guidance::RepairRequired,
         Ok(Some(_)) => {}
+    }
+    if let Ok(states) = db.workspace_states().await
+        && let Some(conflict) = states
+            .into_iter()
+            .find(|state| state.status == WorkspaceStatus::Conflict)
+    {
+        let locator = db
+            .owned_skills()
+            .await
+            .ok()
+            .and_then(|skills| {
+                skills
+                    .into_iter()
+                    .find(|skill| skill.resource_id == conflict.resource_id)
+                    .map(|skill| skill.locator)
+            })
+            .unwrap_or(conflict.resource_id);
+        return Guidance::Conflict(locator);
     }
     Guidance::Healthy
 }

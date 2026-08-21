@@ -435,6 +435,7 @@ async fn prepare_pending_rename_content(
         &old.resource_id,
         generation,
         &old.desired_revision_id,
+        std::slice::from_ref(&old.desired_revision_id),
         &manifest,
     )
     .map_err(internal_error)?;
@@ -444,13 +445,14 @@ async fn prepare_pending_rename_content(
             operation_id: operation_id.clone(),
             resource_id: old.resource_id.clone(),
             expected_generation: generation,
-            expected_parent_revision_id: old.desired_revision_id.clone(),
+            expected_head_revision_id: old.desired_revision_id.clone(),
+            parent_revision_ids: vec![old.desired_revision_id.clone()],
             manifest,
             request_hash: request_hash.to_string(),
         })
         .await
         .map_err(client_error)?;
-    if prepared.committed {
+    if prepared.state != denju_wire::PrivateRevisionOperationState::Prepared {
         return Err(RuntimeError::new(
             CliErrorCode::Internal,
             "fresh rename preparation unexpectedly committed a private revision",

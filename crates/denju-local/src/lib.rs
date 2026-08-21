@@ -48,10 +48,11 @@ pub use service::{ServiceError, ServiceInstallMode, ServiceKind, ServiceManager,
 pub use source::{SourceError, read_skill_source};
 pub use workspace::{
     WorkspaceScan, WorkspaceScanError, WorkspaceScanStats, scan_owned_workspace,
-    workspace_blob_path,
+    store_workspace_entries, workspace_blob_path, workspace_entries_from_manifest,
 };
 pub use workspace_db::{
-    DerivedProjectionStateRecord, LocalRevisionRecord, WorkspaceFileRecord, WorkspaceStateRecord,
-    WorkspaceStatus, WorkspaceWritebackJournal, WorkspaceWritebackJournalPayload,
+    DerivedProjectionStateRecord, LocalRevisionRecord, WorkspaceContentConflictRecord,
+    WorkspaceFileRecord, WorkspaceStateRecord, WorkspaceStatus, WorkspaceWritebackJournal,
+    WorkspaceWritebackJournalPayload,
 };
 pub use workspace_watch::{WorkspaceWatchError, WorkspaceWatcher};

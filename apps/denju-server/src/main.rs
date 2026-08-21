@@ -28,7 +28,7 @@ use denju_wire::{
     DeprecateSkillRequest, DeprecateSkillResponse, DeviceList, DeviceRevokeRequest,
     DeviceRevokeResponse, HistoryPruneResponse, IdentityBackupRequest, IdentityInfo,
     IdentitySessionResponse, LoginRequest, PrivateRevisionCommitRequest,
-    PrivateRevisionPrepareResponse, PrivateRevisionRequest, PrivateRevisionResponse,
+    PrivateRevisionCommitResponse, PrivateRevisionPrepareResponse, PrivateRevisionRequest,
     PrivateSkillCatalog, PrivateSkillImportCommitRequest, PrivateSkillImportPrepareResponse,
     PrivateSkillImportRequest, PrivateSkillImportResponse, PublicSkillDetail,
     PublicSkillSearchResponse, PublishSkillRequest, PublishSkillResponse, RecoveryResetRequest,
@@ -585,7 +585,7 @@ async fn commit_private_revision(
     State(registry): State<Arc<Registry>>,
     headers: HeaderMap,
     Json(request): Json<PrivateRevisionCommitRequest>,
-) -> Result<Json<PrivateRevisionResponse>, ApiResponseError> {
+) -> Result<Json<PrivateRevisionCommitResponse>, ApiResponseError> {
     let bearer = bearer_token(&headers)?;
     registry
         .commit_private_revision(bearer, &request)

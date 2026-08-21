@@ -9,8 +9,8 @@ use std::{
 };
 
 use denju_core::{
-    BlobId, SkillManifest, SkillManifestEntry, build_skill_manifest_from_hashed_entries,
-    skill_document_declared_name,
+    BlobId, OwnedSkillEntry, SkillManifest, SkillManifestEntry,
+    build_skill_manifest_from_hashed_entries, skill_document_declared_name,
 };
 use thiserror::Error;
 use tokio::sync::Semaphore;
@@ -247,6 +247,61 @@ fn scan_semaphore() -> &'static Arc<Semaphore> {
 pub fn workspace_blob_path(paths: &LocalPaths, blob: BlobId) -> PathBuf {
     let id = blob.to_string();
     paths.objects.join(&id[..2]).join(id)
+}
+
+/// Reconstruct an immutable local revision tree from its semantic manifest and the workspace
+/// object cache. This deliberately does not read the mutable working directory, so a later save
+/// cannot change the bytes participating in a conflict merge.
+pub fn workspace_entries_from_manifest(
+    paths: &LocalPaths,
+    manifest: &SkillManifest,
+) -> Result<Vec<OwnedSkillEntry>, WorkspaceScanError> {
+    manifest
+        .entries()
+        .iter()
+        .map(|entry| match entry {
+            SkillManifestEntry::File {
+                path,
+                blob,
+                size,
+                executable,
+            } => {
+                let bytes = fs::read(workspace_blob_path(paths, *blob))?;
+                if BlobId::hash(&bytes) != *blob || u64::try_from(bytes.len()).ok() != Some(*size) {
+                    return Err(WorkspaceScanError::Corrupt(format!(
+                        "local CAS object {blob} does not match revision manifest"
+                    )));
+                }
+                Ok(OwnedSkillEntry::File {
+                    path: path.clone(),
+                    bytes,
+                    executable: *executable,
+                })
+            }
+            SkillManifestEntry::Directory { path } => {
+                Ok(OwnedSkillEntry::Directory { path: path.clone() })
+            }
+            SkillManifestEntry::Symlink { path, target } => Ok(OwnedSkillEntry::Symlink {
+                path: path.clone(),
+                target: target.clone(),
+            }),
+        })
+        .collect()
+}
+
+/// Ensure every file in an immutable entry set is present in the local workspace CAS without
+/// changing the visible skill tree. Merge preparation uses this before queueing a two-parent
+/// revision so ordinary staged-upload code can read the merged blobs by hash.
+pub fn store_workspace_entries(
+    paths: &LocalPaths,
+    entries: &[OwnedSkillEntry],
+) -> Result<(), WorkspaceScanError> {
+    for entry in entries {
+        if let OwnedSkillEntry::File { bytes, .. } = entry {
+            store_workspace_blob(paths, BlobId::hash(bytes), bytes)?;
+        }
+    }
+    Ok(())
 }
 
 fn store_workspace_blob(

@@ -2,6 +2,7 @@
 
 mod ids;
 mod locator;
+mod merge;
 mod object;
 mod portable_path;
 mod skill;
@@ -9,6 +10,7 @@ mod snapshot;
 
 pub use ids::{AuthorPrincipalId, Generation, IdError, NamespaceId, OperationId, ResourceId};
 pub use locator::{LocatorError, ResourceKind, ResourceLocator};
+pub use merge::{MergeConflict, MergeConflictKind, SkillMergeResult, merge_skill_entries};
 pub use object::{
     BlobId, ObjectIdError, Revision, RevisionError, RevisionId, TreeEntry, TreeEntryKind,
     TreeError, TreeId,

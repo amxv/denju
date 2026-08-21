@@ -6,10 +6,9 @@ use denju_core::{
     parse_skill_document, validate_declared_skill_manifest, validate_skill_name,
 };
 use denju_wire::{
-    ApiError, ApiErrorCode, PrivateSkill, PrivateSkillCatalog, PrivateSkillImportCommitRequest,
-    PrivateSkillImportPrepareResponse, PrivateSkillImportRequest, PrivateSkillImportResponse,
-    PublicSkillManifest, RequestHash, SnapshotDownload, StagedBlobUpload,
-    private_skill_import_request_hash,
+    ApiError, ApiErrorCode, PrivateSkillImportCommitRequest, PrivateSkillImportPrepareResponse,
+    PrivateSkillImportRequest, PrivateSkillImportResponse, PublicSkillManifest, RequestHash,
+    StagedBlobUpload, private_skill_import_request_hash,
 };
 use serde_json::Value;
 use sqlx::FromRow;
@@ -48,20 +47,6 @@ pub(crate) struct StagingRow {
     pub(crate) blob_id: Vec<u8>,
     pub(crate) size_bytes: i64,
     pub(crate) staging_key: String,
-}
-
-#[derive(Debug, FromRow)]
-struct PrivateSkillRow {
-    resource_id: Uuid,
-    owner: String,
-    name: String,
-    description: String,
-    generation: i64,
-    revision_id: Vec<u8>,
-    manifest_json: Value,
-    snapshot_key: String,
-    snapshot_sha256: Vec<u8>,
-    snapshot_size: i64,
 }
 
 impl Registry {
@@ -563,60 +548,6 @@ impl Registry {
             let _ = self.objects.delete(key).await;
         }
         Ok(outcome)
-    }
-
-    pub async fn private_skill_catalog(
-        &self,
-        bearer: &str,
-    ) -> Result<PrivateSkillCatalog, ApiError> {
-        let authority = self.user_authority(bearer, "skills:read").await?;
-        let rows = sqlx::query_as::<_, PrivateSkillRow>(
-            "SELECT r.id AS resource_id,n.slug AS owner,r.slug AS name,r.description,r.generation, \
-                    w.revision_id,w.manifest_json,w.snapshot_key,w.snapshot_sha256,w.snapshot_size \
-             FROM resources r \
-             JOIN namespaces n ON n.id=r.owner_namespace_id \
-             JOIN skill_private_workspaces w ON w.resource_id=r.id \
-             WHERE r.owner_namespace_id=$1 AND r.kind='skill' AND r.deleted_at IS NULL \
-             ORDER BY r.slug,r.id",
-        )
-        .bind(authority.namespace_id)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(internal_api_error)?;
-        let mut skills = Vec::with_capacity(rows.len());
-        for row in rows {
-            let manifest = serde_json::from_value(row.manifest_json)
-                .map_err(|error| ApiError::new(ApiErrorCode::Internal, error.to_string()))?;
-            let revision_id = decode_32(&row.revision_id, "stored revision ID")?;
-            let snapshot_sha = decode_32(&row.snapshot_sha256, "stored snapshot SHA-256")?;
-            let generation = u64::try_from(row.generation).map_err(|_| {
-                ApiError::new(ApiErrorCode::Internal, "stored generation is invalid")
-            })?;
-            let snapshot_size = u64::try_from(row.snapshot_size).map_err(|_| {
-                ApiError::new(ApiErrorCode::Internal, "stored snapshot size is invalid")
-            })?;
-            let url = self
-                .objects
-                .presign_get(&row.snapshot_key)
-                .await
-                .map_err(object_store_api_error)?;
-            skills.push(PrivateSkill {
-                resource_id: row.resource_id.to_string(),
-                locator: format!("@{}/{}", row.owner, row.name),
-                owner: row.owner,
-                name: row.name,
-                description: row.description,
-                generation,
-                revision_id: hex::encode(revision_id),
-                manifest,
-                snapshot: SnapshotDownload {
-                    sha256: hex::encode(snapshot_sha),
-                    size_bytes: snapshot_size,
-                    url,
-                },
-            });
-        }
-        Ok(PrivateSkillCatalog { skills })
     }
 
     fn validate_private_import_request(

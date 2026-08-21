@@ -101,14 +101,122 @@ pub struct LocalRevisionRecord {
     pub operation_id: String,
     pub resource_id: String,
     pub revision_id: String,
-    pub parent_revision_id: String,
+    pub expected_head_revision_id: String,
+    pub parent_revision_ids: Vec<String>,
     pub expected_generation: i64,
     pub root_tree_id: String,
     pub manifest_json: String,
     pub state: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceContentConflictRecord {
+    pub conflict_id: String,
+    pub resource_id: String,
+    pub base_revision_id: String,
+    pub head_revision_ids: Vec<String>,
+    pub active_revision_id: String,
+    pub remote_generation: i64,
+    pub working_root_tree_id: String,
+    pub resolution_required: bool,
+    pub conflict_paths: Vec<String>,
+}
+
 impl LocalDatabase {
+    pub async fn workspace_content_conflict(
+        &self,
+        resource_id: String,
+    ) -> Result<Option<WorkspaceContentConflictRecord>, LocalDbError> {
+        self.call(move |connection| {
+            connection
+                .query_row(
+                    "SELECT conflict_id,resource_id,base_revision_id,head_a_revision_id,head_b_revision_id,active_revision_id,remote_generation,working_root_tree_id,resolution_required,conflict_paths_json \
+                     FROM workspace_content_conflicts WHERE resource_id=?1",
+                    params![resource_id],
+                    |row| {
+                        let paths_json = row.get::<_, String>(9)?;
+                        let conflict_paths = serde_json::from_str(&paths_json).map_err(|error| {
+                            rusqlite::Error::FromSqlConversionFailure(
+                                9,
+                                rusqlite::types::Type::Text,
+                                Box::new(error),
+                            )
+                        })?;
+                        Ok(WorkspaceContentConflictRecord {
+                            conflict_id: row.get(0)?,
+                            resource_id: row.get(1)?,
+                            base_revision_id: row.get(2)?,
+                            head_revision_ids: vec![row.get(3)?, row.get(4)?],
+                            active_revision_id: row.get(5)?,
+                            remote_generation: row.get(6)?,
+                            working_root_tree_id: row.get(7)?,
+                            resolution_required: row.get::<_, i64>(8)? != 0,
+                            conflict_paths,
+                        })
+                    },
+                )
+                .optional()
+                .map_err(LocalDbError::from)
+        })
+        .await
+    }
+
+    pub async fn save_workspace_content_conflict(
+        &self,
+        conflict: WorkspaceContentConflictRecord,
+        now_unix_ms: i64,
+    ) -> Result<(), LocalDbError> {
+        if conflict.head_revision_ids.len() != 2
+            || conflict.head_revision_ids[0] == conflict.head_revision_ids[1]
+        {
+            return Err(LocalDbError::Corrupt(
+                "workspace content conflict must preserve exactly two distinct heads".to_owned(),
+            ));
+        }
+        let conflict_paths_json = serde_json::to_string(&conflict.conflict_paths)?;
+        self.call(move |connection| {
+            connection.execute(
+                "INSERT INTO workspace_content_conflicts \
+                 (conflict_id,resource_id,base_revision_id,head_a_revision_id,head_b_revision_id,active_revision_id,remote_generation,working_root_tree_id,resolution_required,conflict_paths_json,created_at_unix_ms,updated_at_unix_ms) \
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?11) \
+                 ON CONFLICT(resource_id) DO UPDATE SET conflict_id=excluded.conflict_id,base_revision_id=excluded.base_revision_id, \
+                 head_a_revision_id=excluded.head_a_revision_id,head_b_revision_id=excluded.head_b_revision_id, \
+                 active_revision_id=excluded.active_revision_id,remote_generation=excluded.remote_generation, \
+                 working_root_tree_id=excluded.working_root_tree_id,resolution_required=excluded.resolution_required, \
+                 conflict_paths_json=excluded.conflict_paths_json,updated_at_unix_ms=excluded.updated_at_unix_ms",
+                params![
+                    conflict.conflict_id,
+                    conflict.resource_id,
+                    conflict.base_revision_id,
+                    conflict.head_revision_ids[0],
+                    conflict.head_revision_ids[1],
+                    conflict.active_revision_id,
+                    conflict.remote_generation,
+                    conflict.working_root_tree_id,
+                    i64::from(conflict.resolution_required),
+                    conflict_paths_json,
+                    now_unix_ms,
+                ],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
+    pub async fn clear_workspace_content_conflict(
+        &self,
+        resource_id: String,
+    ) -> Result<(), LocalDbError> {
+        self.call(move |connection| {
+            connection.execute(
+                "DELETE FROM workspace_content_conflicts WHERE resource_id=?1",
+                params![resource_id],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
     pub async fn workspace_writeback_journals(
         &self,
     ) -> Result<Vec<WorkspaceWritebackJournal>, LocalDbError> {
@@ -540,17 +648,36 @@ impl LocalDatabase {
         revision: LocalRevisionRecord,
         now_unix_ms: i64,
     ) -> Result<(), LocalDbError> {
+        let mut parent_revision_ids = revision.parent_revision_ids.clone();
+        parent_revision_ids.sort();
+        if parent_revision_ids.is_empty()
+            || parent_revision_ids.len() > 2
+            || parent_revision_ids
+                .windows(2)
+                .any(|pair| pair[0] == pair[1])
+            || !parent_revision_ids.contains(&revision.expected_head_revision_id)
+        {
+            return Err(LocalDbError::Corrupt(
+                "local revision must have one or two unique parents including its expected head"
+                    .to_owned(),
+            ));
+        }
+        let merge_parent_revision_id = parent_revision_ids
+            .iter()
+            .find(|parent| **parent != revision.expected_head_revision_id)
+            .cloned();
         self.call(move |connection| {
             let tx = connection.transaction()?;
             tx.execute(
                 "INSERT INTO local_revisions \
-                 (operation_id,resource_id,revision_id,parent_revision_id,expected_generation,root_tree_id,manifest_json,state,created_at_unix_ms,updated_at_unix_ms) \
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,'queued',?8,?8)",
+                 (operation_id,resource_id,revision_id,parent_revision_id,merge_parent_revision_id,expected_generation,root_tree_id,manifest_json,state,created_at_unix_ms,updated_at_unix_ms) \
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,'queued',?9,?9)",
                 params![
                     revision.operation_id,
                     revision.resource_id,
                     revision.revision_id,
-                    revision.parent_revision_id,
+                    revision.expected_head_revision_id,
+                    merge_parent_revision_id,
                     revision.expected_generation,
                     revision.root_tree_id,
                     revision.manifest_json,
@@ -579,19 +706,27 @@ impl LocalDatabase {
     pub async fn queued_local_revisions(&self) -> Result<Vec<LocalRevisionRecord>, LocalDbError> {
         self.call(|connection| {
             let mut statement = connection.prepare(
-                "SELECT operation_id,resource_id,revision_id,parent_revision_id,expected_generation,root_tree_id,manifest_json,state \
+                "SELECT operation_id,resource_id,revision_id,parent_revision_id,merge_parent_revision_id,expected_generation,root_tree_id,manifest_json,state \
                  FROM local_revisions WHERE state='queued' ORDER BY resource_id,expected_generation,created_at_unix_ms",
             )?;
             let rows = statement.query_map([], |row| {
+                let expected_head_revision_id = row.get::<_, String>(3)?;
+                let merge_parent_revision_id = row.get::<_, Option<String>>(4)?;
+                let mut parent_revision_ids = vec![expected_head_revision_id.clone()];
+                if let Some(parent) = merge_parent_revision_id {
+                    parent_revision_ids.push(parent);
+                }
+                parent_revision_ids.sort();
                 Ok(LocalRevisionRecord {
                     operation_id: row.get(0)?,
                     resource_id: row.get(1)?,
                     revision_id: row.get(2)?,
-                    parent_revision_id: row.get(3)?,
-                    expected_generation: row.get(4)?,
-                    root_tree_id: row.get(5)?,
-                    manifest_json: row.get(6)?,
-                    state: row.get(7)?,
+                    expected_head_revision_id,
+                    parent_revision_ids,
+                    expected_generation: row.get(5)?,
+                    root_tree_id: row.get(6)?,
+                    manifest_json: row.get(7)?,
+                    state: row.get(8)?,
                 })
             })?;
             rows.collect::<Result<Vec<_>, _>>().map_err(LocalDbError::from)
@@ -682,6 +817,29 @@ impl LocalDatabase {
                 )?;
             }
             tx.commit()?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// Marks a locally queued revision as durably stored by the registry without moving this
+    /// device's authoritative workspace baseline. Phase-9 CAS divergence uses this for the
+    /// detached head: the immutable revision is safe remotely, but the active ref still points
+    /// at the other head until a merge resolves the conflict.
+    pub async fn mark_local_revision_detached_stored(
+        &self,
+        operation_id: String,
+        now_unix_ms: i64,
+    ) -> Result<(), LocalDbError> {
+        self.call(move |connection| {
+            let changed = connection.execute(
+                "UPDATE local_revisions SET state='synced',updated_at_unix_ms=?1 \
+                 WHERE operation_id=?2 AND state='queued'",
+                params![now_unix_ms, operation_id],
+            )?;
+            if changed != 1 {
+                return Err(rusqlite::Error::QueryReturnedNoRows.into());
+            }
             Ok(())
         })
         .await

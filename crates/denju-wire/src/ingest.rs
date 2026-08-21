@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{PublicSkillManifest, SnapshotDownload};
+use crate::{PrivateWorkspaceConflict, PublicSkillManifest, SnapshotDownload};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PrivateSkillImportRequest {
@@ -47,6 +47,7 @@ pub struct PrivateSkill {
     pub revision_id: String,
     pub manifest: PublicSkillManifest,
     pub snapshot: SnapshotDownload,
+    pub conflicts: Vec<PrivateWorkspaceConflict>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

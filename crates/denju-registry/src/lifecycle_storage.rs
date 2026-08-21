@@ -46,7 +46,10 @@ impl Registry {
             "SELECT count(*) FROM resource_revision_snapshots rrs JOIN resources r ON r.id=rrs.resource_id \
              JOIN skill_private_workspaces w ON w.resource_id=r.id \
              WHERE r.owner_namespace_id=$1 AND rrs.revision_id<>w.revision_id \
-             AND NOT EXISTS (SELECT 1 FROM skill_releases sr WHERE sr.resource_id=rrs.resource_id AND sr.revision_id=rrs.revision_id)",
+             AND NOT EXISTS (SELECT 1 FROM skill_releases sr WHERE sr.resource_id=rrs.resource_id AND sr.revision_id=rrs.revision_id) \
+             AND NOT EXISTS (SELECT 1 FROM skill_workspace_conflicts swc WHERE swc.resource_id=rrs.resource_id \
+                 AND (swc.base_revision_id=rrs.revision_id OR swc.head_a_revision_id=rrs.revision_id \
+                      OR swc.head_b_revision_id=rrs.revision_id OR swc.resolution_revision_id=rrs.revision_id))",
         )
         .bind(authority.namespace_id)
         .fetch_one(&self.pool)
@@ -58,6 +61,9 @@ impl Registry {
                 JOIN resources r ON r.id=rrs.resource_id JOIN skill_private_workspaces w ON w.resource_id=r.id \
                 WHERE r.owner_namespace_id=$1 AND rrs.revision_id<>w.revision_id \
                 AND NOT EXISTS (SELECT 1 FROM skill_releases sr WHERE sr.resource_id=rrs.resource_id AND sr.revision_id=rrs.revision_id) \
+                AND NOT EXISTS (SELECT 1 FROM skill_workspace_conflicts swc WHERE swc.resource_id=rrs.resource_id \
+                    AND (swc.base_revision_id=rrs.revision_id OR swc.head_a_revision_id=rrs.revision_id \
+                         OR swc.head_b_revision_id=rrs.revision_id OR swc.resolution_revision_id=rrs.revision_id)) \
              ), prune_refs AS ( \
                 SELECT rbr.blob_id,count(*)::bigint AS refs FROM revision_blob_reachability rbr \
                 JOIN eligible e ON e.revision_id=rbr.revision_id GROUP BY rbr.blob_id \
@@ -115,6 +121,9 @@ impl Registry {
              JOIN skill_private_workspaces w ON w.resource_id=rrs.resource_id \
              WHERE rrs.resource_id=$1 AND rrs.revision_id<>w.revision_id \
              AND NOT EXISTS (SELECT 1 FROM skill_releases sr WHERE sr.resource_id=$1 AND sr.revision_id=rrs.revision_id) \
+             AND NOT EXISTS (SELECT 1 FROM skill_workspace_conflicts swc WHERE swc.resource_id=$1 \
+                 AND (swc.base_revision_id=rrs.revision_id OR swc.head_a_revision_id=rrs.revision_id \
+                      OR swc.head_b_revision_id=rrs.revision_id OR swc.resolution_revision_id=rrs.revision_id)) \
              ORDER BY rrs.created_at,rrs.revision_id",
         )
         .bind(resource_id.as_uuid())

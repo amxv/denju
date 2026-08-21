@@ -158,3 +158,30 @@ ALTER TABLE subscriptions ADD COLUMN retain_on_delete INTEGER NOT NULL DEFAULT 0
 ALTER TABLE subscriptions ADD COLUMN retained_after_delete INTEGER NOT NULL DEFAULT 0 CHECK (retained_after_delete IN (0, 1));
 PRAGMA user_version = 6;
 "#;
+
+pub(super) const MIGRATION_V7: &str = r#"
+BEGIN IMMEDIATE;
+
+-- Preserve the existing Phase-8 local revision insert shape. parent_revision_id remains the CAS
+-- expected head and first ancestry parent; merge revisions add only the optional second parent.
+ALTER TABLE local_revisions ADD COLUMN merge_parent_revision_id TEXT;
+
+CREATE TABLE workspace_content_conflicts (
+    conflict_id TEXT PRIMARY KEY,
+    resource_id TEXT NOT NULL UNIQUE REFERENCES owned_skills(resource_id) ON DELETE CASCADE,
+    base_revision_id TEXT NOT NULL,
+    head_a_revision_id TEXT NOT NULL,
+    head_b_revision_id TEXT NOT NULL,
+    active_revision_id TEXT NOT NULL,
+    remote_generation INTEGER NOT NULL CHECK (remote_generation > 0),
+    working_root_tree_id TEXT NOT NULL,
+    resolution_required INTEGER NOT NULL DEFAULT 0 CHECK (resolution_required IN (0, 1)),
+    conflict_paths_json TEXT NOT NULL CHECK (json_valid(conflict_paths_json)),
+    created_at_unix_ms INTEGER NOT NULL,
+    updated_at_unix_ms INTEGER NOT NULL,
+    CHECK (head_a_revision_id <> head_b_revision_id)
+);
+
+PRAGMA user_version = 7;
+COMMIT;
+"#;

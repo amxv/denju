@@ -24,6 +24,7 @@ Commands:\n\
   export  Export an accessible revision as an unmanaged directory\n\
   subscribe   Subscribe to a public skill and materialize it\n\
   unsubscribe Remove a direct skill subscription\n\
+  status  Show local synchronization and conflict state\n\
   sync    Reconcile subscriptions and harness projections\n\
   doctor  Check and repair the local Denju installation\n\
 \n\

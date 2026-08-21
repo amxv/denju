@@ -360,7 +360,8 @@ pub fn private_revision_request_hash(
     operation_id: &str,
     resource_id: &str,
     expected_generation: u64,
-    expected_parent_revision_id: &str,
+    expected_head_revision_id: &str,
+    parent_revision_ids: &[String],
     manifest: &crate::PublicSkillManifest,
 ) -> Result<RequestHash, RequestHashError> {
     #[derive(Serialize)]
@@ -368,14 +369,16 @@ pub fn private_revision_request_hash(
         operation_id: &'a str,
         resource_id: &'a str,
         expected_generation: u64,
-        expected_parent_revision_id: &'a str,
+        expected_head_revision_id: &'a str,
+        parent_revision_ids: &'a [String],
         manifest: &'a crate::PublicSkillManifest,
     }
     let canonical = serde_json_canonicalizer::to_vec(&HashInput {
         operation_id,
         resource_id,
         expected_generation,
-        expected_parent_revision_id,
+        expected_head_revision_id,
+        parent_revision_ids,
         manifest,
     })
     .map_err(|error| RequestHashError::Canonicalization(error.to_string()))?;
@@ -606,6 +609,7 @@ mod tests {
             "01890f47-6a1d-7ad0-8f43-9a4d8c29f002",
             7,
             &"11".repeat(32),
+            &["11".repeat(32)],
             &manifest,
         )
         .unwrap();
@@ -614,6 +618,7 @@ mod tests {
             "01890f47-6a1d-7ad0-8f43-9a4d8c29f002",
             8,
             &"11".repeat(32),
+            &["11".repeat(32)],
             &manifest,
         )
         .unwrap();

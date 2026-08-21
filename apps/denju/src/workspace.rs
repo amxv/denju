@@ -1,17 +1,20 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::{fs, str::FromStr};
 
 use denju_client::ClientError;
 use denju_core::{AuthorPrincipalId, OperationId, Revision, RevisionId};
 use denju_local::{
-    LocalDatabase, LocalPaths, LocalRevisionRecord, OwnedSkillRecord, WorkspaceScanError,
-    WorkspaceStatus, create_native_directory_link, reconcile_owned_derived_projection,
-    recover_workspace_writebacks, scan_owned_workspace, workspace_blob_path,
+    LocalDatabase, LocalPaths, LocalRevisionRecord, OwnedSkillRecord,
+    WorkspaceContentConflictRecord, WorkspaceScanError, WorkspaceStatus,
+    create_native_directory_link, reconcile_owned_derived_projection, recover_workspace_writebacks,
+    scan_owned_workspace, workspace_blob_path,
 };
 use denju_wire::{
-    ApiErrorCode, CliErrorCode, PrivateRevisionCommitRequest, PrivateRevisionRequest,
-    PublicSkillManifest, private_revision_request_hash,
+    ApiErrorCode, CliErrorCode, PrivateRevisionCommitRequest, PrivateRevisionCommitResponse,
+    PrivateRevisionRequest, PrivateWorkspaceConflict, PublicSkillManifest,
+    private_revision_request_hash,
 };
+use serde::Serialize;
 use uuid::Uuid;
 
 use crate::{public::InstalledContext, setup::RuntimeError};
@@ -22,6 +25,122 @@ pub(crate) struct WorkspacePass {
     pub(crate) queued: usize,
     pub(crate) hashed_files: usize,
     pub(crate) reused_files: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct StatusOutcome {
+    pub(crate) state: &'static str,
+    pub(crate) resources: Vec<ResourceStatus>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct ResourceStatus {
+    pub(crate) resource_id: String,
+    pub(crate) locator: String,
+    pub(crate) state: WorkspaceStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) conflict: Option<ConflictStatus>,
+    pub(crate) next_commands: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct ConflictStatus {
+    pub(crate) conflict_id: String,
+    pub(crate) base_revision_id: String,
+    pub(crate) head_revision_ids: Vec<String>,
+    pub(crate) active_revision_id: String,
+    pub(crate) conflict_paths: Vec<String>,
+}
+
+pub(crate) async fn status() -> Result<StatusOutcome, RuntimeError> {
+    let paths = LocalPaths::discover().map_err(local_error)?;
+    if !paths.state_db.is_file() {
+        return Err(
+            RuntimeError::new(CliErrorCode::SetupRequired, "Denju is not set up")
+                .recovery("denju setup"),
+        );
+    }
+    let db = LocalDatabase::open(&paths.state_db)
+        .await
+        .map_err(local_error)?;
+    let locators = db
+        .owned_skills()
+        .await
+        .map_err(local_error)?
+        .into_iter()
+        .map(|record| (record.resource_id, record.locator))
+        .collect::<BTreeMap<_, _>>();
+    let mut resources = Vec::new();
+    for state in db.workspace_states().await.map_err(local_error)? {
+        if state.status == WorkspaceStatus::Clean {
+            continue;
+        }
+        let locator = locators
+            .get(&state.resource_id)
+            .cloned()
+            .unwrap_or_else(|| state.resource_id.clone());
+        let conflict = if state.status == WorkspaceStatus::Conflict {
+            db.workspace_content_conflict(state.resource_id.clone())
+                .await
+                .map_err(local_error)?
+                .map(|conflict| ConflictStatus {
+                    conflict_id: conflict.conflict_id,
+                    base_revision_id: conflict.base_revision_id,
+                    head_revision_ids: conflict.head_revision_ids,
+                    active_revision_id: conflict.active_revision_id,
+                    conflict_paths: conflict.conflict_paths,
+                })
+        } else {
+            None
+        };
+        let next_commands = status_commands(&locator, state.status, conflict.as_ref());
+        resources.push(ResourceStatus {
+            resource_id: state.resource_id,
+            locator,
+            state: state.status,
+            message: state.error_message,
+            conflict,
+            next_commands,
+        });
+    }
+    Ok(StatusOutcome {
+        state: if resources.is_empty() {
+            "healthy"
+        } else {
+            "attention_required"
+        },
+        resources,
+    })
+}
+
+fn status_commands(
+    locator: &str,
+    state: WorkspaceStatus,
+    conflict: Option<&ConflictStatus>,
+) -> Vec<String> {
+    if let Some(conflict) = conflict
+        && conflict.head_revision_ids.len() == 2
+    {
+        return vec![
+            format!(
+                "denju diff {locator} {} {}",
+                conflict.head_revision_ids[0], conflict.head_revision_ids[1]
+            ),
+            format!("denju restore {locator} {}", conflict.head_revision_ids[0]),
+            format!("denju restore {locator} {}", conflict.head_revision_ids[1]),
+            "denju sync".to_owned(),
+        ];
+    }
+    match state {
+        WorkspaceStatus::Queued | WorkspaceStatus::Quota | WorkspaceStatus::Conflict => {
+            vec!["denju sync".to_owned()]
+        }
+        WorkspaceStatus::PendingRename => vec![format!("denju rename {locator} <new-name>")],
+        WorkspaceStatus::PausedValidation => vec!["denju sync".to_owned()],
+        WorkspaceStatus::Clean => Vec::new(),
+    }
 }
 
 pub(crate) async fn capture_local_edits(
@@ -171,6 +290,63 @@ async fn capture_one(
         });
     }
 
+    if state.status == WorkspaceStatus::Conflict
+        && let Some(conflict) = db
+            .workspace_content_conflict(record.resource_id.clone())
+            .await
+            .map_err(local_error)?
+    {
+        let queued = db.queued_local_revisions().await.map_err(local_error)?;
+        if queued
+            .iter()
+            .any(|revision| revision.resource_id == record.resource_id)
+            || !conflict.resolution_required
+            || root_tree == conflict.working_root_tree_id
+        {
+            return Ok(CaptureOne {
+                queued: false,
+                hashed_files: scan.stats.hashed_files,
+                reused_files: scan.stats.reused_files,
+            });
+        }
+        let operation = OperationId::from_str(&conflict.conflict_id)
+            .map_err(|error| RuntimeError::new(CliErrorCode::LocalState, error.to_string()))?;
+        let parents = conflict
+            .head_revision_ids
+            .iter()
+            .map(|parent| {
+                RevisionId::from_str(parent)
+                    .map_err(|error| RuntimeError::new(CliErrorCode::LocalState, error.to_string()))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let revision = Revision::new(scan.manifest.root_tree(), parents, author, operation)
+            .map_err(|error| RuntimeError::new(CliErrorCode::LocalState, error.to_string()))?;
+        let manifest = PublicSkillManifest::from_core(&scan.manifest);
+        db.enqueue_local_revision(
+            LocalRevisionRecord {
+                operation_id: operation.to_string(),
+                resource_id: record.resource_id.clone(),
+                revision_id: revision.id().to_string(),
+                expected_head_revision_id: conflict.active_revision_id,
+                parent_revision_ids: revision.parents().iter().map(ToString::to_string).collect(),
+                expected_generation: conflict.remote_generation,
+                root_tree_id: root_tree,
+                manifest_json: serde_json::to_string(&manifest).map_err(|error| {
+                    RuntimeError::new(CliErrorCode::Internal, error.to_string())
+                })?,
+                state: "queued".to_owned(),
+            },
+            now_unix_ms(),
+        )
+        .await
+        .map_err(local_error)?;
+        return Ok(CaptureOne {
+            queued: true,
+            hashed_files: scan.stats.hashed_files,
+            reused_files: scan.stats.reused_files,
+        });
+    }
+
     let queued = db.queued_local_revisions().await.map_err(local_error)?;
     let latest = queued
         .iter()
@@ -194,7 +370,8 @@ async fn capture_one(
             operation_id: operation.to_string(),
             resource_id: record.resource_id.clone(),
             revision_id: revision.id().to_string(),
-            parent_revision_id: parent.to_string(),
+            expected_head_revision_id: parent.to_string(),
+            parent_revision_ids: vec![parent.to_string()],
             expected_generation,
             root_tree_id: root_tree,
             manifest_json: serde_json::to_string(&manifest)
@@ -325,7 +502,7 @@ pub(crate) async fn drain_queued_revisions(
     Ok((uploaded, blockers))
 }
 
-async fn upload_one(
+pub(crate) async fn upload_one(
     context: &InstalledContext,
     revision: &LocalRevisionRecord,
 ) -> Result<(), RuntimeError> {
@@ -342,7 +519,8 @@ async fn upload_one(
         &operation,
         &revision.resource_id,
         expected_generation,
-        &revision.parent_revision_id,
+        &revision.expected_head_revision_id,
+        &revision.parent_revision_ids,
         &manifest,
     )
     .map_err(|error| RuntimeError::new(CliErrorCode::Internal, error.to_string()))?;
@@ -350,7 +528,8 @@ async fn upload_one(
         operation_id: operation.clone(),
         resource_id: revision.resource_id.clone(),
         expected_generation,
-        expected_parent_revision_id: revision.parent_revision_id.clone(),
+        expected_head_revision_id: revision.expected_head_revision_id.clone(),
+        parent_revision_ids: revision.parent_revision_ids.clone(),
         manifest,
         request_hash: request_hash.to_string(),
     };
@@ -385,20 +564,109 @@ async fn upload_one(
         Ok(committed) => committed,
         Err(error) => return pause_remote_blocker(context, revision, error).await,
     };
-    if committed.revision_id != revision.revision_id {
+    match committed {
+        PrivateRevisionCommitResponse::Advanced {
+            revision: committed,
+        } => {
+            if committed.revision_id != revision.revision_id {
+                return Err(RuntimeError::new(
+                    CliErrorCode::LocalState,
+                    "registry committed a different private revision identity",
+                ));
+            }
+            context
+                .db
+                .mark_local_revision_synced(
+                    operation,
+                    i64::try_from(committed.generation).map_err(|_| {
+                        RuntimeError::new(
+                            CliErrorCode::LocalState,
+                            "registry generation is too large",
+                        )
+                    })?,
+                    committed.revision_id,
+                    now_unix_ms(),
+                )
+                .await
+                .map_err(local_error)
+        }
+        PrivateRevisionCommitResponse::Diverged {
+            resource_id,
+            revision_id,
+            conflict,
+        } => {
+            if resource_id != revision.resource_id || revision_id != revision.revision_id {
+                return Err(RuntimeError::new(
+                    CliErrorCode::LocalState,
+                    "registry preserved a different detached private revision identity",
+                ));
+            }
+            context
+                .db
+                .mark_local_revision_detached_stored(operation, now_unix_ms())
+                .await
+                .map_err(local_error)?;
+            persist_workspace_conflict(
+                context,
+                &conflict,
+                revision.root_tree_id.clone(),
+                false,
+                Vec::new(),
+            )
+            .await?;
+            Ok(())
+        }
+    }
+}
+
+pub(crate) async fn persist_workspace_conflict(
+    context: &InstalledContext,
+    conflict: &PrivateWorkspaceConflict,
+    working_root_tree_id: String,
+    resolution_required: bool,
+    conflict_paths: Vec<String>,
+) -> Result<(), RuntimeError> {
+    if conflict.head_revision_ids.len() != 2 {
         return Err(RuntimeError::new(
             CliErrorCode::LocalState,
-            "registry committed a different private revision identity",
+            "registry returned a workspace conflict without exactly two heads",
         ));
     }
+    let generation = i64::try_from(conflict.generation).map_err(|_| {
+        RuntimeError::new(
+            CliErrorCode::LocalState,
+            "workspace conflict generation exceeds local storage",
+        )
+    })?;
     context
         .db
-        .mark_local_revision_synced(
-            operation,
-            i64::try_from(committed.generation).map_err(|_| {
-                RuntimeError::new(CliErrorCode::LocalState, "registry generation is too large")
-            })?,
-            committed.revision_id,
+        .save_workspace_content_conflict(
+            WorkspaceContentConflictRecord {
+                conflict_id: conflict.conflict_id.clone(),
+                resource_id: conflict.resource_id.clone(),
+                base_revision_id: conflict.base_revision_id.clone(),
+                head_revision_ids: conflict.head_revision_ids.clone(),
+                active_revision_id: conflict.active_revision_id.clone(),
+                remote_generation: generation,
+                working_root_tree_id,
+                resolution_required,
+                conflict_paths,
+            },
+            now_unix_ms(),
+        )
+        .await
+        .map_err(local_error)?;
+    let message = format!(
+        "private workspace {} has concurrent edits on two preserved heads",
+        conflict.resource_id
+    );
+    context
+        .db
+        .pause_workspace(
+            conflict.resource_id.clone(),
+            WorkspaceStatus::Conflict,
+            message,
+            None,
             now_unix_ms(),
         )
         .await
@@ -476,230 +744,5 @@ fn now_unix_ms() -> i64 {
 }
 
 #[cfg(test)]
-mod tests {
-    use denju_core::{OwnedSkillEntry, ResourceId, RevisionId, build_deterministic_skill_snapshot};
-    use denju_local::{
-        DesiredSkillMaterialization, IdentityRecord, LocalPaths, OwnedSkillRecord, WorkspaceStatus,
-        ensure_local_layout, materialize_skill_snapshot,
-    };
-    use tempfile::TempDir;
-
-    use super::*;
-
-    async fn fixture() -> (TempDir, LocalPaths, LocalDatabase, OwnedSkillRecord) {
-        let home = tempfile::tempdir().unwrap();
-        let paths = LocalPaths::from_home(home.path().to_owned());
-        ensure_local_layout(&paths).unwrap();
-        let db = LocalDatabase::open(&paths.state_db).await.unwrap();
-        db.save_identity(
-            IdentityRecord {
-                user_id: "01890f47-6a1c-7cc2-98c1-5f6c1ed8a3a2".into(),
-                namespace_id: "01890f47-6a1c-7cc2-98c1-5f6c1ed8a3a3".into(),
-                username: "@alice".into(),
-                session_id: Some("session".into()),
-                session_backend: Some("file".into()),
-                author_principal_id: Some("01890f47-6a1c-7cc2-98c1-5f6c1ed8a3a4".into()),
-            },
-            1,
-        )
-        .await
-        .unwrap();
-        let resource_id = ResourceId::from_str("01890f47-6a1c-7cc2-98c1-5f6c1ed8a3a1").unwrap();
-        let revision_id = RevisionId::from_bytes([7; 32]);
-        let entries = vec![
-            OwnedSkillEntry::File {
-                path: "SKILL.md".into(),
-                bytes: skill_document("review").into_bytes(),
-                executable: false,
-            },
-            OwnedSkillEntry::File {
-                path: "notes.txt".into(),
-                bytes: b"base\n".to_vec(),
-                executable: false,
-            },
-        ];
-        let snapshot = build_deterministic_skill_snapshot("review", &entries).unwrap();
-        let record = OwnedSkillRecord {
-            resource_id: resource_id.to_string(),
-            locator: "@alice/review".into(),
-            owner: "alice".into(),
-            skill_name: "review".into(),
-            resource_generation: 1,
-            desired_revision_id: revision_id.to_string(),
-            harness_name: None,
-            materialized_revision_id: None,
-        };
-        db.upsert_owned_skill_desired(record.clone(), 1)
-            .await
-            .unwrap();
-        let generation = materialize_skill_snapshot(
-            &paths,
-            &db,
-            &DesiredSkillMaterialization {
-                resource_id,
-                owner: "alice".into(),
-                skill_name: "review".into(),
-                revision_id,
-                manifest: snapshot.manifest().clone(),
-            },
-            snapshot.bytes(),
-        )
-        .await
-        .unwrap();
-        db.ensure_workspace_baseline(
-            record.resource_id.clone(),
-            1,
-            revision_id.to_string(),
-            snapshot.manifest().root_tree().to_string(),
-            generation.display().to_string(),
-            2,
-        )
-        .await
-        .unwrap();
-        let record = db.owned_skills().await.unwrap().remove(0);
-        (home, paths, db, record)
-    }
-
-    fn skill_document(name: &str) -> String {
-        format!("---\nname: {name}\ndescription: Reviews code safely.\n---\n# Review\n")
-    }
-
-    #[tokio::test]
-    async fn coherent_edit_queues_exactly_one_revision() {
-        let (_home, paths, db, _record) = fixture().await;
-        fs::write(paths.skills.join("alice/review/notes.txt"), b"changed\n").unwrap();
-
-        let (first, blockers) = capture_local_edits(&paths, &db, false).await.unwrap();
-        assert!(blockers.is_empty());
-        assert_eq!(first.queued, 1);
-        assert_eq!(db.queued_local_revisions().await.unwrap().len(), 1);
-
-        let (second, blockers) = capture_local_edits(&paths, &db, false).await.unwrap();
-        assert!(blockers.is_empty());
-        assert_eq!(second.queued, 0);
-        assert_eq!(db.queued_local_revisions().await.unwrap().len(), 1);
-    }
-
-    #[tokio::test]
-    async fn metadata_generation_advance_rebases_queued_revision_without_rewriting_it() {
-        let (_home, paths, db, record) = fixture().await;
-        fs::write(paths.skills.join("alice/review/notes.txt"), b"changed\n").unwrap();
-        let (_pass, blockers) = capture_local_edits(&paths, &db, false).await.unwrap();
-        assert!(blockers.is_empty());
-        let before = db.queued_local_revisions().await.unwrap().remove(0);
-        assert_eq!(before.expected_generation, 1);
-
-        db.pause_workspace(
-            record.resource_id.clone(),
-            WorkspaceStatus::Quota,
-            "quota".into(),
-            None,
-            3,
-        )
-        .await
-        .unwrap();
-        db.advance_owned_metadata_generation(record.resource_id.clone(), 1, 2, 4)
-            .await
-            .unwrap();
-
-        let after = db.queued_local_revisions().await.unwrap().remove(0);
-        assert_eq!(after.operation_id, before.operation_id);
-        assert_eq!(after.revision_id, before.revision_id);
-        assert_eq!(after.parent_revision_id, before.parent_revision_id);
-        assert_eq!(after.expected_generation, 2);
-        let state = db
-            .workspace_state(record.resource_id.clone())
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(state.base_generation, 2);
-        assert_eq!(state.status, WorkspaceStatus::Queued);
-        let owned = db
-            .owned_skills()
-            .await
-            .unwrap()
-            .into_iter()
-            .find(|item| item.resource_id == record.resource_id)
-            .unwrap();
-        assert_eq!(owned.resource_generation, 2);
-    }
-
-    #[tokio::test]
-    async fn invalid_save_stays_visible_and_pauses_without_revision() {
-        let (_home, paths, db, record) = fixture().await;
-        let invalid = b"---\nname: review\n---\n# broken but visible\n";
-        fs::write(paths.skills.join("alice/review/SKILL.md"), invalid).unwrap();
-
-        let (_pass, blockers) = capture_local_edits(&paths, &db, false).await.unwrap();
-        assert_eq!(blockers.len(), 1);
-        assert!(db.queued_local_revisions().await.unwrap().is_empty());
-        let state = db
-            .workspace_state(record.resource_id)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(state.status, WorkspaceStatus::PausedValidation);
-        assert_eq!(
-            fs::read(paths.skills.join("alice/review/SKILL.md")).unwrap(),
-            invalid
-        );
-    }
-
-    #[tokio::test]
-    async fn direct_name_edit_becomes_pending_rename_with_exact_recovery() {
-        let (_home, paths, db, record) = fixture().await;
-        fs::write(
-            paths.skills.join("alice/review/SKILL.md"),
-            skill_document("renamed"),
-        )
-        .unwrap();
-
-        let (_pass, blockers) = capture_local_edits(&paths, &db, false).await.unwrap();
-        assert_eq!(blockers.len(), 1);
-        assert_eq!(
-            blockers[0].recovery.as_deref(),
-            Some("denju rename @alice/review renamed")
-        );
-        assert!(db.queued_local_revisions().await.unwrap().is_empty());
-        let state = db
-            .workspace_state(record.resource_id)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(state.status, WorkspaceStatus::PendingRename);
-        assert_eq!(state.pending_rename.as_deref(), Some("renamed"));
-    }
-
-    #[tokio::test]
-    async fn missing_managed_root_is_restored_without_registry_mutation() {
-        let (_home, paths, db, _record) = fixture().await;
-        let canonical = paths.skills.join("alice/review");
-        #[cfg(unix)]
-        fs::remove_file(&canonical).unwrap();
-        #[cfg(windows)]
-        fs::remove_dir(&canonical).unwrap();
-        assert!(!canonical.exists());
-
-        let (pass, blockers) = capture_local_edits(&paths, &db, false).await.unwrap();
-        assert!(blockers.is_empty());
-        assert_eq!(pass.queued, 0);
-        assert!(canonical.join("SKILL.md").is_file());
-    }
-
-    #[tokio::test]
-    async fn concurrent_scanners_do_not_duplicate_revision_for_same_tree() {
-        let (_home, paths, db, _record) = fixture().await;
-        fs::write(paths.skills.join("alice/review/notes.txt"), b"raced\n").unwrap();
-        let paths_a = paths.clone();
-        let paths_b = paths.clone();
-        let db_a = db.clone();
-        let db_b = db.clone();
-        let (a, b) = tokio::join!(
-            capture_local_edits(&paths_a, &db_a, false),
-            capture_local_edits(&paths_b, &db_b, false)
-        );
-        assert!(a.unwrap().1.is_empty());
-        assert!(b.unwrap().1.is_empty());
-        assert_eq!(db.queued_local_revisions().await.unwrap().len(), 1);
-    }
-}
+#[path = "workspace_tests.rs"]
+mod tests;

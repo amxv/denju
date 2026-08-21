@@ -30,7 +30,19 @@ Changing the `name` field directly is treated differently because package identi
 
 Each private workspace ref advances with compare-and-swap against the generation and parent revision the editing device observed. A successful save becomes visible to another authenticated device on its next reconciliation.
 
-If two devices save from the same parent, Denju never silently lets the last request win. The first device may advance the remote workspace; the second keeps its local bytes and local revision and enters a conflict state. Later conflict/merge commands build on that preserved state.
+If two devices save from the same parent, Denju never silently lets the last request win. The first device may advance the remote workspace; the second keeps its local bytes and local revision and enters a conflict state.
+
+Denju fetches both preserved revisions and performs a three-way merge on the client. Changes to different files and non-overlapping text edits merge automatically into one deterministic revision with both original heads as parents. If the edits overlap, only that skill pauses; unrelated skills continue synchronizing.
+
+Inspect an unresolved conflict with:
+
+```bash
+denju status
+```
+
+The status output includes both immutable head IDs and exact commands to compare them. To keep either complete head, run the printed `denju restore @owner/skill <revision>` command. To make a custom resolution, edit the preserved working tree and run `denju sync`. Either path validates the complete result and records a two-parent merge revision, so choosing one side never erases the other head from history.
+
+If another device resolves the conflict first, the next sync adopts that resolved revision only when this device's preserved conflict working tree is still untouched. New local resolution work is never overwritten.
 
 ## Collision-derived projections
 

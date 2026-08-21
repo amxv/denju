@@ -50,6 +50,7 @@ pub use release::{
     SkillRevisionSummary, SyncHint, SyncKnownResource, SyncReconcileRequest, SyncReconcileResponse,
 };
 pub use workspace::{
-    PrivateRevisionCommitRequest, PrivateRevisionPrepareResponse, PrivateRevisionRequest,
-    PrivateRevisionResponse,
+    PrivateRevisionCommitRequest, PrivateRevisionCommitResponse, PrivateRevisionOperationState,
+    PrivateRevisionPrepareResponse, PrivateRevisionRequest, PrivateRevisionResponse,
+    PrivateWorkspaceConflict,
 };

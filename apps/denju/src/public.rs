@@ -90,7 +90,10 @@ pub async fn subscribe(
         retain_on_delete,
     )
     .await?;
-    let sync = sync_with_context(context).await?;
+    let (sync, blockers) = sync_with_context(context).await?;
+    if let Some(blocker) = blockers.into_iter().next() {
+        return Err(blocker);
+    }
     let harness_name = sync
         .projections
         .iter()
@@ -141,7 +144,10 @@ pub async fn unsubscribe(locator: &str) -> Result<UnsubscribeOutcome, RuntimeErr
         false,
     )
     .await?;
-    let sync = sync_with_context(context).await?;
+    let (sync, blockers) = sync_with_context(context).await?;
+    if let Some(blocker) = blockers.into_iter().next() {
+        return Err(blocker);
+    }
     Ok(UnsubscribeOutcome {
         state: "unsubscribed",
         locator: locator.to_owned(),
@@ -179,7 +185,8 @@ pub(crate) async fn sync_once() -> Result<SyncOutcome, RuntimeError> {
     blockers.extend(hydrated_blockers);
     let (_uploaded, upload_blockers) = crate::workspace::drain_queued_revisions(&context).await?;
     blockers.extend(upload_blockers);
-    let outcome = sync_with_context(context).await?;
+    let (outcome, remote_blockers) = sync_with_context(context).await?;
+    blockers.extend(remote_blockers);
     if let Some(blocker) = blockers.into_iter().next() {
         Err(blocker)
     } else {
@@ -234,7 +241,10 @@ pub(crate) async fn clear_local_managed_state() -> Result<usize, RuntimeError> {
     Ok(managed.len())
 }
 
-async fn sync_with_context(context: InstalledContext) -> Result<SyncOutcome, RuntimeError> {
+async fn sync_with_context(
+    context: InstalledContext,
+) -> Result<(SyncOutcome, Vec<RuntimeError>), RuntimeError> {
+    let mut blockers = Vec::new();
     recover_materializations(&context.paths, &context.db)
         .await
         .map_err(local_error)?;
@@ -292,11 +302,32 @@ async fn sync_with_context(context: InstalledContext) -> Result<SyncOutcome, Run
 
     let mut materialized = 0;
     for remote in &reconcile.skills {
-        let existing = context
+        let mut existing = context
             .db
             .subscription(remote.skill.resource_id.clone())
             .await
             .map_err(local_error)?;
+        if let Some(local) = existing.as_ref()
+            && (local.owner != remote.skill.owner || local.skill_name != remote.skill.name)
+        {
+            journaled_remove_managed_skill(
+                &context.paths,
+                &context.db,
+                &context.roots,
+                &ManagedSkillRecord {
+                    resource_id: local.resource_id.clone(),
+                    locator: local.locator.clone(),
+                    owner: local.owner.clone(),
+                    skill_name: local.skill_name.clone(),
+                    harness_name: local.harness_name.clone(),
+                    materialized_revision_id: local.materialized_revision_id.clone(),
+                },
+                ManagedDesiredKind::Subscription,
+            )
+            .await
+            .map_err(local_error)?;
+            existing = None;
+        }
         upsert_desired(&context.db, remote).await?;
         let already_current = existing.as_ref().is_some_and(|record| {
             record.owner == remote.skill.owner
@@ -395,7 +426,23 @@ async fn sync_with_context(context: InstalledContext) -> Result<SyncOutcome, Run
             removed += 1;
         }
         for remote in &owned.skills {
-            materialized += sync_owned_skill(&context, remote).await?;
+            match sync_owned_skill(&context, remote).await {
+                Ok(count) => materialized += count,
+                Err(error) => {
+                    let persisted_conflict = error.code == CliErrorCode::LocalState
+                        && context
+                            .db
+                            .workspace_content_conflict(remote.resource_id.clone())
+                            .await
+                            .map_err(local_error)?
+                            .is_some();
+                    if persisted_conflict {
+                        blockers.push(error);
+                    } else {
+                        return Err(error);
+                    }
+                }
+            }
         }
     }
 
@@ -411,22 +458,25 @@ async fn sync_with_context(context: InstalledContext) -> Result<SyncOutcome, Run
             harness_name,
         })
         .collect();
-    Ok(SyncOutcome {
-        desired: existing.len().saturating_sub(removed)
-            + reconcile
-                .skills
-                .iter()
-                .filter(|remote| {
-                    !existing
-                        .iter()
-                        .any(|local| local.resource_id == remote.skill.resource_id)
-                })
-                .count()
-            + owned_desired,
-        materialized,
-        removed,
-        projections,
-    })
+    Ok((
+        SyncOutcome {
+            desired: existing.len().saturating_sub(removed)
+                + reconcile
+                    .skills
+                    .iter()
+                    .filter(|remote| {
+                        !existing
+                            .iter()
+                            .any(|local| local.resource_id == remote.skill.resource_id)
+                    })
+                    .count()
+                + owned_desired,
+            materialized,
+            removed,
+            projections,
+        },
+        blockers,
+    ))
 }
 
 async fn sync_owned_skill(
@@ -446,6 +496,25 @@ async fn sync_owned_skill(
             "owned resource generation exceeds local storage",
         )
     })?;
+    if remote.conflicts.len() > 1 {
+        return Err(RuntimeError::new(
+            CliErrorCode::LocalState,
+            format!(
+                "{} has multiple unresolved workspace conflicts; registry state is inconsistent",
+                remote.locator
+            ),
+        )
+        .recovery("denju doctor"));
+    }
+    if existing.is_some()
+        && let Some(conflict) = remote.conflicts.first()
+    {
+        return crate::workspace_merge::reconcile_workspace_conflict(context, remote, conflict)
+            .await;
+    }
+    if let Some(local) = existing.as_ref() {
+        crate::workspace_merge::settle_resolved_workspace_conflict(context, remote, local).await?;
+    }
     if let Some(local) = existing.as_ref()
         && (local.owner != remote.owner || local.skill_name != remote.name)
     {
@@ -661,6 +730,11 @@ async fn sync_owned_skill(
         )
         .await
         .map_err(local_error)?;
+    if let Some(conflict) = remote.conflicts.first() {
+        return crate::workspace_merge::reconcile_workspace_conflict(context, remote, conflict)
+            .await
+            .map(|merged| 1 + merged);
+    }
     Ok(1)
 }
 
