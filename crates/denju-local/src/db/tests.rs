@@ -53,7 +53,7 @@ async fn local_schema_converges_directly_to_current_version() {
         })
         .await
         .unwrap();
-    assert_eq!(version, 7);
+    assert_eq!(version, 8);
 }
 
 #[tokio::test]
@@ -231,6 +231,8 @@ async fn owned_skills_share_projection_state_without_becoming_subscriptions() {
             materialized_revision_id: None,
             retain_on_delete: false,
             retained_after_delete: false,
+            live_private: false,
+            desired_root_tree_id: "33".repeat(32),
         },
         1,
     )
@@ -250,6 +252,73 @@ async fn owned_skills_share_projection_state_without_becoming_subscriptions() {
     assert_eq!(owned[0].resource_id, owned_id);
     assert_eq!(owned[0].harness_name.as_deref(), Some("owned"));
     assert_eq!(db.managed_skills().await.unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn local_fork_provenance_is_immutable_and_cascades_with_owned_skill() {
+    let dir = tempdir().unwrap();
+    let db = LocalDatabase::open(dir.path().join("state.db"))
+        .await
+        .unwrap();
+    let resource_id = "01890f47-6a1c-7cc2-98c1-5f6c1ed8a3a1".to_owned();
+    db.upsert_owned_skill_desired(
+        OwnedSkillRecord {
+            resource_id: resource_id.clone(),
+            locator: "@local/review".to_owned(),
+            owner: "local".to_owned(),
+            skill_name: "review".to_owned(),
+            resource_generation: 1,
+            desired_revision_id: "11".repeat(32),
+            harness_name: None,
+            materialized_revision_id: Some("11".repeat(32)),
+        },
+        1,
+    )
+    .await
+    .unwrap();
+    db.save_local_fork(
+        crate::LocalForkRecord {
+            resource_id: resource_id.clone(),
+            upstream_resource_id: "01890f47-6a1d-7ad0-8f43-9a4d8c29f002".to_owned(),
+            upstream_locator: "@alice/review".to_owned(),
+            created_from_revision_id: "22".repeat(32),
+            sync_base_revision_id: "22".repeat(32),
+            desired_name: "review".to_owned(),
+            state: "local".to_owned(),
+        },
+        2,
+    )
+    .await
+    .unwrap();
+
+    // Saving mutable fork state must not be able to rewrite provenance.
+    db.save_local_fork(
+        crate::LocalForkRecord {
+            resource_id: resource_id.clone(),
+            upstream_resource_id: "01890f47-6a1d-7ad0-8f43-9a4d8c29f099".to_owned(),
+            upstream_locator: "@mallory/rewritten".to_owned(),
+            created_from_revision_id: "99".repeat(32),
+            sync_base_revision_id: "33".repeat(32),
+            desired_name: "review-local".to_owned(),
+            state: "name_conflict".to_owned(),
+        },
+        3,
+    )
+    .await
+    .unwrap();
+    let fork = db
+        .local_fork_for_upstream("01890f47-6a1d-7ad0-8f43-9a4d8c29f002".to_owned())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(fork.upstream_locator, "@alice/review");
+    assert_eq!(fork.created_from_revision_id, "22".repeat(32));
+    assert_eq!(fork.sync_base_revision_id, "33".repeat(32));
+    assert_eq!(fork.desired_name, "review-local");
+    assert_eq!(fork.state, "name_conflict");
+
+    db.remove_owned_skill(resource_id).await.unwrap();
+    assert!(db.local_forks().await.unwrap().is_empty());
 }
 
 #[tokio::test]

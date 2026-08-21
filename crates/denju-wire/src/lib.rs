@@ -8,6 +8,7 @@ mod lifecycle;
 mod mutation;
 mod public;
 mod release;
+mod sharing;
 mod workspace;
 
 pub use api::{
@@ -23,9 +24,9 @@ pub use identity::{
     IdentitySessionResponse, LoginRequest, RecoveryResetRequest,
 };
 pub use ingest::{
-    PrivateSkill, PrivateSkillCatalog, PrivateSkillImportCommitRequest,
+    ForkImportIntent, PrivateSkill, PrivateSkillCatalog, PrivateSkillImportCommitRequest,
     PrivateSkillImportPrepareResponse, PrivateSkillImportRequest, PrivateSkillImportResponse,
-    StagedBlobUpload,
+    SkillForkProvenance, StagedBlobUpload,
 };
 pub use lifecycle::{
     DeleteSkillResponse, DeprecateSkillRequest, DeprecateSkillResponse, HistoryPruneResponse,
@@ -33,24 +34,28 @@ pub use lifecycle::{
     UsageResponse,
 };
 pub use mutation::{
-    IdentityMutationDomain, RequestHash, RequestHashError, SubscriptionMutationKind,
-    create_installation_request_hash, delete_skill_request_hash, deprecate_skill_request_hash,
-    history_prune_request_hash, identity_mutation_request_hash, private_revision_request_hash,
+    IdentityMutationDomain, PrivateRevisionRequestHashInput, PrivateSkillImportRequestHashInput,
+    RequestHash, RequestHashError, SubscriptionMutationKind, create_installation_request_hash,
+    delete_skill_request_hash, deprecate_skill_request_hash, history_prune_request_hash,
+    identity_mutation_request_hash, private_revision_request_hash,
     private_skill_import_request_hash, publish_skill_request_hash, rename_skill_request_hash,
-    restore_skill_request_hash, subscription_request_hash, unpublish_skill_request_hash,
+    restore_skill_request_hash, share_skill_request_hash, subscription_request_hash,
+    unpublish_skill_request_hash,
 };
 pub use public::{
     PublicSkill, PublicSkillDetail, PublicSkillManifest, PublicSkillManifestEntry,
     PublicSkillSearchResponse, SkillDeprecation, SnapshotDownload, SubscribedSkill,
-    SubscriptionCatalog, SubscriptionMutationRequest, SubscriptionMutationResponse,
+    SubscriptionCatalog, SubscriptionContent, SubscriptionMutationRequest,
+    SubscriptionMutationResponse, SubscriptionTarget,
 };
 pub use release::{
     DirtyResource, PublishSkillRequest, PublishSkillResponse, RestoreSkillRequest,
     RestoreSkillResponse, SkillHistoryResponse, SkillRelease, SkillRevisionDetail,
     SkillRevisionSummary, SyncHint, SyncKnownResource, SyncReconcileRequest, SyncReconcileResponse,
 };
+pub use sharing::{ShareMutationKind, ShareSkillRequest, ShareSkillResponse};
 pub use workspace::{
-    PrivateRevisionCommitRequest, PrivateRevisionCommitResponse, PrivateRevisionOperationState,
-    PrivateRevisionPrepareResponse, PrivateRevisionRequest, PrivateRevisionResponse,
-    PrivateWorkspaceConflict,
+    ForkSyncIntent, PrivateRevisionCommitRequest, PrivateRevisionCommitResponse,
+    PrivateRevisionOperationState, PrivateRevisionPrepareResponse, PrivateRevisionRequest,
+    PrivateRevisionResponse, PrivateWorkspaceConflict,
 };

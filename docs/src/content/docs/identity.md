@@ -17,7 +17,7 @@ denju login @username
 
 Both commands read passwords through hidden terminal input. Passwords are never command arguments. Claim shows a recovery secret exactly once; store it somewhere separate from the machine.
 
-Claim preserves the setup-created installation author principal. Existing anonymous subscriptions move to account-wide desired state, but immutable revision IDs are not rewritten. A second device can run setup, log in, and reconcile the same direct subscriptions.
+Claim preserves the setup-created installation author principal. Existing anonymous subscriptions move to account-wide desired state, and anonymous local forks are promoted into the claimed namespace without rewriting their immutable revision IDs. A second device can run setup, log in, and reconcile the same direct subscriptions.
 
 Machine-readable `--json` mode never reads passwords or recovery secrets from stdin. Interactive-only identity commands return the stable `interactive_required` error instead.
 

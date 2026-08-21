@@ -1,20 +1,21 @@
 use std::{collections::BTreeMap, str::FromStr};
 
 use denju_core::{
-    AuthorPrincipalId, BlobId, OperationId, OwnedSkillEntry, Revision, SkillManifest,
-    SkillManifestEntry, SkillManifestTree, TreeEntryKind, build_deterministic_skill_snapshot,
-    parse_skill_document, validate_declared_skill_manifest, validate_skill_name,
+    AuthorPrincipalId, BlobId, OperationId, OwnedSkillEntry, ResourceId, Revision, RevisionId,
+    SkillManifest, build_deterministic_skill_snapshot, parse_skill_document,
+    validate_declared_skill_manifest, validate_skill_name,
 };
 use denju_wire::{
-    ApiError, ApiErrorCode, PrivateSkillImportCommitRequest, PrivateSkillImportPrepareResponse,
-    PrivateSkillImportRequest, PrivateSkillImportResponse, PublicSkillManifest, RequestHash,
-    StagedBlobUpload, private_skill_import_request_hash,
+    ApiError, ApiErrorCode, ForkImportIntent, PrivateSkillImportCommitRequest,
+    PrivateSkillImportPrepareResponse, PrivateSkillImportRequest, PrivateSkillImportResponse,
+    PublicSkillManifest, RequestHash, SkillForkProvenance, StagedBlobUpload,
+    private_skill_import_request_hash,
 };
 use serde_json::Value;
 use sqlx::FromRow;
 use uuid::Uuid;
 
-use crate::{Registry, RegistryError, internal_api_error};
+use crate::{Registry, internal_api_error};
 
 const GENERATION_ONE: u64 = 1;
 
@@ -25,6 +26,16 @@ struct ValidatedImport {
     manifest: SkillManifest,
     blobs: BTreeMap<BlobId, u64>,
     snapshot_sha256: [u8; 32],
+    fork: Option<ValidatedFork>,
+}
+
+#[derive(Debug, Clone)]
+struct ValidatedFork {
+    upstream_resource_id: Uuid,
+    upstream_revision_id: RevisionId,
+    replace_subscription: bool,
+    promotion_head_revision_id: Option<RevisionId>,
+    historical_skill_name: Option<String>,
 }
 
 #[derive(Debug, FromRow)]
@@ -38,6 +49,12 @@ struct ImportOperationRow {
     manifest_json: Value,
     snapshot_sha256: Vec<u8>,
     snapshot_size: i64,
+    revision_author_principal_id: Option<Uuid>,
+    fork_upstream_resource_id: Option<Uuid>,
+    fork_upstream_revision_id: Option<Vec<u8>>,
+    fork_replace_subscription: bool,
+    fork_promotion_head_revision_id: Option<Vec<u8>>,
+    historical_skill_name: Option<String>,
     state: String,
     outcome_json: Option<Value>,
 }
@@ -57,11 +74,19 @@ impl Registry {
     ) -> Result<PrivateSkillImportPrepareResponse, ApiError> {
         let authority = self.user_authority(bearer, "skills:write").await?;
         let validated = self.validate_private_import_request(request)?;
-        let author = AuthorPrincipalId::from_uuid(authority.author_principal_id)
+        let revision_author = self
+            .revision_author_for_user(&authority, request.revision_author_principal_id.as_deref())
+            .await?;
+        let author = AuthorPrincipalId::from_uuid(revision_author)
             .map_err(|error| ApiError::new(ApiErrorCode::Internal, error.to_string()))?;
+        let parents = validated
+            .fork
+            .iter()
+            .map(|fork| fork.upstream_revision_id)
+            .collect();
         let revision = Revision::new(
             validated.manifest.root_tree(),
-            Vec::new(),
+            parents,
             author,
             validated.operation_id,
         )
@@ -74,7 +99,6 @@ impl Registry {
             .fetch_one(&mut *tx)
             .await
             .map_err(internal_api_error)?;
-
         if let Some(existing) =
             fetch_import_operation(&mut tx, authority.user_id, validated.operation_id.as_uuid())
                 .await?
@@ -97,6 +121,32 @@ impl Registry {
                 committed: existing.state == "committed",
                 uploads,
             });
+        }
+
+        if let Some(fork) = validated.fork.as_ref() {
+            validate_fork_source(
+                &mut tx,
+                authority.user_id,
+                authority.namespace_id,
+                fork.clone(),
+            )
+            .await?;
+            if fork.replace_subscription {
+                let subscribed = sqlx::query_scalar::<_, bool>(
+                    "SELECT EXISTS(SELECT 1 FROM account_subscriptions WHERE user_id=$1 AND resource_id=$2)",
+                )
+                .bind(authority.user_id)
+                .bind(fork.upstream_resource_id)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(internal_api_error)?;
+                if !subscribed {
+                    return Err(ApiError::new(
+                        ApiErrorCode::GenerationConflict,
+                        "automatic fork source is no longer an active account subscription",
+                    ));
+                }
+            }
         }
 
         if request.expected_generation != 0 {
@@ -147,8 +197,9 @@ impl Registry {
             .map_err(|_| ApiError::new(ApiErrorCode::InvalidRequest, "snapshot is too large"))?;
         sqlx::query(
             "INSERT INTO private_import_operations \
-             (user_id,operation_id,request_hash,namespace_id,resource_id,slug,expected_generation,revision_id,root_tree_id,manifest_json,snapshot_sha256,snapshot_size,state) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'prepared')",
+             (user_id,operation_id,request_hash,namespace_id,resource_id,slug,expected_generation,revision_id,root_tree_id,manifest_json,snapshot_sha256,snapshot_size, \
+              revision_author_principal_id,fork_upstream_resource_id,fork_upstream_revision_id,fork_replace_subscription,fork_promotion_head_revision_id,historical_skill_name,state) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,'prepared')",
         )
         .bind(authority.user_id)
         .bind(validated.operation_id.as_uuid())
@@ -162,6 +213,28 @@ impl Registry {
         .bind(manifest_json)
         .bind(validated.snapshot_sha256.as_slice())
         .bind(snapshot_size)
+        .bind(revision_author)
+        .bind(validated.fork.as_ref().map(|fork| fork.upstream_resource_id))
+        .bind(
+            validated
+                .fork
+                .as_ref()
+                .map(|fork| fork.upstream_revision_id.as_bytes().as_slice().to_vec()),
+        )
+        .bind(validated.fork.as_ref().is_some_and(|fork| fork.replace_subscription))
+        .bind(
+            validated
+                .fork
+                .as_ref()
+                .and_then(|fork| fork.promotion_head_revision_id)
+                .map(|revision| revision.as_bytes().as_slice().to_vec()),
+        )
+        .bind(
+            validated
+                .fork
+                .as_ref()
+                .and_then(|fork| fork.historical_skill_name.as_deref()),
+        )
         .execute(&mut *tx)
         .await
         .map_err(internal_api_error)?;
@@ -323,7 +396,11 @@ impl Registry {
         }
 
         let owned_entries = owned_entries_from_manifest(&manifest, &bytes_by_blob)?;
-        let snapshot = build_deterministic_skill_snapshot(&operation.slug, &owned_entries)
+        let validation_name = operation
+            .historical_skill_name
+            .as_deref()
+            .unwrap_or(&operation.slug);
+        let snapshot = build_deterministic_skill_snapshot(validation_name, &owned_entries)
             .map_err(|error| ApiError::new(ApiErrorCode::InvalidRequest, error.to_string()))?;
         if snapshot.manifest() != &manifest {
             return Err(ApiError::new(
@@ -353,7 +430,7 @@ impl Registry {
             .ok_or_else(|| {
                 ApiError::new(ApiErrorCode::InvalidRequest, "skill is missing SKILL.md")
             })?;
-        let document = parse_skill_document(&operation.slug, skill_md)
+        let document = parse_skill_document(validation_name, skill_md)
             .map_err(|error| ApiError::new(ApiErrorCode::InvalidRequest, error.to_string()))?;
         let description = document.frontmatter().description().to_owned();
 
@@ -377,16 +454,6 @@ impl Registry {
             .map_err(object_store_api_error)?;
 
         let revision_id = decode_32(&operation.revision_id, "stored revision ID")?;
-        let outcome = PrivateSkillImportResponse {
-            resource_id: operation.resource_id.to_string(),
-            locator: format!("@{}/{}", authority.namespace_slug, operation.slug),
-            owner: authority.namespace_slug.clone(),
-            name: operation.slug.clone(),
-            description: description.clone(),
-            generation: GENERATION_ONE,
-            revision_id: hex::encode(revision_id),
-            manifest: manifest_wire.clone(),
-        };
 
         let mut tx = self.pool.begin().await.map_err(internal_api_error)?;
         sqlx::query_scalar::<_, Uuid>("SELECT id FROM namespaces WHERE id=$1 FOR UPDATE")
@@ -401,6 +468,43 @@ impl Registry {
         if locked.state == "committed" {
             return decode_import_outcome(locked.outcome_json);
         }
+        let revision_author = locked
+            .revision_author_principal_id
+            .unwrap_or(authority.author_principal_id);
+        let fork = import_operation_fork(&locked)?;
+        let fork_access = if let Some(fork) = fork.as_ref() {
+            Some(
+                validate_fork_source(
+                    &mut tx,
+                    authority.user_id,
+                    authority.namespace_id,
+                    fork.clone(),
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
+        let outcome_fork = fork
+            .as_ref()
+            .zip(fork_access.as_ref())
+            .map(|(fork, access)| SkillForkProvenance {
+                upstream_resource_id: fork.upstream_resource_id.to_string(),
+                upstream_locator: format!("@{}/{}", access.0, access.1),
+                created_from_revision_id: fork.upstream_revision_id.to_string(),
+                sync_base_revision_id: fork.upstream_revision_id.to_string(),
+            });
+        let outcome = PrivateSkillImportResponse {
+            resource_id: operation.resource_id.to_string(),
+            locator: format!("@{}/{}", authority.namespace_slug, operation.slug),
+            owner: authority.namespace_slug.clone(),
+            name: operation.slug.clone(),
+            description: description.clone(),
+            generation: GENERATION_ONE,
+            revision_id: hex::encode(revision_id),
+            manifest: manifest_wire.clone(),
+            fork: outcome_fork.clone(),
+        };
         if sqlx::query_scalar::<_, i64>(
             "SELECT count(*) FROM resources WHERE owner_namespace_id=$1 AND kind='skill' AND slug=$2 AND deleted_at IS NULL",
         )
@@ -434,11 +538,22 @@ impl Registry {
         )
         .bind(revision_id.as_slice())
         .bind(manifest.root_tree().as_bytes().as_slice())
-        .bind(authority.author_principal_id)
+        .bind(revision_author)
         .bind(operation_id.as_uuid())
         .execute(&mut *tx)
         .await
         .map_err(internal_api_error)?;
+        if let Some(fork) = fork.as_ref() {
+            sqlx::query(
+                "INSERT INTO revision_parents (revision_id,parent_revision_id,ordinal) VALUES ($1,$2,0) \
+                 ON CONFLICT DO NOTHING",
+            )
+            .bind(revision_id.as_slice())
+            .bind(fork.upstream_revision_id.as_bytes().as_slice())
+            .execute(&mut *tx)
+            .await
+            .map_err(internal_api_error)?;
+        }
         for blob in expected_blobs.keys() {
             sqlx::query(
                 "INSERT INTO revision_blob_reachability (revision_id,blob_id) VALUES ($1,$2) ON CONFLICT DO NOTHING",
@@ -469,6 +584,34 @@ impl Registry {
         .execute(&mut *tx)
         .await
         .map_err(internal_api_error)?;
+        if let Some(fork) = fork.as_ref() {
+            let promotion_head = fork.promotion_head_revision_id;
+            let promotion_pending =
+                promotion_head.is_some_and(|head| head.as_bytes() != &revision_id);
+            sqlx::query(
+                "INSERT INTO skill_forks \
+                 (resource_id,upstream_resource_id,created_from_revision_id,sync_base_revision_id,promotion_head_revision_id,promotion_pending) \
+                 VALUES ($1,$2,$3,$3,$4,$5)",
+            )
+            .bind(operation.resource_id)
+            .bind(fork.upstream_resource_id)
+            .bind(fork.upstream_revision_id.as_bytes().as_slice())
+            .bind(promotion_head.map(|head| head.as_bytes().as_slice().to_vec()))
+            .bind(promotion_pending)
+            .execute(&mut *tx)
+            .await
+            .map_err(internal_api_error)?;
+            if fork.replace_subscription {
+                sqlx::query(
+                    "DELETE FROM account_subscriptions WHERE user_id=$1 AND resource_id=$2",
+                )
+                .bind(authority.user_id)
+                .bind(fork.upstream_resource_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(internal_api_error)?;
+            }
+        }
         sqlx::query(
             "INSERT INTO skill_private_workspaces \
              (resource_id,revision_id,generation,manifest_json,snapshot_key,snapshot_sha256,snapshot_size) \
@@ -560,15 +703,18 @@ impl Registry {
             .map_err(|error| ApiError::new(ApiErrorCode::InvalidRequest, error.to_string()))?;
         let supplied_hash = RequestHash::from_str(&request.request_hash)
             .map_err(|error| ApiError::new(ApiErrorCode::InvalidRequestHash, error.to_string()))?;
-        let expected_hash = private_skill_import_request_hash(
-            &request.operation_id,
-            request.expected_generation,
-            &request.name,
-            &request.manifest,
-            &request.snapshot_sha256,
-            request.snapshot_size_bytes,
-        )
-        .map_err(|error| ApiError::new(ApiErrorCode::InvalidRequestHash, error.to_string()))?;
+        let expected_hash =
+            private_skill_import_request_hash(&denju_wire::PrivateSkillImportRequestHashInput {
+                operation_id: &request.operation_id,
+                expected_generation: request.expected_generation,
+                name: &request.name,
+                manifest: &request.manifest,
+                snapshot_sha256: &request.snapshot_sha256,
+                snapshot_size_bytes: request.snapshot_size_bytes,
+                revision_author_principal_id: request.revision_author_principal_id.as_deref(),
+                fork: request.fork.as_ref(),
+            })
+            .map_err(|error| ApiError::new(ApiErrorCode::InvalidRequestHash, error.to_string()))?;
         if supplied_hash != expected_hash {
             return Err(ApiError::new(
                 ApiErrorCode::InvalidRequestHash,
@@ -588,6 +734,7 @@ impl Registry {
             ));
         }
         let snapshot_sha256 = crate::decode_hash(&request.snapshot_sha256, "snapshot_sha256")?;
+        let fork = request.fork.as_ref().map(parse_fork_intent).transpose()?;
         let manifest = request
             .manifest
             .to_core()
@@ -609,6 +756,7 @@ impl Registry {
             manifest,
             blobs,
             snapshot_sha256,
+            fork,
         })
     }
 
@@ -644,7 +792,8 @@ async fn fetch_import_operation(
 ) -> Result<Option<ImportOperationRow>, ApiError> {
     sqlx::query_as::<_, ImportOperationRow>(
         "SELECT request_hash,namespace_id,resource_id,slug,expected_generation,revision_id,manifest_json, \
-                snapshot_sha256,snapshot_size,state,outcome_json \
+                snapshot_sha256,snapshot_size,revision_author_principal_id,fork_upstream_resource_id,fork_upstream_revision_id,fork_replace_subscription, \
+                fork_promotion_head_revision_id,historical_skill_name,state,outcome_json \
          FROM private_import_operations WHERE user_id=$1 AND operation_id=$2",
     )
     .bind(user_id)
@@ -654,6 +803,107 @@ async fn fetch_import_operation(
     .map_err(internal_api_error)
 }
 
+fn parse_fork_intent(intent: &ForkImportIntent) -> Result<ValidatedFork, ApiError> {
+    let upstream_resource_id = ResourceId::from_str(&intent.upstream_resource_id)
+        .map_err(|error| ApiError::new(ApiErrorCode::InvalidRequest, error.to_string()))?;
+    let upstream_revision_id = RevisionId::from_str(&intent.upstream_revision_id)
+        .map_err(|error| ApiError::new(ApiErrorCode::InvalidRequest, error.to_string()))?;
+    let promotion_head_revision_id = intent
+        .promotion_head_revision_id
+        .as_deref()
+        .map(RevisionId::from_str)
+        .transpose()
+        .map_err(|error| ApiError::new(ApiErrorCode::InvalidRequest, error.to_string()))?;
+    if let Some(name) = intent.historical_skill_name.as_deref() {
+        validate_skill_name(name)
+            .map_err(|error| ApiError::new(ApiErrorCode::InvalidRequest, error.to_string()))?;
+        if promotion_head_revision_id.is_none() {
+            return Err(ApiError::new(
+                ApiErrorCode::InvalidRequest,
+                "historical fork content requires an explicit promotion head",
+            ));
+        }
+    }
+    Ok(ValidatedFork {
+        upstream_resource_id: upstream_resource_id.as_uuid(),
+        upstream_revision_id,
+        replace_subscription: intent.replace_subscription,
+        promotion_head_revision_id,
+        historical_skill_name: intent.historical_skill_name.clone(),
+    })
+}
+
+fn import_operation_fork(row: &ImportOperationRow) -> Result<Option<ValidatedFork>, ApiError> {
+    match (
+        row.fork_upstream_resource_id,
+        row.fork_upstream_revision_id.as_deref(),
+    ) {
+        (None, None)
+            if !row.fork_replace_subscription
+                && row.fork_promotion_head_revision_id.is_none()
+                && row.historical_skill_name.is_none() =>
+        {
+            Ok(None)
+        }
+        (Some(resource_id), Some(revision)) => Ok(Some(ValidatedFork {
+            upstream_resource_id: resource_id,
+            upstream_revision_id: RevisionId::from_bytes(decode_32(
+                revision,
+                "stored fork upstream revision ID",
+            )?),
+            replace_subscription: row.fork_replace_subscription,
+            promotion_head_revision_id: row
+                .fork_promotion_head_revision_id
+                .as_deref()
+                .map(|revision| {
+                    decode_32(revision, "stored fork promotion head revision ID")
+                        .map(RevisionId::from_bytes)
+                })
+                .transpose()?,
+            historical_skill_name: row.historical_skill_name.clone(),
+        })),
+        _ => Err(ApiError::new(
+            ApiErrorCode::Internal,
+            "stored fork import intent is invalid",
+        )),
+    }
+}
+
+async fn validate_fork_source(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    user_id: Uuid,
+    namespace_id: Uuid,
+    fork: ValidatedFork,
+) -> Result<(String, String), ApiError> {
+    let row = sqlx::query_as::<_, (Uuid, String, String, String, bool, bool, bool)>(
+        "SELECT r.owner_namespace_id,n.slug,r.slug,r.visibility, \
+                EXISTS(SELECT 1 FROM private_skill_shares s WHERE s.resource_id=r.id AND s.recipient_user_id=$3), \
+                EXISTS(SELECT 1 FROM resource_revision_snapshots rs WHERE rs.resource_id=r.id AND rs.revision_id=$2), \
+                EXISTS(SELECT 1 FROM skill_releases sr WHERE sr.resource_id=r.id AND sr.revision_id=$2) \
+         FROM resources r JOIN namespaces n ON n.id=r.owner_namespace_id \
+         WHERE r.id=$1 AND r.kind='skill' AND r.deleted_at IS NULL FOR SHARE OF r",
+    )
+    .bind(fork.upstream_resource_id)
+    .bind(fork.upstream_revision_id.as_bytes().as_slice())
+    .bind(user_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(internal_api_error)?
+    .ok_or_else(|| ApiError::new(ApiErrorCode::NotFound, "fork upstream is unavailable"))?;
+    let owner = row.0 == namespace_id;
+    let shared = row.4;
+    let revision_exists = row.5;
+    let released = row.6;
+    let readable = revision_exists && (owner || shared || (row.3 == "public" && released));
+    if !readable {
+        return Err(ApiError::new(
+            ApiErrorCode::NotFound,
+            "fork upstream revision is unavailable",
+        ));
+    }
+    Ok((row.1, row.2))
+}
+
 async fn fetch_import_operation_pool(
     pool: &sqlx::PgPool,
     user_id: Uuid,
@@ -661,7 +911,8 @@ async fn fetch_import_operation_pool(
 ) -> Result<Option<ImportOperationRow>, ApiError> {
     sqlx::query_as::<_, ImportOperationRow>(
         "SELECT request_hash,namespace_id,resource_id,slug,expected_generation,revision_id,manifest_json, \
-                snapshot_sha256,snapshot_size,state,outcome_json \
+                snapshot_sha256,snapshot_size,revision_author_principal_id,fork_upstream_resource_id,fork_upstream_revision_id,fork_replace_subscription, \
+                fork_promotion_head_revision_id,historical_skill_name,state,outcome_json \
          FROM private_import_operations WHERE user_id=$1 AND operation_id=$2",
     )
     .bind(user_id)
@@ -687,223 +938,11 @@ async fn fetch_staging_rows(
     .map_err(internal_api_error)
 }
 
-pub(crate) fn manifest_blobs(manifest: &SkillManifest) -> Result<BTreeMap<BlobId, u64>, ApiError> {
-    let mut blobs = BTreeMap::new();
-    for entry in manifest.entries() {
-        if let SkillManifestEntry::File { blob, size, .. } = entry
-            && let Some(existing) = blobs.insert(*blob, *size)
-            && existing != *size
-        {
-            return Err(ApiError::new(
-                ApiErrorCode::InvalidRequest,
-                "the same blob ID is declared with inconsistent sizes",
-            ));
-        }
-    }
-    Ok(blobs)
-}
-
-pub(crate) fn owned_entries_from_manifest(
-    manifest: &SkillManifest,
-    bytes: &BTreeMap<BlobId, Vec<u8>>,
-) -> Result<Vec<OwnedSkillEntry>, ApiError> {
-    manifest
-        .entries()
-        .iter()
-        .map(|entry| match entry {
-            SkillManifestEntry::File {
-                path,
-                blob,
-                executable,
-                ..
-            } => Ok(OwnedSkillEntry::File {
-                path: path.clone(),
-                bytes: bytes.get(blob).cloned().ok_or_else(|| {
-                    ApiError::new(ApiErrorCode::Internal, "verified blob disappeared")
-                })?,
-                executable: *executable,
-            }),
-            SkillManifestEntry::Directory { path } => {
-                Ok(OwnedSkillEntry::Directory { path: path.clone() })
-            }
-            SkillManifestEntry::Symlink { path, target } => Ok(OwnedSkillEntry::Symlink {
-                path: path.clone(),
-                target: target.clone(),
-            }),
-        })
-        .collect()
-}
-
-pub(crate) fn verify_blob(blob: BlobId, expected_size: u64, bytes: &[u8]) -> Result<(), ApiError> {
-    if u64::try_from(bytes.len()).ok() != Some(expected_size) || BlobId::hash(bytes) != blob {
-        return Err(ApiError::new(
-            ApiErrorCode::InvalidRequest,
-            format!("staged object {blob} failed size or SHA-256 verification"),
-        ));
-    }
-    Ok(())
-}
-
-pub(crate) async fn enforce_namespace_quota(
-    registry: &Registry,
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    namespace_id: Uuid,
-    blobs: &BTreeMap<BlobId, u64>,
-) -> Result<(), ApiError> {
-    let current = sqlx::query_scalar::<_, i64>(
-        "SELECT COALESCE(sum(cb.size_bytes),0)::bigint FROM namespace_blob_reachability nbr \
-         JOIN canonical_blobs cb ON cb.blob_id=nbr.blob_id WHERE nbr.namespace_id=$1",
-    )
-    .bind(namespace_id)
-    .fetch_one(&mut **tx)
-    .await
-    .map_err(internal_api_error)?;
-    let mut additional = 0_u64;
-    for (blob, size) in blobs {
-        let exists = sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS(SELECT 1 FROM namespace_blob_reachability WHERE namespace_id=$1 AND blob_id=$2)",
-        )
-        .bind(namespace_id)
-        .bind(blob.as_bytes().as_slice())
-        .fetch_one(&mut **tx)
-        .await
-        .map_err(internal_api_error)?;
-        if !exists {
-            additional = additional.checked_add(*size).ok_or_else(|| {
-                ApiError::new(
-                    ApiErrorCode::QuotaExceeded,
-                    "namespace logical usage overflow",
-                )
-            })?;
-        }
-    }
-    let current = u64::try_from(current)
-        .map_err(|_| ApiError::new(ApiErrorCode::Internal, "namespace logical usage is invalid"))?;
-    let projected = current.checked_add(additional).ok_or_else(|| {
-        ApiError::new(
-            ApiErrorCode::QuotaExceeded,
-            "namespace logical usage overflow",
-        )
-    })?;
-    if projected > registry.limits.namespace_storage_bytes {
-        return Err(ApiError::new(
-            ApiErrorCode::QuotaExceeded,
-            format!(
-                "namespace storage quota exceeded: {projected} > {} bytes",
-                registry.limits.namespace_storage_bytes
-            ),
-        ));
-    }
-    Ok(())
-}
-
-pub(crate) async fn persist_canonical_blobs(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    blobs: &BTreeMap<BlobId, u64>,
-) -> Result<(), ApiError> {
-    for (blob, size) in blobs {
-        let size = i64::try_from(*size).map_err(|_| {
-            ApiError::new(ApiErrorCode::Internal, "blob size exceeds database range")
-        })?;
-        let key = canonical_blob_key(*blob);
-        sqlx::query(
-            "INSERT INTO canonical_blobs (blob_id,size_bytes,object_key) VALUES ($1,$2,$3) \
-             ON CONFLICT(blob_id) DO NOTHING",
-        )
-        .bind(blob.as_bytes().as_slice())
-        .bind(size)
-        .bind(&key)
-        .execute(&mut **tx)
-        .await
-        .map_err(internal_api_error)?;
-        let stored = sqlx::query_as::<_, (i64, String)>(
-            "SELECT size_bytes,object_key FROM canonical_blobs WHERE blob_id=$1",
-        )
-        .bind(blob.as_bytes().as_slice())
-        .fetch_one(&mut **tx)
-        .await
-        .map_err(internal_api_error)?;
-        if stored != (size, key) {
-            return Err(ApiError::new(
-                ApiErrorCode::Internal,
-                "canonical blob metadata conflicts with its content identity",
-            ));
-        }
-    }
-    Ok(())
-}
-
-pub(crate) async fn persist_trees(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    trees: &[SkillManifestTree],
-) -> Result<(), ApiError> {
-    for tree in trees {
-        sqlx::query("INSERT INTO merkle_trees (tree_id) VALUES ($1) ON CONFLICT DO NOTHING")
-            .bind(tree.id().as_bytes().as_slice())
-            .execute(&mut **tx)
-            .await
-            .map_err(internal_api_error)?;
-    }
-    for tree in trees {
-        for entry in tree.entries() {
-            match entry.kind() {
-                TreeEntryKind::File { blob, executable } => {
-                    sqlx::query(
-                        "INSERT INTO tree_entries (tree_id,name,kind,blob_id,executable) \
-                         VALUES ($1,$2,'file',$3,$4) ON CONFLICT(tree_id,name) DO NOTHING",
-                    )
-                    .bind(tree.id().as_bytes().as_slice())
-                    .bind(entry.name())
-                    .bind(blob.as_bytes().as_slice())
-                    .bind(*executable)
-                    .execute(&mut **tx)
-                    .await
-                    .map_err(internal_api_error)?;
-                }
-                TreeEntryKind::Directory { tree: child } => {
-                    sqlx::query(
-                        "INSERT INTO tree_entries (tree_id,name,kind,child_tree_id) \
-                         VALUES ($1,$2,'directory',$3) ON CONFLICT(tree_id,name) DO NOTHING",
-                    )
-                    .bind(tree.id().as_bytes().as_slice())
-                    .bind(entry.name())
-                    .bind(child.as_bytes().as_slice())
-                    .execute(&mut **tx)
-                    .await
-                    .map_err(internal_api_error)?;
-                }
-                TreeEntryKind::Symlink { target } => {
-                    sqlx::query(
-                        "INSERT INTO tree_entries (tree_id,name,kind,symlink_target) \
-                         VALUES ($1,$2,'symlink',$3) ON CONFLICT(tree_id,name) DO NOTHING",
-                    )
-                    .bind(tree.id().as_bytes().as_slice())
-                    .bind(entry.name())
-                    .bind(target)
-                    .execute(&mut **tx)
-                    .await
-                    .map_err(internal_api_error)?;
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
-pub(crate) fn canonical_blob_key(blob: BlobId) -> String {
-    let id = blob.to_string();
-    format!("blobs/sha256/{}/{id}", &id[..2])
-}
-
-pub(crate) fn ensure_request_hash(stored: &[u8], supplied: RequestHash) -> Result<(), ApiError> {
-    if stored != supplied.as_bytes() {
-        return Err(ApiError::new(
-            ApiErrorCode::OperationConflict,
-            "operation_id was already used with different request content",
-        ));
-    }
-    Ok(())
-}
+pub(crate) use crate::ingest_storage::{
+    canonical_blob_key, decode_32, enforce_namespace_quota, ensure_request_hash, manifest_blobs,
+    object_store_api_error, owned_entries_from_manifest, persist_canonical_blobs, persist_trees,
+    verify_blob,
+};
 
 fn decode_import_outcome(value: Option<Value>) -> Result<PrivateSkillImportResponse, ApiError> {
     serde_json::from_value(value.ok_or_else(|| {
@@ -913,17 +952,4 @@ fn decode_import_outcome(value: Option<Value>) -> Result<PrivateSkillImportRespo
         )
     })?)
     .map_err(|error| ApiError::new(ApiErrorCode::Internal, error.to_string()))
-}
-
-pub(crate) fn decode_32(value: &[u8], field: &str) -> Result<[u8; 32], ApiError> {
-    value.try_into().map_err(|_| {
-        ApiError::new(
-            ApiErrorCode::Internal,
-            format!("{field} is not a 32-byte value"),
-        )
-    })
-}
-
-pub(crate) fn object_store_api_error(error: RegistryError) -> ApiError {
-    ApiError::new(ApiErrorCode::Unavailable, error.to_string())
 }

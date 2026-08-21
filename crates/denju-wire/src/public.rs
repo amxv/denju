@@ -3,6 +3,8 @@ use std::str::FromStr;
 use denju_core::{BlobId, SkillManifest, SkillManifestEntry, TreeId};
 use serde::{Deserialize, Serialize};
 
+use crate::SkillForkProvenance;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PublicSkill {
     pub resource_id: String,
@@ -11,7 +13,10 @@ pub struct PublicSkill {
     pub name: String,
     pub description: String,
     pub generation: u64,
-    pub version: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<u64>,
+    #[serde(default)]
+    pub live_private: bool,
     pub revision_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deprecation: Option<SkillDeprecation>,
@@ -29,6 +34,8 @@ pub struct PublicSkillDetail {
     #[serde(flatten)]
     pub skill: PublicSkill,
     pub manifest: PublicSkillManifest,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fork: Option<SkillForkProvenance>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub redirected_from: Option<String>,
 }
@@ -141,10 +148,18 @@ pub struct SnapshotDownload {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SubscribedSkill {
-    pub skill: PublicSkill,
+    pub resource_id: String,
+    pub locator: String,
+    pub owner: String,
+    pub name: String,
+    pub description: String,
+    pub generation: u64,
+    pub revision_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deprecation: Option<SkillDeprecation>,
+    pub content: SubscriptionContent,
     pub manifest: PublicSkillManifest,
     pub snapshot: SnapshotDownload,
-    pub following_latest: bool,
     #[serde(default)]
     pub retain_on_delete: bool,
     #[serde(default)]
@@ -152,8 +167,31 @@ pub struct SubscribedSkill {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SubscriptionContent {
+    Release {
+        version: u64,
+        following_latest: bool,
+    },
+    PrivateWorkspace,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SubscriptionCatalog {
     pub skills: Vec<SubscribedSkill>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubscriptionTarget {
+    pub resource_id: String,
+    pub locator: String,
+    pub owner: String,
+    pub name: String,
+    pub description: String,
+    pub generation: u64,
+    pub live_private: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deprecation: Option<SkillDeprecation>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -192,5 +230,40 @@ mod tests {
         let manifest = build_skill_manifest("review", &entries).unwrap();
         let wire = PublicSkillManifest::from_core(&manifest);
         assert_eq!(wire.to_core().unwrap(), manifest);
+    }
+
+    #[test]
+    fn skill_detail_serializes_visible_fork_provenance() {
+        let entries = vec![OwnedSkillEntry::File {
+            path: "SKILL.md".to_owned(),
+            bytes: b"---\nname: review\ndescription: Reviews code.\n---\n".to_vec(),
+            executable: false,
+        }];
+        let manifest = build_skill_manifest("review", &entries).unwrap();
+        let detail = PublicSkillDetail {
+            skill: PublicSkill {
+                resource_id: "01890f47-6a1d-7ad0-8f43-9a4d8c29f002".into(),
+                locator: "@alice/review".into(),
+                owner: "alice".into(),
+                name: "review".into(),
+                description: "Reviews code.".into(),
+                generation: 3,
+                version: None,
+                live_private: true,
+                revision_id: "11".repeat(32),
+                deprecation: None,
+            },
+            manifest: PublicSkillManifest::from_core(&manifest),
+            fork: Some(SkillForkProvenance {
+                upstream_resource_id: "01890f47-6a1d-7ad0-8f43-9a4d8c29f003".into(),
+                upstream_locator: "@upstream/review".into(),
+                created_from_revision_id: "22".repeat(32),
+                sync_base_revision_id: "33".repeat(32),
+            }),
+            redirected_from: None,
+        };
+        let value = serde_json::to_value(detail).unwrap();
+        assert_eq!(value["fork"]["upstream_locator"], "@upstream/review");
+        assert_eq!(value["fork"]["created_from_revision_id"], "22".repeat(32));
     }
 }

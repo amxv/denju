@@ -16,6 +16,10 @@ use uuid::Uuid;
 
 use crate::{
     Registry,
+    fork_sync::{
+        ValidatedForkSync, parse_fork_sync_intent, require_pending_fork_promotion,
+        validate_fork_sync,
+    },
     ingest::{
         StagingRow, canonical_blob_key, decode_32, enforce_namespace_quota, ensure_request_hash,
         manifest_blobs, object_store_api_error, owned_entries_from_manifest,
@@ -25,6 +29,7 @@ use crate::{
     workspace_conflict::{
         record_workspace_conflict, resolve_workspace_conflict, validate_merge_conflict,
     },
+    workspace_storage::{PrivateRevisionStorage, persist_private_revision_storage},
 };
 
 #[derive(Debug, FromRow)]
@@ -36,6 +41,10 @@ struct RevisionOperationRow {
     expected_head_revision_id: Vec<u8>,
     revision_id: Vec<u8>,
     manifest_json: Value,
+    revision_author_principal_id: Option<Uuid>,
+    fork_sync_base_revision_id: Option<Vec<u8>>,
+    fork_sync_upstream_revision_id: Option<Vec<u8>>,
+    historical_skill_name: Option<String>,
     state: String,
     outcome_json: Option<Value>,
 }
@@ -54,6 +63,15 @@ impl Registry {
         let expected_head = RevisionId::from_str(&request.expected_head_revision_id)
             .map_err(|error| ApiError::new(ApiErrorCode::InvalidRequest, error.to_string()))?;
         let parents = parse_revision_parents(&request.parent_revision_ids)?;
+        let fork_sync = request
+            .fork_sync
+            .as_ref()
+            .map(parse_fork_sync_intent)
+            .transpose()?;
+        if let Some(name) = request.historical_skill_name.as_deref() {
+            denju_core::validate_skill_name(name)
+                .map_err(|error| ApiError::new(ApiErrorCode::InvalidRequest, error.to_string()))?;
+        }
         if !parents.contains(&expected_head) {
             return Err(ApiError::new(
                 ApiErrorCode::InvalidRequest,
@@ -62,15 +80,19 @@ impl Registry {
         }
         let supplied_hash = RequestHash::from_str(&request.request_hash)
             .map_err(|error| ApiError::new(ApiErrorCode::InvalidRequestHash, error.to_string()))?;
-        let expected_hash = private_revision_request_hash(
-            &request.operation_id,
-            &request.resource_id,
-            request.expected_generation,
-            &request.expected_head_revision_id,
-            &request.parent_revision_ids,
-            &request.manifest,
-        )
-        .map_err(|error| ApiError::new(ApiErrorCode::InvalidRequestHash, error.to_string()))?;
+        let expected_hash =
+            private_revision_request_hash(&denju_wire::PrivateRevisionRequestHashInput {
+                operation_id: &request.operation_id,
+                resource_id: &request.resource_id,
+                expected_generation: request.expected_generation,
+                expected_head_revision_id: &request.expected_head_revision_id,
+                parent_revision_ids: &request.parent_revision_ids,
+                manifest: &request.manifest,
+                revision_author_principal_id: request.revision_author_principal_id.as_deref(),
+                fork_sync: request.fork_sync.as_ref(),
+                historical_skill_name: request.historical_skill_name.as_deref(),
+            })
+            .map_err(|error| ApiError::new(ApiErrorCode::InvalidRequestHash, error.to_string()))?;
         if supplied_hash != expected_hash {
             return Err(ApiError::new(
                 ApiErrorCode::InvalidRequestHash,
@@ -92,7 +114,10 @@ impl Registry {
                 ));
             }
         }
-        let author = AuthorPrincipalId::from_uuid(authority.author_principal_id)
+        let revision_author = self
+            .revision_author_for_user(&authority, request.revision_author_principal_id.as_deref())
+            .await?;
+        let author = AuthorPrincipalId::from_uuid(revision_author)
             .map_err(|error| ApiError::new(ApiErrorCode::Internal, error.to_string()))?;
         let revision =
             Revision::new(manifest.root_tree(), parents.clone(), author, operation_id)
@@ -138,6 +163,9 @@ impl Registry {
                 "private skill is unavailable",
             ));
         }
+        if request.historical_skill_name.is_some() {
+            require_pending_fork_promotion(&mut tx, resource_id.as_uuid()).await?;
+        }
         let expected_generation = i64::try_from(request.expected_generation).map_err(|_| {
             ApiError::new(
                 ApiErrorCode::InvalidRequest,
@@ -154,6 +182,12 @@ impl Registry {
         .await
         .map_err(internal_api_error)?;
         if let Some(conflict_id) = active_conflict {
+            if fork_sync.is_some() {
+                return Err(ApiError::new(
+                    ApiErrorCode::GenerationConflict,
+                    "resolve the active private workspace conflict before syncing this fork",
+                ));
+            }
             if parents.len() != 2 || operation_id.as_uuid() != conflict_id {
                 return Err(ApiError::new(
                     ApiErrorCode::GenerationConflict,
@@ -174,13 +208,34 @@ impl Registry {
                     format!("private workspace advanced to generation {}", current.1),
                 ));
             }
-            if parents.len() == 2 {
+            if let Some(fork_sync) = fork_sync {
+                if parents.len() != 2 || !parents.contains(&fork_sync.upstream_revision) {
+                    return Err(ApiError::new(
+                        ApiErrorCode::InvalidRequest,
+                        "fork sync revision must have the current fork head and selected upstream revision as its two parents",
+                    ));
+                }
+                validate_fork_sync(
+                    &mut tx,
+                    authority.user_id,
+                    authority.namespace_id,
+                    resource_id.as_uuid(),
+                    fork_sync,
+                )
+                .await?;
+            } else if parents.len() == 2 {
                 return Err(ApiError::new(
                     ApiErrorCode::GenerationConflict,
                     "merge revision has no matching active workspace conflict",
                 ));
             }
         } else {
+            if fork_sync.is_some() {
+                return Err(ApiError::new(
+                    ApiErrorCode::GenerationConflict,
+                    "fork head advanced while syncing upstream; fetch the current fork and retry",
+                ));
+            }
             if parents.len() != 1 {
                 return Err(ApiError::new(
                     ApiErrorCode::GenerationConflict,
@@ -206,8 +261,9 @@ impl Registry {
 
         sqlx::query(
             "INSERT INTO private_revision_operations \
-             (user_id,operation_id,request_hash,namespace_id,resource_id,expected_generation,expected_head_revision_id,revision_id,root_tree_id,manifest_json,state) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'prepared')",
+             (user_id,operation_id,request_hash,namespace_id,resource_id,expected_generation,expected_head_revision_id,revision_id,root_tree_id,manifest_json, \
+              revision_author_principal_id,fork_sync_base_revision_id,fork_sync_upstream_revision_id,historical_skill_name,state) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'prepared')",
         )
         .bind(authority.user_id)
         .bind(operation_id.as_uuid())
@@ -221,6 +277,10 @@ impl Registry {
         .bind(serde_json::to_value(&request.manifest).map_err(|error| {
             ApiError::new(ApiErrorCode::InvalidRequest, error.to_string())
         })?)
+        .bind(revision_author)
+        .bind(fork_sync.map(|sync| sync.expected_base.as_bytes().as_slice().to_vec()))
+        .bind(fork_sync.map(|sync| sync.upstream_revision.as_bytes().as_slice().to_vec()))
+        .bind(request.historical_skill_name.as_deref())
         .execute(&mut *tx)
         .await
         .map_err(internal_api_error)?;
@@ -401,7 +461,11 @@ impl Registry {
             ));
         }
         let owned_entries = owned_entries_from_manifest(&manifest, &bytes_by_blob)?;
-        let snapshot = build_deterministic_skill_snapshot(&resource.0, &owned_entries)
+        let validation_name = operation
+            .historical_skill_name
+            .as_deref()
+            .unwrap_or(&resource.0);
+        let snapshot = build_deterministic_skill_snapshot(validation_name, &owned_entries)
             .map_err(|error| ApiError::new(ApiErrorCode::InvalidRequest, error.to_string()))?;
         if snapshot.manifest() != &manifest {
             return Err(ApiError::new(
@@ -420,7 +484,7 @@ impl Registry {
             .ok_or_else(|| {
                 ApiError::new(ApiErrorCode::InvalidRequest, "skill is missing SKILL.md")
             })?;
-        let document = parse_skill_document(&resource.0, skill_md)
+        let document = parse_skill_document(validation_name, skill_md)
             .map_err(|error| ApiError::new(ApiErrorCode::InvalidRequest, error.to_string()))?;
         let description = document.frontmatter().description().to_owned();
 
@@ -480,6 +544,13 @@ impl Registry {
         if revision_operation_state(&locked.state)? != PrivateRevisionOperationState::Prepared {
             return decode_revision_outcome(locked.outcome_json);
         }
+        if locked.historical_skill_name.is_some() {
+            require_pending_fork_promotion(&mut tx, operation.resource_id).await?;
+        }
+        let revision_author = locked
+            .revision_author_principal_id
+            .unwrap_or(authority.author_principal_id);
+        let fork_sync = revision_operation_fork_sync(&locked)?;
         let current_head = decode_32(&current.2, "stored private workspace head")?;
         let head_matches = current_head == expected_head;
         let active_conflict = sqlx::query_scalar::<_, Uuid>(
@@ -491,7 +562,7 @@ impl Registry {
         .await
         .map_err(internal_api_error)?;
         if let Some(conflict_id) = active_conflict
-            && (parents.len() != 2 || operation_id.as_uuid() != conflict_id)
+            && (fork_sync.is_some() || parents.len() != 2 || operation_id.as_uuid() != conflict_id)
         {
             return Err(ApiError::new(
                 ApiErrorCode::GenerationConflict,
@@ -502,6 +573,12 @@ impl Registry {
             return Err(ApiError::new(
                 ApiErrorCode::GenerationConflict,
                 format!("private workspace advanced to generation {}", current.1),
+            ));
+        }
+        if !head_matches && fork_sync.is_some() {
+            return Err(ApiError::new(
+                ApiErrorCode::GenerationConflict,
+                "fork head advanced while syncing upstream; fetch the current fork and retry",
             ));
         }
         if !head_matches && parents.len() != 1 {
@@ -516,13 +593,30 @@ impl Registry {
                 .copied()
                 .map(RevisionId::from_bytes)
                 .collect::<Vec<_>>();
-            validate_merge_conflict(
-                &mut tx,
-                operation_id.as_uuid(),
-                operation.resource_id,
-                &parent_ids,
-            )
-            .await?;
+            if let Some(fork_sync) = fork_sync {
+                if !parent_ids.contains(&fork_sync.upstream_revision) {
+                    return Err(ApiError::new(
+                        ApiErrorCode::InvalidRequest,
+                        "stored fork sync parents do not match the selected upstream revision",
+                    ));
+                }
+                validate_fork_sync(
+                    &mut tx,
+                    authority.user_id,
+                    authority.namespace_id,
+                    operation.resource_id,
+                    fork_sync,
+                )
+                .await?;
+            } else {
+                validate_merge_conflict(
+                    &mut tx,
+                    operation_id.as_uuid(),
+                    operation.resource_id,
+                    &parent_ids,
+                )
+                .await?;
+            }
         }
 
         enforce_namespace_quota(self, &mut tx, authority.namespace_id, &expected_blobs).await?;
@@ -533,7 +627,7 @@ impl Registry {
             PrivateRevisionStorage {
                 resource_id: operation.resource_id,
                 namespace_id: authority.namespace_id,
-                author_principal_id: authority.author_principal_id,
+                author_principal_id: revision_author,
                 operation_id: operation_id.as_uuid(),
                 revision_id,
                 parents: &parents,
@@ -576,7 +670,7 @@ impl Registry {
             .execute(&mut *tx)
             .await
             .map_err(internal_api_error)?;
-            if parents.len() == 2 {
+            if parents.len() == 2 && fork_sync.is_none() {
                 resolve_workspace_conflict(
                     &mut tx,
                     operation_id.as_uuid(),
@@ -585,6 +679,26 @@ impl Registry {
                 )
                 .await?;
             }
+            if let Some(fork_sync) = fork_sync {
+                sqlx::query(
+                    "UPDATE skill_forks SET sync_base_revision_id=$1 WHERE resource_id=$2 AND sync_base_revision_id=$3",
+                )
+                .bind(fork_sync.upstream_revision.as_bytes().as_slice())
+                .bind(operation.resource_id)
+                .bind(fork_sync.expected_base.as_bytes().as_slice())
+                .execute(&mut *tx)
+                .await
+                .map_err(internal_api_error)?;
+            }
+            sqlx::query(
+                "UPDATE skill_forks SET promotion_pending=FALSE \
+                 WHERE resource_id=$1 AND promotion_pending=TRUE AND promotion_head_revision_id=$2",
+            )
+            .bind(operation.resource_id)
+            .bind(revision_id.as_slice())
+            .execute(&mut *tx)
+            .await
+            .map_err(internal_api_error)?;
             let generation = u64::try_from(next_generation).map_err(|_| {
                 ApiError::new(ApiErrorCode::Internal, "workspace generation is invalid")
             })?;
@@ -673,101 +787,29 @@ impl Registry {
     }
 }
 
-struct PrivateRevisionStorage<'a> {
-    resource_id: Uuid,
-    namespace_id: Uuid,
-    author_principal_id: Uuid,
-    operation_id: Uuid,
-    revision_id: [u8; 32],
-    parents: &'a [[u8; 32]],
-    manifest: &'a PublicSkillManifest,
-    root_tree_id: &'a [u8; 32],
-    blobs: &'a BTreeMap<BlobId, u64>,
-    snapshot_key: &'a str,
-    snapshot_sha: &'a [u8; 32],
-    snapshot_size: usize,
-}
-
-async fn persist_private_revision_storage(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    revision: PrivateRevisionStorage<'_>,
-) -> Result<(), ApiError> {
-    sqlx::query(
-        "INSERT INTO revisions (revision_id,root_tree_id,author_principal_id,operation_id) \
-         VALUES ($1,$2,$3,$4) ON CONFLICT(revision_id) DO NOTHING",
-    )
-    .bind(revision.revision_id.as_slice())
-    .bind(revision.root_tree_id.as_slice())
-    .bind(revision.author_principal_id)
-    .bind(revision.operation_id)
-    .execute(&mut **tx)
-    .await
-    .map_err(internal_api_error)?;
-    for (ordinal, parent) in revision.parents.iter().enumerate() {
-        sqlx::query(
-            "INSERT INTO revision_parents (revision_id,parent_revision_id,ordinal) VALUES ($1,$2,$3) \
-             ON CONFLICT DO NOTHING",
-        )
-        .bind(revision.revision_id.as_slice())
-        .bind(parent.as_slice())
-        .bind(i16::try_from(ordinal).map_err(|_| {
-            ApiError::new(ApiErrorCode::Internal, "revision parent ordinal is invalid")
-        })?)
-        .execute(&mut **tx)
-        .await
-        .map_err(internal_api_error)?;
-    }
-    for blob in revision.blobs.keys() {
-        sqlx::query(
-            "INSERT INTO revision_blob_reachability (revision_id,blob_id) VALUES ($1,$2) ON CONFLICT DO NOTHING",
-        )
-        .bind(revision.revision_id.as_slice())
-        .bind(blob.as_bytes().as_slice())
-        .execute(&mut **tx)
-        .await
-        .map_err(internal_api_error)?;
-        sqlx::query(
-            "INSERT INTO resource_blob_reachability (resource_id,blob_id,reference_count) VALUES ($1,$2,1) \
-             ON CONFLICT(resource_id,blob_id) DO UPDATE SET reference_count=resource_blob_reachability.reference_count+1",
-        )
-        .bind(revision.resource_id)
-        .bind(blob.as_bytes().as_slice())
-        .execute(&mut **tx)
-        .await
-        .map_err(internal_api_error)?;
-        sqlx::query(
-            "INSERT INTO namespace_blob_reachability (namespace_id,blob_id,reference_count) VALUES ($1,$2,1) \
-             ON CONFLICT(namespace_id,blob_id) DO UPDATE SET reference_count=namespace_blob_reachability.reference_count+1",
-        )
-        .bind(revision.namespace_id)
-        .bind(blob.as_bytes().as_slice())
-        .execute(&mut **tx)
-        .await
-        .map_err(internal_api_error)?;
-    }
-    sqlx::query(
-        "INSERT INTO resource_revision_snapshots \
-         (resource_id,revision_id,manifest_json,snapshot_key,snapshot_sha256,snapshot_size) \
-         VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING",
-    )
-    .bind(revision.resource_id)
-    .bind(revision.revision_id.as_slice())
-    .bind(
-        serde_json::to_value(revision.manifest)
-            .map_err(|error| ApiError::new(ApiErrorCode::Internal, error.to_string()))?,
-    )
-    .bind(revision.snapshot_key)
-    .bind(revision.snapshot_sha.as_slice())
-    .bind(i64::try_from(revision.snapshot_size).map_err(|_| {
-        ApiError::new(
+fn revision_operation_fork_sync(
+    operation: &RevisionOperationRow,
+) -> Result<Option<ValidatedForkSync>, ApiError> {
+    match (
+        operation.fork_sync_base_revision_id.as_deref(),
+        operation.fork_sync_upstream_revision_id.as_deref(),
+    ) {
+        (None, None) => Ok(None),
+        (Some(base), Some(upstream)) => Ok(Some(ValidatedForkSync {
+            expected_base: RevisionId::from_bytes(decode_32(
+                base,
+                "stored fork sync base revision ID",
+            )?),
+            upstream_revision: RevisionId::from_bytes(decode_32(
+                upstream,
+                "stored fork sync upstream revision ID",
+            )?),
+        })),
+        _ => Err(ApiError::new(
             ApiErrorCode::Internal,
-            "snapshot size exceeds database range",
-        )
-    })?)
-    .execute(&mut **tx)
-    .await
-    .map_err(internal_api_error)?;
-    Ok(())
+            "stored fork sync intent is invalid",
+        )),
+    }
 }
 
 async fn fetch_revision_operation(
@@ -776,7 +818,8 @@ async fn fetch_revision_operation(
     operation_id: Uuid,
 ) -> Result<Option<RevisionOperationRow>, ApiError> {
     sqlx::query_as::<_, RevisionOperationRow>(
-        "SELECT request_hash,namespace_id,resource_id,expected_generation,expected_head_revision_id,revision_id,manifest_json,state,outcome_json \
+        "SELECT request_hash,namespace_id,resource_id,expected_generation,expected_head_revision_id,revision_id,manifest_json, \
+                revision_author_principal_id,fork_sync_base_revision_id,fork_sync_upstream_revision_id,historical_skill_name,state,outcome_json \
          FROM private_revision_operations WHERE user_id=$1 AND operation_id=$2",
     )
     .bind(user_id)
@@ -792,7 +835,8 @@ async fn fetch_revision_operation_pool(
     operation_id: Uuid,
 ) -> Result<Option<RevisionOperationRow>, ApiError> {
     sqlx::query_as::<_, RevisionOperationRow>(
-        "SELECT request_hash,namespace_id,resource_id,expected_generation,expected_head_revision_id,revision_id,manifest_json,state,outcome_json \
+        "SELECT request_hash,namespace_id,resource_id,expected_generation,expected_head_revision_id,revision_id,manifest_json, \
+                revision_author_principal_id,fork_sync_base_revision_id,fork_sync_upstream_revision_id,historical_skill_name,state,outcome_json \
          FROM private_revision_operations WHERE user_id=$1 AND operation_id=$2",
     )
     .bind(user_id)

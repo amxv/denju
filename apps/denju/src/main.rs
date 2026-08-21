@@ -1,3 +1,8 @@
+mod context;
+mod fork_ops;
+mod fork_resolve;
+mod fork_sync;
+mod forks;
 mod help;
 mod identity;
 mod lifecycle;
@@ -6,6 +11,7 @@ mod owned;
 mod public;
 mod release;
 mod setup;
+mod sharing;
 mod workspace;
 mod workspace_merge;
 
@@ -25,8 +31,9 @@ use identity::{
 };
 use lifecycle::UsageOutcome;
 use output::{
-    append_deprecation_notice, diff_text, history_text, search_text, short_revision, show_text,
-    sync_text, usage_text,
+    append_deprecation_notice, backup_text, claim_text, devices_text, diff_text, doctor_text,
+    history_text, login_text, recovery_text, search_text, setup_text, short_revision, show_text,
+    status_text, sync_text, token_text, tokens_text, usage_text,
 };
 use owned::ImportOutcome;
 use public::{SubscribeOutcome, SyncOutcome, UnsubscribeOutcome};
@@ -141,6 +148,19 @@ enum Command {
     Unsubscribe {
         locator: String,
     },
+    Share {
+        locator: String,
+        recipient: String,
+    },
+    Unshare {
+        locator: String,
+        recipient: String,
+    },
+    Fork {
+        locator: Option<String>,
+        #[command(subcommand)]
+        command: Option<ForkCommand>,
+    },
     Status,
     Sync,
     Doctor,
@@ -166,6 +186,22 @@ enum HistoryCommand {
         locator: String,
         #[arg(long, action = ArgAction::SetTrue)]
         yes: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ForkCommand {
+    Sync {
+        locator: String,
+    },
+    Resolve {
+        locator: String,
+        #[arg(long = "as", value_name = "NAME")]
+        as_name: Option<String>,
+        #[arg(long = "merge-into", value_name = "LOCATOR")]
+        merge_into: Option<String>,
+        #[arg(long, action = ArgAction::SetTrue)]
+        discard: bool,
     },
 }
 
@@ -310,6 +346,26 @@ enum ResultPayload {
     Unsubscribe {
         #[serde(flatten)]
         outcome: UnsubscribeOutcome,
+    },
+    Share {
+        #[serde(flatten)]
+        outcome: denju_wire::ShareSkillResponse,
+    },
+    Unshare {
+        #[serde(flatten)]
+        outcome: denju_wire::ShareSkillResponse,
+    },
+    Fork {
+        #[serde(flatten)]
+        outcome: fork_ops::ForkOutcome,
+    },
+    ForkSync {
+        #[serde(flatten)]
+        outcome: fork_ops::ForkSyncOutcome,
+    },
+    ForkResolve {
+        #[serde(flatten)]
+        outcome: fork_ops::ForkResolveOutcome,
     },
     Status {
         #[serde(flatten)]
@@ -650,13 +706,14 @@ async fn run(args: impl IntoIterator<Item = OsString>) -> ExitCode {
                 text: append_deprecation_notice(
                     format!(
                         "Subscribed {}{} as {}",
-                        outcome.skill.locator,
-                        release_version
+                        outcome.locator,
+                        outcome
+                            .release_version
                             .map(|value| format!(" at v{value}"))
-                            .unwrap_or_default(),
+                            .unwrap_or_else(|| " to live private saves".to_owned()),
                         outcome.harness_name
                     ),
-                    outcome.skill.deprecation.as_ref(),
+                    outcome.deprecation.as_ref(),
                 ),
                 payload: ResultPayload::Subscribe { outcome },
                 exit: ExitCode::SUCCESS,
@@ -670,6 +727,89 @@ async fn run(args: impl IntoIterator<Item = OsString>) -> ExitCode {
                     exit: ExitCode::SUCCESS,
                 })
         }
+        Some(Command::Share { locator, recipient }) => {
+            sharing::mutate(&locator, &recipient, denju_wire::ShareMutationKind::Share)
+                .await
+                .map(|outcome| CommandOutput {
+                    text: format!(
+                        "Shared {} with {}.\n{}",
+                        outcome.locator,
+                        outcome.recipient,
+                        outcome.subscribe_command.as_deref().unwrap_or_default()
+                    ),
+                    payload: ResultPayload::Share { outcome },
+                    exit: ExitCode::SUCCESS,
+                })
+        }
+        Some(Command::Unshare { locator, recipient }) => {
+            sharing::mutate(&locator, &recipient, denju_wire::ShareMutationKind::Unshare)
+                .await
+                .map(|outcome| CommandOutput {
+                    text: format!("Unshared {} from {}", outcome.locator, outcome.recipient),
+                    payload: ResultPayload::Unshare { outcome },
+                    exit: ExitCode::SUCCESS,
+                })
+        }
+        Some(Command::Fork {
+            locator: Some(locator),
+            command: None,
+        }) => fork_ops::create(&locator)
+            .await
+            .map(|outcome| CommandOutput {
+                text: format!("Forked {} as {}", outcome.upstream_locator, outcome.locator),
+                payload: ResultPayload::Fork { outcome },
+                exit: ExitCode::SUCCESS,
+            }),
+        Some(Command::Fork {
+            locator: None,
+            command: Some(ForkCommand::Sync { locator }),
+        }) => fork_sync::sync(&locator)
+            .await
+            .map(|outcome| CommandOutput {
+                text: if outcome.state == "current" {
+                    format!("{} is already current with upstream", outcome.locator)
+                } else {
+                    format!(
+                        "Synced {} from {} at {}",
+                        outcome.locator,
+                        outcome.upstream_locator,
+                        short_revision(&outcome.upstream_revision_id)
+                    )
+                },
+                payload: ResultPayload::ForkSync { outcome },
+                exit: ExitCode::SUCCESS,
+            }),
+        Some(Command::Fork {
+            locator: None,
+            command:
+                Some(ForkCommand::Resolve {
+                    locator,
+                    as_name,
+                    merge_into,
+                    discard,
+                }),
+        }) => fork_resolve::resolve(&locator, as_name.as_deref(), merge_into.as_deref(), discard)
+            .await
+            .map(|outcome| CommandOutput {
+                text: match (outcome.state, outcome.locator.as_deref()) {
+                    ("discarded", _) => {
+                        format!("Discarded local fork of {}", outcome.upstream_locator)
+                    }
+                    ("renamed", Some(locator)) => {
+                        format!("Resolved fork collision as {locator}")
+                    }
+                    ("merged", Some(locator)) => {
+                        format!("Merged local fork into {locator}")
+                    }
+                    _ => "Resolved fork collision".to_owned(),
+                },
+                payload: ResultPayload::ForkResolve { outcome },
+                exit: ExitCode::SUCCESS,
+            }),
+        Some(Command::Fork { .. }) => Err(RuntimeError::new(
+            CliErrorCode::InvalidArguments,
+            "use `denju fork @owner/skill`, `denju fork sync @you/skill`, or `denju fork resolve @upstream/skill ...`",
+        )),
         Some(Command::Status) => workspace::status().await.map(|outcome| CommandOutput {
             text: status_text(&outcome),
             payload: ResultPayload::Status { outcome },
@@ -763,140 +903,6 @@ fn guidance_output(guidance: Guidance) -> CommandOutput {
             exit: ExitCode::SUCCESS,
         },
     }
-}
-
-fn setup_text(outcome: &SetupOutcome) -> String {
-    let service = if outcome.service_running {
-        format!("{} (running)", outcome.service_kind)
-    } else if let Some(detail) = &outcome.service_detail {
-        format!("{} ({detail})", outcome.service_kind)
-    } else {
-        format!("{} (not running)", outcome.service_kind)
-    };
-    let mut lines = vec![
-        "Denju setup complete.".to_owned(),
-        format!("Registry: {}", outcome.registry),
-        format!("Codex: {}", outcome.codex_root),
-        format!("Claude: {}", outcome.claude_root),
-        format!("Service: {service}"),
-    ];
-    if let Some(path) = outcome.unmanaged_skills.first() {
-        lines.push(format!("Next: denju import {}", quote_command_arg(path)));
-    }
-    lines.join("\n")
-}
-
-fn status_text(outcome: &workspace::StatusOutcome) -> String {
-    if outcome.resources.is_empty() {
-        return "Denju is healthy.".to_owned();
-    }
-    let mut lines = Vec::new();
-    for resource in &outcome.resources {
-        lines.push(format!("{}: {}", resource.locator, resource.state.as_str()));
-        if let Some(message) = &resource.message {
-            lines.push(format!("  {message}"));
-        }
-        if let Some(conflict) = &resource.conflict {
-            if !conflict.conflict_paths.is_empty() {
-                lines.push(format!(
-                    "  Conflicts: {}",
-                    conflict.conflict_paths.join(", ")
-                ));
-            }
-            lines.push(format!(
-                "  Heads: {} {}",
-                conflict.head_revision_ids[0], conflict.head_revision_ids[1]
-            ));
-        }
-        for command in &resource.next_commands {
-            lines.push(format!("  Next: {command}"));
-        }
-    }
-    lines.join("\n")
-}
-
-fn claim_text(outcome: &ClaimOutcome) -> String {
-    format!(
-        "Claimed {}.\nRecovery secret: {}\nStore this secret now; Denju cannot show it again.",
-        outcome.identity.username, outcome.recovery_secret
-    )
-}
-
-fn login_text(outcome: &LoginOutcome) -> String {
-    format!("Logged in as {}.", outcome.identity.username)
-}
-
-fn backup_text(outcome: &BackupOutcome) -> String {
-    format!(
-        "Recovery secret replaced.\nRecovery secret: {}\nStore this secret now; the previous secret no longer works.",
-        outcome.recovery_secret
-    )
-}
-
-fn recovery_text(outcome: &RecoveryOutcome) -> String {
-    format!(
-        "Recovered {}.\nRecovery secret: {}\nStore this replacement secret now.",
-        outcome.identity.username, outcome.recovery_secret
-    )
-}
-
-fn devices_text(outcome: &DeviceList) -> String {
-    if outcome.devices.is_empty() {
-        return "No active devices.".to_owned();
-    }
-    outcome
-        .devices
-        .iter()
-        .map(|device| {
-            format!(
-                "{}{}  {}",
-                device.session_id,
-                if device.current { " *" } else { "" },
-                device.device_name
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-fn tokens_text(outcome: &AutomationTokenList) -> String {
-    if outcome.tokens.is_empty() {
-        return "No active automation tokens.".to_owned();
-    }
-    outcome
-        .tokens
-        .iter()
-        .map(|token| format!("{}  {}", token.token_id, token.scopes.join(",")))
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-fn token_text(outcome: &AutomationTokenOutcome) -> String {
-    format!(
-        "Created token {}.\nToken secret: {}\nStore this secret now; Denju cannot show it again.",
-        outcome.token.token_id, outcome.secret
-    )
-}
-
-fn doctor_text(outcome: &DoctorOutcome) -> String {
-    let mut lines = if outcome.healthy {
-        vec!["Denju is healthy.".to_owned()]
-    } else {
-        vec!["Denju still needs attention.".to_owned()]
-    };
-    lines.extend(
-        outcome
-            .repaired
-            .iter()
-            .map(|item| format!("Repaired: {item}")),
-    );
-    lines.extend(outcome.issues.iter().map(|item| format!("Issue: {item}")));
-    lines.push(format!("Registry: {}", outcome.registry));
-    lines.join("\n")
-}
-
-fn quote_command_arg(value: &str) -> String {
-    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
 fn present(json: bool, output: CommandOutput) -> ExitCode {

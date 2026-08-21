@@ -31,6 +31,16 @@ pub(crate) struct WorkspacePass {
 pub(crate) struct StatusOutcome {
     pub(crate) state: &'static str,
     pub(crate) resources: Vec<ResourceStatus>,
+    pub(crate) forks: Vec<ForkStatus>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct ForkStatus {
+    pub(crate) resource_id: String,
+    pub(crate) locator: String,
+    pub(crate) state: &'static str,
+    pub(crate) message: String,
+    pub(crate) next_commands: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -105,14 +115,78 @@ pub(crate) async fn status() -> Result<StatusOutcome, RuntimeError> {
             next_commands,
         });
     }
+    let mut forks = Vec::new();
+    for fork in db.local_forks().await.map_err(local_error)? {
+        if fork.state != "name_conflict" {
+            continue;
+        }
+        forks.push(ForkStatus {
+            resource_id: fork.resource_id,
+            locator: fork.upstream_locator.clone(),
+            state: "name_conflict",
+            message: format!(
+                "the automatic fork name `{}` is already owned by this identity",
+                fork.desired_name
+            ),
+            next_commands: vec![
+                format!(
+                    "denju fork resolve {} --as <new-name>",
+                    fork.upstream_locator
+                ),
+                format!(
+                    "denju fork resolve {} --merge-into @you/<skill>",
+                    fork.upstream_locator
+                ),
+                format!("denju fork resolve {} --discard", fork.upstream_locator),
+            ],
+        });
+    }
+    if db
+        .identity()
+        .await
+        .map_err(local_error)?
+        .is_some_and(|identity| identity.session_backend.is_some())
+        && let Ok(context) = crate::public::installed_context(true).await
+        && let Ok(catalog) = context.client.private_skills().await
+    {
+        for skill in catalog.skills {
+            let Some(provenance) = skill.fork else {
+                continue;
+            };
+            if let Ok(history) = context
+                .client
+                .skill_history(&provenance.upstream_locator)
+                .await
+                && history.workspace_revision_id != provenance.sync_base_revision_id
+            {
+                forks.push(ForkStatus {
+                    resource_id: skill.resource_id,
+                    locator: skill.locator.clone(),
+                    state: "upstream_ahead",
+                    message: format!(
+                        "{} advanced from {} to {}",
+                        provenance.upstream_locator,
+                        short_id(&provenance.sync_base_revision_id),
+                        short_id(&history.workspace_revision_id)
+                    ),
+                    next_commands: vec![format!("denju fork sync {}", skill.locator)],
+                });
+            }
+        }
+    }
     Ok(StatusOutcome {
-        state: if resources.is_empty() {
+        state: if resources.is_empty() && forks.is_empty() {
             "healthy"
         } else {
             "attention_required"
         },
         resources,
+        forks,
     })
+}
+
+fn short_id(value: &str) -> &str {
+    value.get(..12).unwrap_or(value)
 }
 
 fn status_commands(
@@ -151,21 +225,40 @@ pub(crate) async fn capture_local_edits(
     recover_workspace_writebacks(paths, db)
         .await
         .map_err(local_error)?;
-    let Some(identity) = db.identity().await.map_err(local_error)? else {
-        return Ok((WorkspacePass::default(), Vec::new()));
-    };
-    let Some(author_text) = identity.author_principal_id else {
-        // Phase-5 installations learn the claimed-user author principal on their next
-        // authenticated registry pass. Until then, preserve edits in place rather than
-        // inventing installation-authored history for a claimed user.
-        return Ok((WorkspacePass::default(), Vec::new()));
-    };
-    let author = AuthorPrincipalId::from_str(&author_text)
-        .map_err(|error| RuntimeError::new(CliErrorCode::LocalState, error.to_string()))?;
+    let user_author = db
+        .identity()
+        .await
+        .map_err(local_error)?
+        .and_then(|identity| identity.author_principal_id);
+    let installation_author = db
+        .installation()
+        .await
+        .map_err(local_error)?
+        .map(|installation| installation.author_principal_id);
+    let local_fork_ids = db
+        .local_forks()
+        .await
+        .map_err(local_error)?
+        .into_iter()
+        .map(|fork| fork.resource_id)
+        .collect::<BTreeSet<_>>();
     let mut pass = WorkspacePass::default();
     let mut blockers = Vec::new();
 
     for record in db.owned_skills().await.map_err(local_error)? {
+        let local_only = local_fork_ids.contains(&record.resource_id);
+        let author_text = user_author.as_ref().or({
+            if local_only {
+                installation_author.as_ref()
+            } else {
+                None
+            }
+        });
+        let Some(author_text) = author_text else {
+            continue;
+        };
+        let author = AuthorPrincipalId::from_str(author_text)
+            .map_err(|error| RuntimeError::new(CliErrorCode::LocalState, error.to_string()))?;
         let holder = format!("workspace-scan-{}", Uuid::now_v7());
         let resource_key = format!("skill:{}", record.resource_id);
         if !db
@@ -175,7 +268,7 @@ pub(crate) async fn capture_local_edits(
         {
             continue;
         }
-        let result = capture_one(paths, db, &record, author, force_full_hash).await;
+        let result = capture_one(paths, db, &record, author, force_full_hash, local_only).await;
         let _ = db.release_lease(resource_key, holder).await;
         match result {
             Ok(stats) => {
@@ -202,6 +295,7 @@ async fn capture_one(
     record: &OwnedSkillRecord,
     author: AuthorPrincipalId,
     force_full_hash: bool,
+    local_only: bool,
 ) -> Result<CaptureOne, RuntimeError> {
     if let Err(error) = reconcile_owned_derived_projection(paths, db, record).await {
         let message = error.to_string();
@@ -342,6 +436,37 @@ async fn capture_one(
         .map_err(local_error)?;
         return Ok(CaptureOne {
             queued: true,
+            hashed_files: scan.stats.hashed_files,
+            reused_files: scan.stats.reused_files,
+        });
+    }
+
+    if local_only {
+        let parent = RevisionId::from_str(&state.local_head_revision_id).map_err(local_error)?;
+        let operation = OperationId::from_uuid(Uuid::now_v7()).map_err(local_error)?;
+        let revision = Revision::new(scan.manifest.root_tree(), vec![parent], author, operation)
+            .map_err(local_error)?;
+        let manifest = PublicSkillManifest::from_core(&scan.manifest);
+        db.commit_local_only_revision(
+            LocalRevisionRecord {
+                operation_id: operation.to_string(),
+                resource_id: record.resource_id.clone(),
+                revision_id: revision.id().to_string(),
+                expected_head_revision_id: parent.to_string(),
+                parent_revision_ids: vec![parent.to_string()],
+                expected_generation: state.base_generation,
+                root_tree_id: root_tree,
+                manifest_json: serde_json::to_string(&manifest).map_err(|error| {
+                    RuntimeError::new(CliErrorCode::Internal, error.to_string())
+                })?,
+                state: "synced".to_owned(),
+            },
+            now_unix_ms(),
+        )
+        .await
+        .map_err(local_error)?;
+        return Ok(CaptureOne {
+            queued: false,
             hashed_files: scan.stats.hashed_files,
             reused_files: scan.stats.reused_files,
         });
@@ -515,15 +640,19 @@ pub(crate) async fn upload_one(
             "queued workspace generation is invalid",
         )
     })?;
-    let request_hash = private_revision_request_hash(
-        &operation,
-        &revision.resource_id,
-        expected_generation,
-        &revision.expected_head_revision_id,
-        &revision.parent_revision_ids,
-        &manifest,
-    )
-    .map_err(|error| RuntimeError::new(CliErrorCode::Internal, error.to_string()))?;
+    let request_hash =
+        private_revision_request_hash(&denju_wire::PrivateRevisionRequestHashInput {
+            operation_id: &operation,
+            resource_id: &revision.resource_id,
+            expected_generation,
+            expected_head_revision_id: &revision.expected_head_revision_id,
+            parent_revision_ids: &revision.parent_revision_ids,
+            manifest: &manifest,
+            revision_author_principal_id: None,
+            fork_sync: None,
+            historical_skill_name: None,
+        })
+        .map_err(|error| RuntimeError::new(CliErrorCode::Internal, error.to_string()))?;
     let request = PrivateRevisionRequest {
         operation_id: operation.clone(),
         resource_id: revision.resource_id.clone(),
@@ -531,6 +660,9 @@ pub(crate) async fn upload_one(
         expected_head_revision_id: revision.expected_head_revision_id.clone(),
         parent_revision_ids: revision.parent_revision_ids.clone(),
         manifest,
+        revision_author_principal_id: None,
+        fork_sync: None,
+        historical_skill_name: None,
         request_hash: request_hash.to_string(),
     };
     let prepared = match context.client.prepare_private_revision(&request).await {

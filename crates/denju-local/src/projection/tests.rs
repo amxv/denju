@@ -40,6 +40,8 @@ async fn insert_materialized(
             materialized_revision_id: None,
             retain_on_delete: false,
             retained_after_delete: false,
+            live_private: false,
+            desired_root_tree_id: "22".repeat(32),
         },
         1,
     )
@@ -422,6 +424,8 @@ async fn projection_cleanup_refuses_user_replacement() {
         materialized_revision_id: Some("11".repeat(32)),
         retain_on_delete: false,
         retained_after_delete: false,
+        live_private: false,
+        desired_root_tree_id: "22".repeat(32),
     };
     let error = remove_subscription_projection(&paths, &roots, &record).unwrap_err();
     assert!(matches!(error, ProjectionError::RefuseOverwrite(_)));

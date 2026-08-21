@@ -9,8 +9,8 @@ Commands:\n\
   identity  Show, recover, back up, or delete identity state\n\
   devices List or revoke authenticated devices\n\
   tokens  List, create, or revoke scoped automation credentials\n\
-  search  Search public Agent Skills\n\
-  show    Show one public skill\n\
+  search  Search public and explicitly shared Agent Skills\n\
+  show    Show one public or explicitly shared skill\n\
   import  Transfer a local skill into your private Denju workspace\n\
   publish Publish the current private workspace as a new immutable release\n\
   rename  Rename an owned skill while preserving its stable resource ID\n\
@@ -24,6 +24,9 @@ Commands:\n\
   export  Export an accessible revision as an unmanaged directory\n\
   subscribe   Subscribe to a public skill and materialize it\n\
   unsubscribe Remove a direct skill subscription\n\
+  share   Grant another user private read/subscription access\n\
+  unshare Remove a user's private read/subscription access\n\
+  fork    Fork a skill, sync a fork from upstream, or resolve a claim collision\n\
   status  Show local synchronization and conflict state\n\
   sync    Reconcile subscriptions and harness projections\n\
   doctor  Check and repair the local Denju installation\n\

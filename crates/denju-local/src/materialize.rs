@@ -664,6 +664,8 @@ mod tests {
                 materialized_revision_id: None,
                 retain_on_delete: false,
                 retained_after_delete: false,
+                live_private: false,
+                desired_root_tree_id: snapshot.manifest().root_tree().to_string(),
             },
             1,
         )
@@ -736,6 +738,8 @@ mod tests {
                 materialized_revision_id: None,
                 retain_on_delete: false,
                 retained_after_delete: false,
+                live_private: false,
+                desired_root_tree_id: desired.manifest.root_tree().to_string(),
             },
             2,
         )

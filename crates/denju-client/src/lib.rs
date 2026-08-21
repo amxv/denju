@@ -15,9 +15,10 @@ use denju_wire::{
     PrivateSkillImportPrepareResponse, PrivateSkillImportRequest, PrivateSkillImportResponse,
     PublicSkillDetail, PublicSkillSearchResponse, PublishSkillRequest, PublishSkillResponse,
     RecoveryResetRequest, RegistryCapabilities, RenameSkillRequest, RenameSkillResponse,
-    ResourceLifecycleRequest, RestoreSkillRequest, RestoreSkillResponse, SkillHistoryResponse,
-    SkillRevisionDetail, SnapshotDownload, StagedBlobUpload, SubscriptionCatalog,
-    SubscriptionMutationRequest, SubscriptionMutationResponse, SyncHint, SyncReconcileRequest,
+    ResourceLifecycleRequest, RestoreSkillRequest, RestoreSkillResponse, ShareMutationKind,
+    ShareSkillRequest, ShareSkillResponse, SkillHistoryResponse, SkillRevisionDetail,
+    SnapshotDownload, StagedBlobUpload, SubscriptionCatalog, SubscriptionMutationRequest,
+    SubscriptionMutationResponse, SubscriptionTarget, SyncHint, SyncReconcileRequest,
     SyncReconcileResponse, UnpublishSkillResponse, UsageResponse,
 };
 use futures_util::StreamExt;
@@ -166,10 +167,32 @@ impl RegistryClient {
         if let Some(cursor) = cursor {
             request = request.query(&[("cursor", cursor)]);
         }
+        let request = if self.bearer.is_some() {
+            self.with_auth(request)?
+        } else {
+            request
+        };
         decode_response(request.send().await?).await
     }
 
     pub async fn show_public_skill(&self, locator: &str) -> Result<PublicSkillDetail, ClientError> {
+        let request = self
+            .http
+            .get(self.endpoint("v1/skills/show")?)
+            .query(&[("locator", locator)]);
+        let request = if self.bearer.is_some() {
+            self.with_auth(request)?
+        } else {
+            request
+        };
+        let response = request.send().await?;
+        decode_response(response).await
+    }
+
+    pub async fn show_released_skill(
+        &self,
+        locator: &str,
+    ) -> Result<PublicSkillDetail, ClientError> {
         let response = self
             .http
             .get(self.endpoint("v1/skills/show")?)
@@ -295,6 +318,33 @@ impl RegistryClient {
             .send()
             .await?;
         decode_response(response).await
+    }
+
+    pub async fn subscription_target(
+        &self,
+        locator: &str,
+    ) -> Result<SubscriptionTarget, ClientError> {
+        let response = self
+            .with_auth(
+                self.http
+                    .get(self.endpoint("v1/subscriptions/resolve")?)
+                    .query(&[("locator", locator)]),
+            )?
+            .send()
+            .await?;
+        decode_response(response).await
+    }
+
+    pub async fn mutate_private_share(
+        &self,
+        kind: ShareMutationKind,
+        request: &ShareSkillRequest,
+    ) -> Result<ShareSkillResponse, ClientError> {
+        let path = match kind {
+            ShareMutationKind::Share => "v1/shares",
+            ShareMutationKind::Unshare => "v1/shares/remove",
+        };
+        self.authenticated_post_json(path, request).await
     }
 
     pub async fn reconcile_subscriptions(

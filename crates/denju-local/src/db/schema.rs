@@ -185,3 +185,34 @@ CREATE TABLE workspace_content_conflicts (
 PRAGMA user_version = 7;
 COMMIT;
 "#;
+
+pub(super) const MIGRATION_V8: &str = r#"
+BEGIN IMMEDIATE;
+
+ALTER TABLE subscriptions ADD COLUMN live_private INTEGER NOT NULL DEFAULT 0 CHECK (live_private IN (0, 1));
+ALTER TABLE subscriptions ADD COLUMN desired_root_tree_id TEXT NOT NULL DEFAULT '';
+
+CREATE TABLE local_forks (
+    resource_id TEXT PRIMARY KEY REFERENCES owned_skills(resource_id) ON DELETE CASCADE,
+    upstream_resource_id TEXT NOT NULL,
+    upstream_locator TEXT NOT NULL,
+    created_from_revision_id TEXT NOT NULL,
+    sync_base_revision_id TEXT NOT NULL,
+    desired_name TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (state IN ('local', 'name_conflict')),
+    created_at_unix_ms INTEGER NOT NULL,
+    updated_at_unix_ms INTEGER NOT NULL
+);
+
+CREATE UNIQUE INDEX local_forks_upstream_idx
+    ON local_forks (upstream_resource_id);
+
+CREATE TABLE subscription_edit_locks (
+    resource_id TEXT PRIMARY KEY REFERENCES subscriptions(resource_id) ON DELETE CASCADE,
+    message TEXT NOT NULL,
+    updated_at_unix_ms INTEGER NOT NULL
+);
+
+PRAGMA user_version = 8;
+COMMIT;
+"#;

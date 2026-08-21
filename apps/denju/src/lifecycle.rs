@@ -256,7 +256,7 @@ pub async fn deprecate(
         Some(locator) => Some(
             context
                 .client
-                .show_public_skill(locator)
+                .show_released_skill(locator)
                 .await
                 .map_err(client_error)?
                 .skill
@@ -430,15 +430,19 @@ async fn prepare_pending_rename_content(
         .map_err(|error| RuntimeError::new(CliErrorCode::ContentVerification, error.to_string()))?;
     let manifest = PublicSkillManifest::from_core(snapshot.manifest());
     let operation_id = new_operation_id()?;
-    let request_hash = private_revision_request_hash(
-        &operation_id,
-        &old.resource_id,
-        generation,
-        &old.desired_revision_id,
-        std::slice::from_ref(&old.desired_revision_id),
-        &manifest,
-    )
-    .map_err(internal_error)?;
+    let request_hash =
+        private_revision_request_hash(&denju_wire::PrivateRevisionRequestHashInput {
+            operation_id: &operation_id,
+            resource_id: &old.resource_id,
+            expected_generation: generation,
+            expected_head_revision_id: &old.desired_revision_id,
+            parent_revision_ids: std::slice::from_ref(&old.desired_revision_id),
+            manifest: &manifest,
+            revision_author_principal_id: None,
+            fork_sync: None,
+            historical_skill_name: None,
+        })
+        .map_err(internal_error)?;
     let prepared = context
         .client
         .prepare_private_revision(&PrivateRevisionRequest {
@@ -448,6 +452,9 @@ async fn prepare_pending_rename_content(
             expected_head_revision_id: old.desired_revision_id.clone(),
             parent_revision_ids: vec![old.desired_revision_id.clone()],
             manifest,
+            revision_author_principal_id: None,
+            fork_sync: None,
+            historical_skill_name: None,
             request_hash: request_hash.to_string(),
         })
         .await

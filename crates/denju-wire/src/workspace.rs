@@ -10,7 +10,19 @@ pub struct PrivateRevisionRequest {
     pub expected_head_revision_id: String,
     pub parent_revision_ids: Vec<String>,
     pub manifest: PublicSkillManifest,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision_author_principal_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fork_sync: Option<ForkSyncIntent>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub historical_skill_name: Option<String>,
     pub request_hash: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ForkSyncIntent {
+    pub expected_sync_base_revision_id: String,
+    pub upstream_revision_id: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -50,7 +50,6 @@ pub(crate) struct LockedResourceRow {
 #[derive(Debug, Clone)]
 pub(crate) struct ResolvedSkillLocator {
     pub resource_id: Uuid,
-    pub owner_namespace_id: Uuid,
     pub owner: String,
     pub name: String,
 }
@@ -70,10 +69,9 @@ impl Registry {
         .fetch_optional(&self.pool)
         .await
         .map_err(internal_api_error)?;
-        if let Some((resource_id, owner_namespace_id, owner, name)) = active {
+        if let Some((resource_id, _owner_namespace_id, owner, name)) = active {
             return Ok(ResolvedSkillLocator {
                 resource_id,
-                owner_namespace_id,
                 owner,
                 name,
             });
@@ -90,9 +88,8 @@ impl Registry {
         .fetch_optional(&self.pool)
         .await
         .map_err(internal_api_error)?
-        .map(|(resource_id, owner_namespace_id, owner, name)| ResolvedSkillLocator {
+        .map(|(resource_id, _owner_namespace_id, owner, name)| ResolvedSkillLocator {
             resource_id,
-            owner_namespace_id,
             owner,
             name,
         })

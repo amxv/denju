@@ -66,6 +66,21 @@ pub(crate) enum SubscriptionSubject {
 }
 
 impl Registry {
+    pub(crate) async fn optional_read_authority(
+        &self,
+        bearer: Option<&str>,
+    ) -> Result<Option<UserAuthority>, ApiError> {
+        let Some(bearer) = bearer else {
+            return Ok(None);
+        };
+        match self.authenticate_actor(bearer).await? {
+            AuthActor::Installation { .. } => Ok(None),
+            AuthActor::Session { .. } | AuthActor::Automation { .. } => {
+                self.user_authority(bearer, "skills:read").await.map(Some)
+            }
+        }
+    }
+
     pub(crate) async fn user_authority(
         &self,
         bearer: &str,
@@ -109,6 +124,37 @@ impl Registry {
             namespace_slug: row.get(1),
             author_principal_id: row.get(2),
         })
+    }
+
+    pub(crate) async fn revision_author_for_user(
+        &self,
+        authority: &UserAuthority,
+        requested: Option<&str>,
+    ) -> Result<Uuid, ApiError> {
+        let Some(requested) = requested else {
+            return Ok(authority.author_principal_id);
+        };
+        let author = Uuid::parse_str(requested).map_err(|_| {
+            ApiError::new(
+                ApiErrorCode::InvalidRequest,
+                "revision author principal is invalid",
+            )
+        })?;
+        let linked = sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(SELECT 1 FROM author_principal_users WHERE author_principal_id=$1 AND user_id=$2)",
+        )
+        .bind(author)
+        .bind(authority.user_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(internal_api_error)?;
+        if !linked {
+            return Err(ApiError::new(
+                ApiErrorCode::Unauthorized,
+                "revision author principal is not linked to this user",
+            ));
+        }
+        Ok(author)
     }
 }
 

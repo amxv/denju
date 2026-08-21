@@ -57,6 +57,14 @@ denju sync
 
 `sync` is a one-shot reconciliation. It reads the registry's current subscription state, repairs incomplete materialization work, verifies missing content, and settles projections/removals. Correctness does not depend on a warm registry process or a running local daemon.
 
+## Editing a subscription
+
+Denju never lets an edit to subscribed content mutate the upstream resource. If an anonymous installation changes a subscribed skill, Denju creates an unnamed device-local fork, preserves the upstream revision as immutable provenance, rewires the local projection to that fork, and stops following upstream automatically.
+
+The local fork has revision history but no registry resource ID and does not synchronize to other devices. Claiming an identity later promotes that existing history without rewriting its immutable revision IDs. If the desired fork name is already occupied, Denju pauses that skill and prints explicit `denju fork resolve` commands instead of inventing a suffix.
+
+After claiming an identity, the same edit flow creates a private fork in the user's namespace and replaces the ordinary upstream subscription. See [Forks and private sharing](/docs/forks-and-sharing) for explicit fork synchronization and collision resolution.
+
 ## Unsubscribe
 
 ```bash

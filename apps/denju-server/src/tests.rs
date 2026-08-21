@@ -1,8 +1,10 @@
 use std::collections::BTreeSet;
 
+use denju_registry::RegistryWake;
+use denju_wire::SyncHint;
 use tokio::sync::broadcast;
 
-use super::*;
+use crate::http::next_sync_hint;
 
 #[tokio::test]
 async fn sync_hints_coalesce_duplicate_resources_and_filter_unwatched_resources() {

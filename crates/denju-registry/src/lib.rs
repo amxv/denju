@@ -1,18 +1,25 @@
 //! Registry use cases plus PostgreSQL and S3-compatible persistence boundaries.
 
+mod access;
+mod fork_sync;
 mod identity;
 mod identity_support;
 mod ingest;
+mod ingest_storage;
 mod lifecycle;
 mod lifecycle_storage;
+mod outbox;
 mod private_catalog;
 mod public_registry;
+mod public_seed;
 mod realtime;
 mod release;
 mod release_validation;
 mod rename_content;
+mod sharing;
 mod workspace;
 mod workspace_conflict;
+mod workspace_storage;
 
 use std::{
     str::FromStr,
@@ -37,7 +44,7 @@ use url::Url;
 use uuid::Uuid;
 
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
-const EXPECTED_SCHEMA_VERSION: i64 = 8;
+const EXPECTED_SCHEMA_VERSION: i64 = 9;
 const SNAPSHOT_URL_TTL: Duration = Duration::from_secs(5 * 60);
 const STAGING_URL_TTL: Duration = Duration::from_secs(10 * 60);
 

@@ -144,6 +144,40 @@ fn lifecycle_cli_shapes_parse_without_ambiguity() {
 }
 
 #[test]
+fn fork_and_sharing_cli_shapes_parse_without_ambiguity() {
+    for args in [
+        vec!["--json", "share", "@alice/review", "@bob"],
+        vec!["--json", "unshare", "@alice/review", "@bob"],
+        vec!["--json", "fork", "@alice/review"],
+        vec!["--json", "fork", "sync", "@bob/review"],
+        vec![
+            "--json",
+            "fork",
+            "resolve",
+            "@alice/review",
+            "--as",
+            "review-local",
+        ],
+        vec![
+            "--json",
+            "fork",
+            "resolve",
+            "@alice/review",
+            "--merge-into",
+            "@bob/review-local",
+        ],
+        vec!["--json", "fork", "resolve", "@alice/review", "--discard"],
+    ] {
+        let output = denju(&args);
+        assert_eq!(output.status.code(), Some(1), "args: {args:?}");
+        assert!(stderr(&output).is_empty(), "args: {args:?}");
+        let value: Value = serde_json::from_str(stdout(&output).trim()).expect("valid JSON error");
+        assert_eq!(value["ok"], false, "args: {args:?}");
+        assert_eq!(value["error"]["code"], "setup_required", "args: {args:?}");
+    }
+}
+
+#[test]
 fn destructive_lifecycle_json_requires_prior_confirmation() {
     for args in [
         vec!["--json", "delete", "@alice/review"],

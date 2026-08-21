@@ -1,38 +1,167 @@
 use std::str::FromStr;
 
-use denju_core::{
-    AuthorPrincipalId, BlobId, DeterministicSkillSnapshot, OperationId, OwnedSkillEntry,
-    ResourceId, ResourceKind, ResourceLocator, Revision, parse_skill_document,
-};
+use denju_core::{OperationId, ResourceId, ResourceKind, ResourceLocator};
 use denju_wire::{
-    ApiError, ApiErrorCode, PublicSkill, PublicSkillDetail, PublicSkillManifest,
-    PublicSkillSearchResponse, RequestHash, SkillDeprecation, SnapshotDownload, SubscribedSkill,
-    SubscriptionCatalog, SubscriptionMutationKind, SubscriptionMutationRequest,
-    SubscriptionMutationResponse, subscription_request_hash,
+    ApiError, ApiErrorCode, PublicSkill, PublicSkillDetail, PublicSkillSearchResponse, RequestHash,
+    SkillDeprecation, SkillForkProvenance, SnapshotDownload, SubscribedSkill, SubscriptionCatalog,
+    SubscriptionContent, SubscriptionMutationKind, SubscriptionMutationRequest,
+    SubscriptionMutationResponse, SubscriptionTarget, subscription_request_hash,
 };
-use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use crate::{
-    Registry, RegistryError, RegistryWake, identity_support::SubscriptionSubject,
-    internal_api_error,
-};
+use crate::{Registry, RegistryWake, identity_support::SubscriptionSubject, internal_api_error};
 
 impl Registry {
+    pub async fn subscription_target(
+        &self,
+        bearer: &str,
+        locator: &str,
+    ) -> Result<SubscriptionTarget, ApiError> {
+        let subject = self.subscription_subject(bearer).await?;
+        let parsed = ResourceLocator::from_str(locator)
+            .map_err(|error| ApiError::new(ApiErrorCode::InvalidRequest, error.to_string()))?;
+        let resolved = self.resolve_active_skill_locator(&parsed).await?;
+        let row = sqlx::query_as::<_, (String, i64, bool, Option<Uuid>, Option<String>, Option<String>)>(
+            "SELECT r.visibility,r.generation,r.deprecated_at IS NOT NULL,replacement.id, \
+                    replacement_owner.slug,replacement.slug \
+             FROM resources r \
+             LEFT JOIN resources replacement ON replacement.id=r.deprecation_replacement_resource_id AND replacement.deleted_at IS NULL \
+             LEFT JOIN namespaces replacement_owner ON replacement_owner.id=replacement.owner_namespace_id \
+             WHERE r.id=$1 AND r.kind='skill' AND r.deleted_at IS NULL",
+        )
+        .bind(resolved.resource_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(internal_api_error)?;
+        let shared = match subject {
+            SubscriptionSubject::Installation(_) => false,
+            SubscriptionSubject::User(user_id) => sqlx::query_scalar::<_, bool>(
+                "SELECT EXISTS(SELECT 1 FROM private_skill_shares WHERE recipient_user_id=$1 AND resource_id=$2)",
+            )
+            .bind(user_id)
+            .bind(resolved.resource_id)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(internal_api_error)?,
+        };
+        if row.0 != "public" && !shared {
+            return Err(ApiError::new(
+                ApiErrorCode::NotFound,
+                "skill is not subscribable",
+            ));
+        }
+        let deprecation = row.2.then(|| SkillDeprecation {
+            replacement_resource_id: row.3.map(|id| id.to_string()),
+            replacement_locator: row
+                .4
+                .zip(row.5)
+                .map(|(owner, name)| format!("@{owner}/{name}")),
+        });
+        Ok(SubscriptionTarget {
+            resource_id: resolved.resource_id.to_string(),
+            locator: format!("@{}/{}", resolved.owner, resolved.name),
+            owner: resolved.owner,
+            name: resolved.name,
+            description: sqlx::query_scalar::<_, String>(
+                "SELECT description FROM resources WHERE id=$1",
+            )
+            .bind(resolved.resource_id)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(internal_api_error)?,
+            generation: u64::try_from(row.1)
+                .map_err(|_| ApiError::new(ApiErrorCode::Internal, "generation is invalid"))?,
+            live_private: shared,
+            deprecation,
+        })
+    }
+
     pub async fn search_public_skills(
         &self,
+        bearer: Option<&str>,
         query: &str,
         limit: u32,
         cursor: Option<&str>,
     ) -> Result<PublicSkillSearchResponse, ApiError> {
+        let authority = self.optional_read_authority(bearer).await?;
         let limit = limit.clamp(1, 50);
         let pattern = format!("%{}%", query.trim());
-        let rows = if let Some(cursor) = cursor {
+        let rows = if let Some(authority) = authority.as_ref() {
+            if let Some(cursor) = cursor {
+                let cursor = SearchCursor::decode(cursor)?;
+                sqlx::query_as::<_, PublicSkillSearchRow>(
+                    "SELECT r.id,n.slug AS owner,r.slug AS name,r.description,r.generation, \
+                            CASE WHEN r.visibility='public' THEN sr.version ELSE NULL END AS version, \
+                            CASE WHEN r.visibility='public' THEN sr.revision_id ELSE w.revision_id END AS revision_id, \
+                            CASE WHEN r.visibility='public' THEN r.deprecated_at IS NOT NULL ELSE FALSE END AS deprecated, \
+                            CASE WHEN r.visibility='public' THEN replacement.id ELSE NULL END AS replacement_id, \
+                            CASE WHEN r.visibility='public' THEN replacement_owner.slug ELSE NULL END AS replacement_owner, \
+                            CASE WHEN r.visibility='public' THEN replacement.slug ELSE NULL END AS replacement_name, \
+                            r.visibility<>'public' AS live_private \
+                     FROM resources r JOIN namespaces n ON n.id=r.owner_namespace_id \
+                     LEFT JOIN skill_releases sr ON sr.resource_id=r.id AND sr.version=r.latest_release_version \
+                     LEFT JOIN skill_private_workspaces w ON w.resource_id=r.id \
+                     LEFT JOIN private_skill_shares ps ON ps.resource_id=r.id AND ps.recipient_user_id=$2 \
+                     LEFT JOIN skill_forks f ON f.resource_id=r.id \
+                     LEFT JOIN resources replacement ON replacement.id=r.deprecation_replacement_resource_id AND replacement.deleted_at IS NULL \
+                     LEFT JOIN namespaces replacement_owner ON replacement_owner.id=replacement.owner_namespace_id \
+                     WHERE r.kind='skill' AND r.deleted_at IS NULL AND COALESCE(f.promotion_pending,FALSE)=FALSE \
+                       AND ((r.visibility='public' AND sr.resource_id IS NOT NULL) OR \
+                            (r.visibility<>'public' AND w.resource_id IS NOT NULL AND (r.owner_namespace_id=$3 OR ps.resource_id IS NOT NULL))) \
+                       AND (r.slug ILIKE $1 OR n.slug ILIKE $1 OR r.description ILIKE $1) \
+                       AND ((CASE WHEN r.visibility='public' THEN r.deprecated_at IS NOT NULL ELSE FALSE END) > $4 OR \
+                            ((CASE WHEN r.visibility='public' THEN r.deprecated_at IS NOT NULL ELSE FALSE END) = $4 AND \
+                             (n.slug > $5 OR (n.slug=$5 AND r.slug>$6) OR (n.slug=$5 AND r.slug=$6 AND r.id>$7)))) \
+                     ORDER BY (CASE WHEN r.visibility='public' THEN r.deprecated_at IS NOT NULL ELSE FALSE END),n.slug,r.slug,r.id LIMIT $8",
+                )
+                .bind(&pattern)
+                .bind(authority.user_id)
+                .bind(authority.namespace_id)
+                .bind(cursor.deprecated)
+                .bind(cursor.owner)
+                .bind(cursor.name)
+                .bind(cursor.resource_id)
+                .bind(i64::from(limit) + 1)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(internal_api_error)?
+            } else {
+                sqlx::query_as::<_, PublicSkillSearchRow>(
+                    "SELECT r.id,n.slug AS owner,r.slug AS name,r.description,r.generation, \
+                            CASE WHEN r.visibility='public' THEN sr.version ELSE NULL END AS version, \
+                            CASE WHEN r.visibility='public' THEN sr.revision_id ELSE w.revision_id END AS revision_id, \
+                            CASE WHEN r.visibility='public' THEN r.deprecated_at IS NOT NULL ELSE FALSE END AS deprecated, \
+                            CASE WHEN r.visibility='public' THEN replacement.id ELSE NULL END AS replacement_id, \
+                            CASE WHEN r.visibility='public' THEN replacement_owner.slug ELSE NULL END AS replacement_owner, \
+                            CASE WHEN r.visibility='public' THEN replacement.slug ELSE NULL END AS replacement_name, \
+                            r.visibility<>'public' AS live_private \
+                     FROM resources r JOIN namespaces n ON n.id=r.owner_namespace_id \
+                     LEFT JOIN skill_releases sr ON sr.resource_id=r.id AND sr.version=r.latest_release_version \
+                     LEFT JOIN skill_private_workspaces w ON w.resource_id=r.id \
+                     LEFT JOIN private_skill_shares ps ON ps.resource_id=r.id AND ps.recipient_user_id=$2 \
+                     LEFT JOIN skill_forks f ON f.resource_id=r.id \
+                     LEFT JOIN resources replacement ON replacement.id=r.deprecation_replacement_resource_id AND replacement.deleted_at IS NULL \
+                     LEFT JOIN namespaces replacement_owner ON replacement_owner.id=replacement.owner_namespace_id \
+                     WHERE r.kind='skill' AND r.deleted_at IS NULL AND COALESCE(f.promotion_pending,FALSE)=FALSE \
+                       AND ((r.visibility='public' AND sr.resource_id IS NOT NULL) OR \
+                            (r.visibility<>'public' AND w.resource_id IS NOT NULL AND (r.owner_namespace_id=$3 OR ps.resource_id IS NOT NULL))) \
+                       AND (r.slug ILIKE $1 OR n.slug ILIKE $1 OR r.description ILIKE $1) \
+                     ORDER BY (CASE WHEN r.visibility='public' THEN r.deprecated_at IS NOT NULL ELSE FALSE END),n.slug,r.slug,r.id LIMIT $4",
+                )
+                .bind(&pattern)
+                .bind(authority.user_id)
+                .bind(authority.namespace_id)
+                .bind(i64::from(limit) + 1)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(internal_api_error)?
+            }
+        } else if let Some(cursor) = cursor {
             let cursor = SearchCursor::decode(cursor)?;
             sqlx::query_as::<_, PublicSkillSearchRow>(
                 "SELECT r.id, n.slug AS owner, r.slug AS name, r.description, r.generation, sr.version, sr.revision_id, \
                         r.deprecated_at IS NOT NULL AS deprecated, replacement.id AS replacement_id, \
-                        replacement_owner.slug AS replacement_owner, replacement.slug AS replacement_name \
+                        replacement_owner.slug AS replacement_owner, replacement.slug AS replacement_name, FALSE AS live_private \
                  FROM resources r \
                  JOIN namespaces n ON n.id = r.owner_namespace_id \
                  JOIN skill_releases sr ON sr.resource_id = r.id AND sr.version = r.latest_release_version \
@@ -58,7 +187,7 @@ impl Registry {
             sqlx::query_as::<_, PublicSkillSearchRow>(
                 "SELECT r.id, n.slug AS owner, r.slug AS name, r.description, r.generation, sr.version, sr.revision_id, \
                         r.deprecated_at IS NOT NULL AS deprecated, replacement.id AS replacement_id, \
-                        replacement_owner.slug AS replacement_owner, replacement.slug AS replacement_name \
+                        replacement_owner.slug AS replacement_owner, replacement.slug AS replacement_name, FALSE AS live_private \
                  FROM resources r \
                  JOIN namespaces n ON n.id = r.owner_namespace_id \
                  JOIN skill_releases sr ON sr.resource_id = r.id AND sr.version = r.latest_release_version \
@@ -92,7 +221,11 @@ impl Registry {
         Ok(PublicSkillSearchResponse { items, next_cursor })
     }
 
-    pub async fn show_public_skill(&self, locator: &str) -> Result<PublicSkillDetail, ApiError> {
+    pub async fn show_public_skill(
+        &self,
+        bearer: Option<&str>,
+        locator: &str,
+    ) -> Result<PublicSkillDetail, ApiError> {
         let locator = ResourceLocator::from_str(locator)
             .map_err(|error| ApiError::new(ApiErrorCode::InvalidRequest, error.to_string()))?;
         if locator.kind() != ResourceKind::Skill {
@@ -100,6 +233,29 @@ impl Registry {
                 ApiErrorCode::NotFound,
                 "public skill not found",
             ));
+        }
+        if let Some(authority) = self.optional_read_authority(bearer).await? {
+            let private = sqlx::query_as::<_, PublicSkillDetailRow>(
+                "SELECT r.id,n.slug AS owner,r.slug AS name,r.description,r.generation,NULL::bigint AS version,w.revision_id,w.manifest_json, \
+                        FALSE AS deprecated,NULL::uuid AS replacement_id,NULL::text AS replacement_owner,NULL::text AS replacement_name,TRUE AS live_private \
+                 FROM resources r JOIN namespaces n ON n.id=r.owner_namespace_id \
+                 JOIN skill_private_workspaces w ON w.resource_id=r.id \
+                 LEFT JOIN private_skill_shares ps ON ps.resource_id=r.id AND ps.recipient_user_id=$3 \
+                 LEFT JOIN skill_forks f ON f.resource_id=r.id \
+                 WHERE n.slug=$1 AND r.slug=$2 AND r.kind='skill' AND r.deleted_at IS NULL AND r.visibility<>'public' \
+                   AND COALESCE(f.promotion_pending,FALSE)=FALSE \
+                   AND (r.owner_namespace_id=$4 OR ps.resource_id IS NOT NULL)",
+            )
+            .bind(locator.owner())
+            .bind(locator.name())
+            .bind(authority.user_id)
+            .bind(authority.namespace_id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(internal_api_error)?;
+            if let Some(row) = private {
+                return self.skill_detail_with_provenance(row, None).await;
+            }
         }
         self.public_skill_detail(locator.owner(), locator.name())
             .await
@@ -196,10 +352,25 @@ impl Registry {
         .await
         .map_err(internal_api_error)?
         .ok_or_else(|| ApiError::new(ApiErrorCode::NotFound, "skill not found"))?;
-        if kind == SubscriptionMutationKind::Subscribe && (resource.1 != "public" || resource.2) {
+        let shared_private = match subject {
+            SubscriptionSubject::User(user_id) if !resource.2 => {
+                sqlx::query_scalar::<_, bool>(
+                    "SELECT EXISTS(SELECT 1 FROM private_skill_shares WHERE recipient_user_id=$1 AND resource_id=$2)",
+                )
+                .bind(user_id)
+                .bind(resource_id.as_uuid())
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(internal_api_error)?
+            }
+            _ => false,
+        };
+        if kind == SubscriptionMutationKind::Subscribe
+            && (resource.2 || (resource.1 != "public" && !shared_private))
+        {
             return Err(ApiError::new(
                 ApiErrorCode::NotFound,
-                "public skill not found",
+                "skill is not subscribable",
             ));
         }
         let generation = u64::try_from(resource.0)
@@ -217,6 +388,16 @@ impl Registry {
             return Err(ApiError::new(
                 ApiErrorCode::InvalidRequest,
                 "unsubscribe does not accept release or retention options",
+            ));
+        }
+        if kind == SubscriptionMutationKind::Subscribe
+            && resource.1 != "public"
+            && shared_private
+            && (request.release_version.is_some() || request.retain_on_delete)
+        {
+            return Err(ApiError::new(
+                ApiErrorCode::InvalidRequest,
+                "private shared subscriptions follow the live workspace and do not accept release pins or retain-on-delete",
             ));
         }
         let pinned_release_version = request
@@ -370,7 +551,7 @@ impl Registry {
                             sr.manifest_json, sr.snapshot_key, sr.snapshot_sha256, sr.snapshot_size, s.pinned_release_version, \
                             s.retain_on_delete, r.deleted_at IS NOT NULL AS retained_after_delete, \
                             r.deprecated_at IS NOT NULL AS deprecated, replacement.id AS replacement_id, \
-                            replacement_owner.slug AS replacement_owner, replacement.slug AS replacement_name \
+                            replacement_owner.slug AS replacement_owner, replacement.slug AS replacement_name, FALSE AS live_private \
                      FROM installation_subscriptions s \
                      JOIN resources r ON r.id = s.resource_id \
                      LEFT JOIN namespaces n ON n.id = r.owner_namespace_id \
@@ -391,21 +572,29 @@ impl Registry {
             }
             SubscriptionSubject::User(user_id) => {
                 sqlx::query_as::<_, SubscriptionRow>(
-                    "SELECT r.id, COALESCE(n.slug,r.deleted_owner_slug) AS owner, r.slug AS name, r.description, r.generation, sr.version, sr.revision_id, \
-                            sr.manifest_json, sr.snapshot_key, sr.snapshot_sha256, sr.snapshot_size, s.pinned_release_version, \
+                    "SELECT r.id, COALESCE(n.slug,r.deleted_owner_slug) AS owner, r.slug AS name, r.description, r.generation, \
+                            CASE WHEN ps.resource_id IS NOT NULL AND r.deleted_at IS NULL AND s.pinned_release_version IS NULL AND NOT s.retain_on_delete THEN NULL ELSE sr.version END AS version, \
+                            CASE WHEN ps.resource_id IS NOT NULL AND r.deleted_at IS NULL AND s.pinned_release_version IS NULL AND NOT s.retain_on_delete THEN w.revision_id ELSE sr.revision_id END AS revision_id, \
+                            CASE WHEN ps.resource_id IS NOT NULL AND r.deleted_at IS NULL AND s.pinned_release_version IS NULL AND NOT s.retain_on_delete THEN w.manifest_json ELSE sr.manifest_json END AS manifest_json, \
+                            CASE WHEN ps.resource_id IS NOT NULL AND r.deleted_at IS NULL AND s.pinned_release_version IS NULL AND NOT s.retain_on_delete THEN w.snapshot_key ELSE sr.snapshot_key END AS snapshot_key, \
+                            CASE WHEN ps.resource_id IS NOT NULL AND r.deleted_at IS NULL AND s.pinned_release_version IS NULL AND NOT s.retain_on_delete THEN w.snapshot_sha256 ELSE sr.snapshot_sha256 END AS snapshot_sha256, \
+                            CASE WHEN ps.resource_id IS NOT NULL AND r.deleted_at IS NULL AND s.pinned_release_version IS NULL AND NOT s.retain_on_delete THEN w.snapshot_size ELSE sr.snapshot_size END AS snapshot_size, s.pinned_release_version, \
                             s.retain_on_delete, r.deleted_at IS NOT NULL AS retained_after_delete, \
                             r.deprecated_at IS NOT NULL AS deprecated, replacement.id AS replacement_id, \
-                            replacement_owner.slug AS replacement_owner, replacement.slug AS replacement_name \
+                            replacement_owner.slug AS replacement_owner, replacement.slug AS replacement_name, \
+                            (ps.resource_id IS NOT NULL AND r.deleted_at IS NULL AND s.pinned_release_version IS NULL AND NOT s.retain_on_delete) AS live_private \
                      FROM account_subscriptions s \
                      JOIN resources r ON r.id = s.resource_id \
                      LEFT JOIN namespaces n ON n.id = r.owner_namespace_id \
+                     LEFT JOIN private_skill_shares ps ON ps.resource_id=r.id AND ps.recipient_user_id=s.user_id \
+                     LEFT JOIN skill_private_workspaces w ON w.resource_id=r.id \
                      LEFT JOIN resources replacement ON replacement.id=r.deprecation_replacement_resource_id AND replacement.deleted_at IS NULL \
                      LEFT JOIN namespaces replacement_owner ON replacement_owner.id=replacement.owner_namespace_id \
-                     JOIN skill_releases sr ON sr.resource_id = r.id AND sr.version = CASE \
+                     LEFT JOIN skill_releases sr ON sr.resource_id = r.id AND sr.version = CASE \
                          WHEN r.deleted_at IS NOT NULL THEN r.tombstone_release_version \
                          ELSE COALESCE(s.pinned_release_version,r.latest_release_version) END \
                      WHERE s.user_id = $1 AND r.kind = 'skill' AND ( \
-                         (r.deleted_at IS NULL AND r.visibility = 'public') OR \
+                         (r.deleted_at IS NULL AND (r.visibility = 'public' OR ps.resource_id IS NOT NULL)) OR \
                          (r.deleted_at IS NOT NULL AND s.retain_on_delete AND r.tombstone_release_version IS NOT NULL)) \
                      ORDER BY COALESCE(n.slug,r.deleted_owner_slug), r.slug, r.id",
                 )
@@ -428,173 +617,6 @@ impl Registry {
         Ok(SubscriptionCatalog { skills })
     }
 
-    /// Trusted development/test harness seam used to seed public immutable releases before
-    /// authenticated import/publish exist. It persists through the same PostgreSQL/S3 read
-    /// model consumed by every public HTTP request; there is no in-memory seed catalog.
-    pub async fn seed_public_skill(
-        &self,
-        owner: &str,
-        snapshot: &DeterministicSkillSnapshot,
-        entries: &[OwnedSkillEntry],
-    ) -> Result<PublicSkillDetail, RegistryError> {
-        let skill_md = entries
-            .iter()
-            .find_map(|entry| match entry {
-                OwnedSkillEntry::File { path, bytes, .. } if path == "SKILL.md" => {
-                    Some(bytes.as_slice())
-                }
-                _ => None,
-            })
-            .ok_or_else(|| RegistryError::Seed("seed skill is missing SKILL.md".to_owned()))?;
-        // The directory name is not authority at this trusted seed edge, so discover the
-        // declared name first and then run the canonical denju-core parser against it.
-        let yaml_name = skill_frontmatter_name(skill_md)?;
-        let document = parse_skill_document(&yaml_name, skill_md)
-            .map_err(|error| RegistryError::Seed(error.to_string()))?;
-        let description = document.frontmatter().description().to_owned();
-        ResourceLocator::from_str(&format!("@{owner}/{yaml_name}"))
-            .map_err(|error| RegistryError::Seed(error.to_string()))?;
-
-        let resource_id = ResourceId::from_uuid(Uuid::now_v7())
-            .map_err(|error| RegistryError::Seed(error.to_string()))?;
-        let author_id = AuthorPrincipalId::from_uuid(Uuid::now_v7())
-            .map_err(|error| RegistryError::Seed(error.to_string()))?;
-        let operation_id = OperationId::from_uuid(Uuid::now_v7())
-            .map_err(|error| RegistryError::Seed(error.to_string()))?;
-        let revision = Revision::new(
-            snapshot.manifest().root_tree(),
-            Vec::new(),
-            author_id,
-            operation_id,
-        )
-        .map_err(|error| RegistryError::Seed(error.to_string()))?;
-        let revision_id = revision.id();
-        let snapshot_sha256: [u8; 32] = Sha256::digest(snapshot.bytes()).into();
-        let snapshot_key = format!("snapshots/sha256/{}.tar.zst", hex::encode(snapshot_sha256));
-
-        for entry in entries {
-            if let OwnedSkillEntry::File { bytes, .. } = entry {
-                let blob = BlobId::hash(bytes);
-                self.objects
-                    .put(
-                        &format!("blobs/sha256/{}/{blob}", &blob.to_string()[..2]),
-                        bytes,
-                    )
-                    .await?;
-            }
-        }
-        self.objects.put(&snapshot_key, snapshot.bytes()).await?;
-
-        let manifest = PublicSkillManifest::from_core(snapshot.manifest());
-        let manifest_json = serde_json::to_value(&manifest)?;
-        let snapshot_size = i64::try_from(snapshot.bytes().len())
-            .map_err(|_| RegistryError::Seed("snapshot is too large".to_owned()))?;
-        let namespace_id = Uuid::now_v7();
-        let mut tx = self.pool.begin().await?;
-        sqlx::query(
-            "INSERT INTO namespaces (id, slug, kind) VALUES ($1, $2, 'user') ON CONFLICT (slug) DO NOTHING",
-        )
-        .bind(namespace_id)
-        .bind(owner)
-        .execute(&mut *tx)
-        .await?;
-        let namespace_id =
-            sqlx::query_scalar::<_, Uuid>("SELECT id FROM namespaces WHERE slug = $1")
-                .bind(owner)
-                .fetch_one(&mut *tx)
-                .await?;
-        if sqlx::query_scalar::<_, Uuid>(
-            "SELECT id FROM resources WHERE owner_namespace_id = $1 AND kind = 'skill' AND slug = $2 AND deleted_at IS NULL",
-        )
-        .bind(namespace_id)
-        .bind(&yaml_name)
-        .fetch_optional(&mut *tx)
-        .await?
-        .is_some()
-        {
-            return Err(RegistryError::Seed(format!(
-                "public skill @{owner}/{yaml_name} is already seeded"
-            )));
-        }
-        sqlx::query("INSERT INTO author_principals (id, kind) VALUES ($1, 'user')")
-            .bind(author_id.as_uuid())
-            .execute(&mut *tx)
-            .await?;
-        sqlx::query(
-            "DELETE FROM resource_redirects WHERE namespace_id=$1 AND kind='skill' AND old_slug=$2",
-        )
-        .bind(namespace_id)
-        .bind(&yaml_name)
-        .execute(&mut *tx)
-        .await?;
-        sqlx::query(
-            "INSERT INTO resources \
-             (id, owner_namespace_id, slug, kind, visibility, description, generation, latest_release_version) \
-             VALUES ($1, $2, $3, 'skill', 'public', $4, 1, 1)",
-        )
-        .bind(resource_id.as_uuid())
-        .bind(namespace_id)
-        .bind(&yaml_name)
-        .bind(&description)
-        .execute(&mut *tx)
-        .await?;
-        sqlx::query(
-            "INSERT INTO skill_releases \
-             (resource_id, version, revision_id, root_tree_id, manifest_json, snapshot_key, snapshot_sha256, snapshot_size, author_principal_id) \
-             VALUES ($1, 1, $2, $3, $4, $5, $6, $7, $8)",
-        )
-        .bind(resource_id.as_uuid())
-        .bind(revision_id.as_bytes().as_slice())
-        .bind(snapshot.manifest().root_tree().as_bytes().as_slice())
-        .bind(manifest_json)
-        .bind(&snapshot_key)
-        .bind(snapshot_sha256.as_slice())
-        .bind(snapshot_size)
-        .bind(author_id.as_uuid())
-        .execute(&mut *tx)
-        .await?;
-        sqlx::query(
-            "INSERT INTO revisions (revision_id,root_tree_id,author_principal_id,operation_id) \
-             VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING",
-        )
-        .bind(revision_id.as_bytes().as_slice())
-        .bind(snapshot.manifest().root_tree().as_bytes().as_slice())
-        .bind(author_id.as_uuid())
-        .bind(operation_id.as_uuid())
-        .execute(&mut *tx)
-        .await?;
-        sqlx::query(
-            "INSERT INTO resource_revision_snapshots \
-             (resource_id,revision_id,manifest_json,snapshot_key,snapshot_sha256,snapshot_size) \
-             VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING",
-        )
-        .bind(resource_id.as_uuid())
-        .bind(revision_id.as_bytes().as_slice())
-        .bind(serde_json::to_value(&manifest)?)
-        .bind(&snapshot_key)
-        .bind(snapshot_sha256.as_slice())
-        .bind(snapshot_size)
-        .execute(&mut *tx)
-        .await?;
-        tx.commit().await?;
-
-        Ok(PublicSkillDetail {
-            skill: PublicSkill {
-                resource_id: resource_id.to_string(),
-                locator: format!("@{owner}/{yaml_name}"),
-                owner: owner.to_owned(),
-                name: yaml_name,
-                description,
-                generation: 1,
-                version: 1,
-                revision_id: revision_id.to_string(),
-                deprecation: None,
-            },
-            manifest,
-            redirected_from: None,
-        })
-    }
-
     async fn public_skill_detail(
         &self,
         owner: &str,
@@ -603,7 +625,7 @@ impl Registry {
         let active = sqlx::query_as::<_, PublicSkillDetailRow>(
             "SELECT r.id, n.slug AS owner, r.slug AS name, r.description, r.generation, sr.version, sr.revision_id, sr.manifest_json, \
                     r.deprecated_at IS NOT NULL AS deprecated, replacement.id AS replacement_id, \
-                    replacement_owner.slug AS replacement_owner, replacement.slug AS replacement_name \
+                    replacement_owner.slug AS replacement_owner, replacement.slug AS replacement_name, FALSE AS live_private \
              FROM resources r \
              JOIN namespaces n ON n.id = r.owner_namespace_id \
              JOIN skill_releases sr ON sr.resource_id = r.id AND sr.version = r.latest_release_version \
@@ -617,12 +639,12 @@ impl Registry {
         .await
         .map_err(internal_api_error)?;
         if let Some(row) = active {
-            return row.into_wire(None);
+            return self.skill_detail_with_provenance(row, None).await;
         }
         let redirected = sqlx::query_as::<_, PublicSkillDetailRow>(
             "SELECT r.id, target_owner.slug AS owner, r.slug AS name, r.description, r.generation, sr.version, sr.revision_id, sr.manifest_json, \
                     r.deprecated_at IS NOT NULL AS deprecated, replacement.id AS replacement_id, \
-                    replacement_owner.slug AS replacement_owner, replacement.slug AS replacement_name \
+                    replacement_owner.slug AS replacement_owner, replacement.slug AS replacement_name, FALSE AS live_private \
              FROM resource_redirects rr JOIN namespaces old_owner ON old_owner.id=rr.namespace_id \
              JOIN resources r ON r.id=rr.target_resource_id AND r.deleted_at IS NULL \
              JOIN namespaces target_owner ON target_owner.id=r.owner_namespace_id \
@@ -637,7 +659,54 @@ impl Registry {
         .await
         .map_err(internal_api_error)?
         .ok_or_else(|| ApiError::new(ApiErrorCode::NotFound, "public skill not found"))?;
-        redirected.into_wire(Some(format!("@{owner}/{name}")))
+        self.skill_detail_with_provenance(redirected, Some(format!("@{owner}/{name}")))
+            .await
+    }
+
+    async fn skill_detail_with_provenance(
+        &self,
+        row: PublicSkillDetailRow,
+        redirected_from: Option<String>,
+    ) -> Result<PublicSkillDetail, ApiError> {
+        let resource_id = row.id;
+        let mut detail = row.into_wire(redirected_from)?;
+        detail.fork = self.skill_fork_provenance(resource_id).await?;
+        Ok(detail)
+    }
+
+    async fn skill_fork_provenance(
+        &self,
+        resource_id: Uuid,
+    ) -> Result<Option<SkillForkProvenance>, ApiError> {
+        let row = sqlx::query_as::<_, (Uuid, Option<String>, String, Vec<u8>, Vec<u8>)>(
+            "SELECT f.upstream_resource_id,COALESCE(n.slug,upstream.deleted_owner_slug),upstream.slug, \
+                    f.created_from_revision_id,f.sync_base_revision_id \
+             FROM skill_forks f \
+             JOIN resources upstream ON upstream.id=f.upstream_resource_id \
+             LEFT JOIN namespaces n ON n.id=upstream.owner_namespace_id \
+             WHERE f.resource_id=$1 AND f.promotion_pending=FALSE",
+        )
+        .bind(resource_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal_api_error)?;
+        let Some((upstream_resource_id, owner, name, created, sync_base)) = row else {
+            return Ok(None);
+        };
+        let owner = owner.ok_or_else(|| {
+            ApiError::new(
+                ApiErrorCode::Internal,
+                "stored fork upstream owner is unavailable",
+            )
+        })?;
+        let created = crate::ingest::decode_32(&created, "stored fork creation revision")?;
+        let sync_base = crate::ingest::decode_32(&sync_base, "stored fork sync base")?;
+        Ok(Some(SkillForkProvenance {
+            upstream_resource_id: upstream_resource_id.to_string(),
+            upstream_locator: format!("@{owner}/{name}"),
+            created_from_revision_id: hex::encode(created),
+            sync_base_revision_id: hex::encode(sync_base),
+        }))
     }
 }
 
@@ -648,12 +717,13 @@ struct PublicSkillSearchRow {
     name: String,
     description: String,
     generation: i64,
-    version: i64,
+    version: Option<i64>,
     revision_id: Vec<u8>,
     deprecated: bool,
     replacement_id: Option<Uuid>,
     replacement_owner: Option<String>,
     replacement_name: Option<String>,
+    live_private: bool,
 }
 
 impl PublicSkillSearchRow {
@@ -672,6 +742,7 @@ impl PublicSkillSearchRow {
             description: self.description,
             generation: self.generation,
             version: self.version,
+            live_private: self.live_private,
             revision_id: self.revision_id,
             deprecation,
         })
@@ -687,13 +758,14 @@ struct PublicSkillDetailRow {
     name: String,
     description: String,
     generation: i64,
-    version: i64,
+    version: Option<i64>,
     revision_id: Vec<u8>,
     manifest_json: serde_json::Value,
     deprecated: bool,
     replacement_id: Option<Uuid>,
     replacement_owner: Option<String>,
     replacement_name: Option<String>,
+    live_private: bool,
 }
 
 impl PublicSkillDetailRow {
@@ -712,6 +784,7 @@ impl PublicSkillDetailRow {
             description: self.description,
             generation: self.generation,
             version: self.version,
+            live_private: self.live_private,
             revision_id: self.revision_id,
             deprecation,
         })?;
@@ -720,6 +793,7 @@ impl PublicSkillDetailRow {
         Ok(PublicSkillDetail {
             skill,
             manifest,
+            fork: None,
             redirected_from,
         })
     }
@@ -732,7 +806,7 @@ struct SubscriptionRow {
     name: String,
     description: String,
     generation: i64,
-    version: i64,
+    version: Option<i64>,
     revision_id: Vec<u8>,
     manifest_json: serde_json::Value,
     snapshot_key: String,
@@ -745,6 +819,7 @@ struct SubscriptionRow {
     replacement_id: Option<Uuid>,
     replacement_owner: Option<String>,
     replacement_name: Option<String>,
+    live_private: bool,
 }
 
 impl SubscriptionRow {
@@ -756,16 +831,33 @@ impl SubscriptionRow {
                 .zip(self.replacement_name)
                 .map(|(owner, name)| format!("@{owner}/{name}")),
         });
-        let skill = public_skill_from_parts(PublicSkillParts {
-            id: self.id,
-            owner: self.owner,
-            name: self.name,
-            description: self.description,
-            generation: self.generation,
-            version: self.version,
-            revision_id: self.revision_id,
-            deprecation,
-        })?;
+        let generation = u64::try_from(self.generation)
+            .map_err(|_| ApiError::new(ApiErrorCode::Internal, "stored generation is invalid"))?;
+        let revision: [u8; 32] = self
+            .revision_id
+            .try_into()
+            .map_err(|_| ApiError::new(ApiErrorCode::Internal, "stored revision ID is invalid"))?;
+        let content = if self.live_private {
+            if self.version.is_some() || self.retained_after_delete {
+                return Err(ApiError::new(
+                    ApiErrorCode::Internal,
+                    "stored private subscription content shape is invalid",
+                ));
+            }
+            SubscriptionContent::PrivateWorkspace
+        } else {
+            let version = u64::try_from(self.version.ok_or_else(|| {
+                ApiError::new(ApiErrorCode::Internal, "stored release version is missing")
+            })?)
+            .map_err(|_| {
+                ApiError::new(ApiErrorCode::Internal, "stored release version is invalid")
+            })?;
+            SubscriptionContent::Release {
+                version,
+                following_latest: !self.retained_after_delete
+                    && self.pinned_release_version.is_none(),
+            }
+        };
         let manifest = serde_json::from_value(self.manifest_json)
             .map_err(|error| ApiError::new(ApiErrorCode::Internal, error.to_string()))?;
         let sha: [u8; 32] = self.snapshot_sha256.try_into().map_err(|_| {
@@ -778,14 +870,21 @@ impl SubscriptionRow {
             ApiError::new(ApiErrorCode::Internal, "stored snapshot size is invalid")
         })?;
         Ok(SubscribedSkill {
-            skill,
+            resource_id: self.id.to_string(),
+            locator: format!("@{}/{}", self.owner, self.name),
+            owner: self.owner,
+            name: self.name,
+            description: self.description,
+            generation,
+            revision_id: hex::encode(revision),
+            deprecation,
+            content,
             manifest,
             snapshot: SnapshotDownload {
                 sha256: hex::encode(sha),
                 size_bytes,
                 url: snapshot_url,
             },
-            following_latest: !self.retained_after_delete && self.pinned_release_version.is_none(),
             retained_after_delete: self.retained_after_delete,
             retain_on_delete: self.retain_on_delete,
         })
@@ -798,7 +897,8 @@ struct PublicSkillParts {
     name: String,
     description: String,
     generation: i64,
-    version: i64,
+    version: Option<i64>,
+    live_private: bool,
     revision_id: Vec<u8>,
     deprecation: Option<SkillDeprecation>,
 }
@@ -806,8 +906,16 @@ struct PublicSkillParts {
 fn public_skill_from_parts(parts: PublicSkillParts) -> Result<PublicSkill, ApiError> {
     let generation = u64::try_from(parts.generation)
         .map_err(|_| ApiError::new(ApiErrorCode::Internal, "stored generation is invalid"))?;
-    let version = u64::try_from(parts.version)
-        .map_err(|_| ApiError::new(ApiErrorCode::Internal, "stored release version is invalid"))?;
+    let version =
+        parts.version.map(u64::try_from).transpose().map_err(|_| {
+            ApiError::new(ApiErrorCode::Internal, "stored release version is invalid")
+        })?;
+    if parts.live_private == version.is_some() {
+        return Err(ApiError::new(
+            ApiErrorCode::Internal,
+            "catalog skill content shape is invalid",
+        ));
+    }
     let revision: [u8; 32] = parts
         .revision_id
         .try_into()
@@ -820,6 +928,7 @@ fn public_skill_from_parts(parts: PublicSkillParts) -> Result<PublicSkill, ApiEr
         description: parts.description,
         generation,
         version,
+        live_private: parts.live_private,
         revision_id: hex::encode(revision),
         deprecation: parts.deprecation,
     })
@@ -887,28 +996,4 @@ impl SearchCursor {
             })?,
         })
     }
-}
-
-fn skill_frontmatter_name(bytes: &[u8]) -> Result<String, RegistryError> {
-    let source = std::str::from_utf8(bytes)
-        .map_err(|_| RegistryError::Seed("SKILL.md is not UTF-8".to_owned()))?;
-    let Some(rest) = source
-        .strip_prefix("---\n")
-        .or_else(|| source.strip_prefix("---\r\n"))
-    else {
-        return Err(RegistryError::Seed(
-            "SKILL.md is missing frontmatter".to_owned(),
-        ));
-    };
-    let marker = rest
-        .find("\n---")
-        .ok_or_else(|| RegistryError::Seed("SKILL.md frontmatter is not terminated".to_owned()))?;
-    let value: serde_yaml::Value = serde_yaml::from_str(&rest[..marker])
-        .map_err(|error| RegistryError::Seed(error.to_string()))?;
-    value
-        .as_mapping()
-        .and_then(|mapping| mapping.get(serde_yaml::Value::String("name".to_owned())))
-        .and_then(serde_yaml::Value::as_str)
-        .map(str::to_owned)
-        .ok_or_else(|| RegistryError::Seed("SKILL.md is missing name".to_owned()))
 }

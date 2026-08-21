@@ -1,24 +1,20 @@
 use std::{collections::BTreeSet, fs, str::FromStr};
 
-use denju_client::{ClientError, RegistryClient};
+use denju_client::RegistryClient;
 use denju_core::{OperationId, ResourceId, RevisionId};
 use denju_local::{
-    CredentialBackend, CredentialManager, DesiredSkillMaterialization, IdentityRecord,
-    InstallCredential, InstallationRecord, LocalDatabase, LocalPaths, ManagedDesiredKind,
-    ManagedSkillRecord, OwnedSkillRecord, RegistryRenameState, ResolvedHarnessRoots,
-    SessionCredential, SubscriptionRecord, WorkspaceStatus, apply_registry_rename,
-    journaled_remove_managed_skill, materialize_skill_snapshot, prepare_harness_roots,
-    reconcile_canonical_links, reconcile_harness_projections, recover_local_lifecycle,
-    recover_materializations, resolve_harness_roots,
+    DesiredSkillMaterialization, LocalDatabase, LocalPaths, ManagedDesiredKind, ManagedSkillRecord,
+    OwnedSkillRecord, RegistryRenameState, SubscriptionRecord, WorkspaceStatus,
+    apply_registry_rename, journaled_remove_managed_skill, materialize_skill_snapshot,
+    prepare_harness_roots, reconcile_canonical_links, reconcile_harness_projections,
+    recover_local_lifecycle, recover_materializations, resolve_harness_roots,
 };
 use denju_wire::{
-    ApiErrorCode, CliErrorCode, PrivateSkill, PublicSkill, PublicSkillDetail,
-    PublicSkillSearchResponse, RegistryLimits, SubscribedSkill, SubscriptionMutationKind,
-    SubscriptionMutationRequest, SyncKnownResource, SyncReconcileRequest,
-    subscription_request_hash,
+    CliErrorCode, PrivateSkill, PublicSkillDetail, PublicSkillSearchResponse, SubscribedSkill,
+    SubscriptionContent, SubscriptionMutationKind, SubscriptionMutationRequest, SyncKnownResource,
+    SyncReconcileRequest, subscription_request_hash,
 };
 use serde::Serialize;
-use url::Url;
 use uuid::Uuid;
 
 use crate::setup::RuntimeError;
@@ -26,7 +22,14 @@ use crate::setup::RuntimeError;
 #[derive(Debug, Clone, Serialize)]
 pub struct SubscribeOutcome {
     pub state: &'static str,
-    pub skill: PublicSkill,
+    pub locator: String,
+    pub description: String,
+    pub revision_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub release_version: Option<u64>,
+    pub live_private: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deprecation: Option<denju_wire::SkillDeprecation>,
     pub harness_name: String,
     pub sync: SyncOutcome,
 }
@@ -53,7 +56,7 @@ pub struct ProjectionOutcome {
 }
 
 pub async fn search(query: &str) -> Result<PublicSkillSearchResponse, RuntimeError> {
-    let context = installed_context(false).await?;
+    let context = catalog_context().await?;
     context
         .client
         .search_public_skills(query, 20, None)
@@ -62,12 +65,27 @@ pub async fn search(query: &str) -> Result<PublicSkillSearchResponse, RuntimeErr
 }
 
 pub async fn show(locator: &str) -> Result<PublicSkillDetail, RuntimeError> {
-    let context = installed_context(false).await?;
+    let context = catalog_context().await?;
     context
         .client
         .show_public_skill(locator)
         .await
         .map_err(client_error)
+}
+
+async fn catalog_context() -> Result<InstalledContext, RuntimeError> {
+    let context = installed_context(false).await?;
+    let has_session = context
+        .db
+        .identity()
+        .await
+        .map_err(local_error)?
+        .is_some_and(|identity| identity.session_backend.is_some());
+    if has_session {
+        installed_context(true).await
+    } else {
+        Ok(context)
+    }
 }
 
 pub async fn subscribe(
@@ -76,20 +94,21 @@ pub async fn subscribe(
     retain_on_delete: bool,
 ) -> Result<SubscribeOutcome, RuntimeError> {
     let context = installed_context(true).await?;
-    let detail = context
+    let target = context
         .client
-        .show_public_skill(locator)
+        .subscription_target(locator)
         .await
         .map_err(client_error)?;
     mutate_subscription(
         &context.client,
         SubscriptionMutationKind::Subscribe,
-        &detail.skill.resource_id,
-        detail.skill.generation,
+        &target.resource_id,
+        target.generation,
         release_version,
         retain_on_delete,
     )
     .await?;
+    let db = context.db.clone();
     let (sync, blockers) = sync_with_context(context).await?;
     if let Some(blocker) = blockers.into_iter().next() {
         return Err(blocker);
@@ -97,7 +116,7 @@ pub async fn subscribe(
     let harness_name = sync
         .projections
         .iter()
-        .find(|projection| projection.locator == detail.skill.locator)
+        .find(|projection| projection.locator == target.locator)
         .map(|projection| projection.harness_name.clone())
         .ok_or_else(|| {
             RuntimeError::new(
@@ -106,9 +125,28 @@ pub async fn subscribe(
             )
             .recovery("denju sync")
         })?;
+    let local = db
+        .subscription(target.resource_id.clone())
+        .await
+        .map_err(local_error)?
+        .ok_or_else(|| {
+            RuntimeError::new(
+                CliErrorCode::LocalState,
+                "subscription synchronized without durable local desired state",
+            )
+        })?;
     Ok(SubscribeOutcome {
         state: "subscribed",
-        skill: detail.skill,
+        locator: target.locator,
+        description: target.description,
+        revision_id: local.desired_revision_id,
+        release_version: (!local.live_private).then_some(
+            u64::try_from(local.release_version).map_err(|_| {
+                RuntimeError::new(CliErrorCode::LocalState, "release version is invalid")
+            })?,
+        ),
+        live_private: local.live_private,
+        deprecation: target.deprecation,
         harness_name,
         sync,
     })
@@ -173,6 +211,9 @@ pub(crate) async fn sync_once() -> Result<SyncOutcome, RuntimeError> {
         recover_local_lifecycle(&paths, &db, &roots)
             .await
             .map_err(local_error)?;
+        let (_forked, fork_blockers) =
+            crate::forks::protect_subscription_edits(&paths, &db, &roots).await?;
+        blockers.extend(fork_blockers);
         let (_workspace_pass, local_blockers) =
             crate::workspace::capture_local_edits(&paths, &db, false).await?;
         blockers.extend(local_blockers);
@@ -183,6 +224,7 @@ pub(crate) async fn sync_once() -> Result<SyncOutcome, RuntimeError> {
     let (_workspace_pass, hydrated_blockers) =
         crate::workspace::capture_local_edits(&context.paths, &context.db, false).await?;
     blockers.extend(hydrated_blockers);
+    crate::fork_ops::promote_local_forks(&context).await?;
     let (_uploaded, upload_blockers) = crate::workspace::drain_queued_revisions(&context).await?;
     blockers.extend(upload_blockers);
     let (outcome, remote_blockers) = sync_with_context(context).await?;
@@ -271,6 +313,21 @@ async fn sync_with_context(
         .reconcile_subscriptions(&SyncReconcileRequest { known })
         .await
         .map_err(client_error)?;
+    let mut suppressed_subscription_ids = context
+        .db
+        .local_forks()
+        .await
+        .map_err(local_error)?
+        .into_iter()
+        .map(|fork| fork.upstream_resource_id)
+        .collect::<BTreeSet<_>>();
+    suppressed_subscription_ids.extend(
+        context
+            .db
+            .subscription_edit_locks()
+            .await
+            .map_err(local_error)?,
+    );
     let removed_ids = reconcile
         .removed_resource_ids
         .iter()
@@ -302,13 +359,16 @@ async fn sync_with_context(
 
     let mut materialized = 0;
     for remote in &reconcile.skills {
+        if suppressed_subscription_ids.contains(&remote.resource_id) {
+            continue;
+        }
         let mut existing = context
             .db
-            .subscription(remote.skill.resource_id.clone())
+            .subscription(remote.resource_id.clone())
             .await
             .map_err(local_error)?;
         if let Some(local) = existing.as_ref()
-            && (local.owner != remote.skill.owner || local.skill_name != remote.skill.name)
+            && (local.owner != remote.owner || local.skill_name != remote.name)
         {
             journaled_remove_managed_skill(
                 &context.paths,
@@ -330,15 +390,14 @@ async fn sync_with_context(
         }
         upsert_desired(&context.db, remote).await?;
         let already_current = existing.as_ref().is_some_and(|record| {
-            record.owner == remote.skill.owner
-                && record.skill_name == remote.skill.name
-                && record.materialized_revision_id.as_deref()
-                    == Some(remote.skill.revision_id.as_str())
+            record.owner == remote.owner
+                && record.skill_name == remote.name
+                && record.materialized_revision_id.as_deref() == Some(remote.revision_id.as_str())
                 && context
                     .paths
                     .skills
-                    .join(&remote.skill.owner)
-                    .join(&remote.skill.name)
+                    .join(&remote.owner)
+                    .join(&remote.name)
                     .exists()
         });
         if already_current {
@@ -349,7 +408,7 @@ async fn sync_with_context(
                 CliErrorCode::ContentVerification,
                 format!(
                     "snapshot for {} exceeds registry transfer limit",
-                    remote.skill.locator
+                    remote.locator
                 ),
             ));
         }
@@ -359,10 +418,10 @@ async fn sync_with_context(
             .await
             .map_err(client_error)?;
         let desired = DesiredSkillMaterialization {
-            resource_id: ResourceId::from_str(&remote.skill.resource_id).map_err(local_error)?,
-            owner: remote.skill.owner.clone(),
-            skill_name: remote.skill.name.clone(),
-            revision_id: RevisionId::from_str(&remote.skill.revision_id).map_err(local_error)?,
+            resource_id: ResourceId::from_str(&remote.resource_id).map_err(local_error)?,
+            owner: remote.owner.clone(),
+            skill_name: remote.name.clone(),
+            revision_id: RevisionId::from_str(&remote.revision_id).map_err(local_error)?,
             manifest: remote
                 .manifest
                 .to_core()
@@ -396,9 +455,19 @@ async fn sync_with_context(
             .iter()
             .map(|skill| skill.resource_id.as_str())
             .collect::<BTreeSet<_>>();
+        let local_fork_ids = context
+            .db
+            .local_forks()
+            .await
+            .map_err(local_error)?
+            .into_iter()
+            .map(|fork| fork.resource_id)
+            .collect::<BTreeSet<_>>();
         let existing_owned = context.db.owned_skills().await.map_err(local_error)?;
         for record in &existing_owned {
-            if remote_ids.contains(record.resource_id.as_str()) {
+            if remote_ids.contains(record.resource_id.as_str())
+                || local_fork_ids.contains(record.resource_id.as_str())
+            {
                 continue;
             }
             let managed = context
@@ -467,7 +536,7 @@ async fn sync_with_context(
                     .filter(|remote| {
                         !existing
                             .iter()
-                            .any(|local| local.resource_id == remote.skill.resource_id)
+                            .any(|local| local.resource_id == remote.resource_id)
                     })
                     .count()
                 + owned_desired,
@@ -739,31 +808,40 @@ async fn sync_owned_skill(
 }
 
 async fn upsert_desired(db: &LocalDatabase, remote: &SubscribedSkill) -> Result<(), RuntimeError> {
-    let resource_generation = i64::try_from(remote.skill.generation).map_err(|_| {
+    let resource_generation = i64::try_from(remote.generation).map_err(|_| {
         RuntimeError::new(
             CliErrorCode::LocalState,
             "resource generation exceeds local storage",
         )
     })?;
-    let release_version = i64::try_from(remote.skill.version).map_err(|_| {
-        RuntimeError::new(
-            CliErrorCode::LocalState,
-            "release version exceeds local storage",
-        )
-    })?;
+    let (release_version, live_private) = match remote.content {
+        SubscriptionContent::Release { version, .. } => (
+            i64::try_from(version).map_err(|_| {
+                RuntimeError::new(
+                    CliErrorCode::LocalState,
+                    "release version exceeds local storage",
+                )
+            })?,
+            false,
+        ),
+        SubscriptionContent::PrivateWorkspace => (0, true),
+    };
+    let desired_root_tree_id = remote.manifest.root_tree_id.clone();
     db.upsert_subscription_desired(
         SubscriptionRecord {
-            resource_id: remote.skill.resource_id.clone(),
-            locator: remote.skill.locator.clone(),
-            owner: remote.skill.owner.clone(),
-            skill_name: remote.skill.name.clone(),
+            resource_id: remote.resource_id.clone(),
+            locator: remote.locator.clone(),
+            owner: remote.owner.clone(),
+            skill_name: remote.name.clone(),
             resource_generation,
             release_version,
-            desired_revision_id: remote.skill.revision_id.clone(),
+            desired_revision_id: remote.revision_id.clone(),
             harness_name: None,
             materialized_revision_id: None,
             retain_on_delete: remote.retain_on_delete,
             retained_after_delete: remote.retained_after_delete,
+            live_private,
+            desired_root_tree_id,
         },
         now_unix_ms(),
     )
@@ -771,7 +849,7 @@ async fn upsert_desired(db: &LocalDatabase, remote: &SubscribedSkill) -> Result<
     .map_err(local_error)
 }
 
-async fn mutate_subscription(
+pub(crate) async fn mutate_subscription(
     client: &RegistryClient,
     kind: SubscriptionMutationKind,
     resource_id: &str,
@@ -806,162 +884,6 @@ async fn mutate_subscription(
     Ok(())
 }
 
-pub(crate) struct InstalledContext {
-    pub(crate) paths: LocalPaths,
-    pub(crate) db: LocalDatabase,
-    pub(crate) roots: ResolvedHarnessRoots,
-    pub(crate) client: RegistryClient,
-    pub(crate) limits: RegistryLimits,
-}
-
-pub(crate) async fn installed_context(
-    authenticated: bool,
-) -> Result<InstalledContext, RuntimeError> {
-    let paths = LocalPaths::discover().map_err(local_error)?;
-    if !paths.state_db.is_file() {
-        return Err(
-            RuntimeError::new(CliErrorCode::SetupRequired, "Denju is not set up")
-                .recovery("denju setup"),
-        );
-    }
-    let db = LocalDatabase::open(&paths.state_db)
-        .await
-        .map_err(local_error)?;
-    let installation = db
-        .installation()
-        .await
-        .map_err(local_error)?
-        .ok_or_else(|| {
-            RuntimeError::new(CliErrorCode::SetupRequired, "Denju is not set up")
-                .recovery("denju setup")
-        })?;
-    let origin = Url::parse(&installation.registry_origin)
-        .map_err(|error| RuntimeError::new(CliErrorCode::LocalState, error.to_string()))?;
-    let client = if authenticated {
-        let bearer = load_active_bearer(&paths, &db, &installation).await?;
-        RegistryClient::authenticated(origin, bearer).map_err(client_error)?
-    } else {
-        RegistryClient::new(origin).map_err(client_error)?
-    };
-    client.ready().await.map_err(client_error)?;
-    let capabilities = client.capabilities().await.map_err(client_error)?;
-    if capabilities.api_version != "v1" || !capabilities.object_store_required {
-        return Err(RuntimeError::new(
-            CliErrorCode::RegistryUnavailable,
-            "registry does not satisfy the Denju v1 capability contract",
-        ));
-    }
-    if authenticated
-        && let Some(identity) = db.identity().await.map_err(local_error)?
-        && identity.author_principal_id.is_none()
-        && identity.session_backend.is_some()
-    {
-        let remote = client.identity().await.map_err(client_error)?;
-        db.save_identity(
-            IdentityRecord {
-                user_id: remote.user_id,
-                namespace_id: remote.namespace_id,
-                username: remote.username,
-                session_id: identity.session_id,
-                session_backend: identity.session_backend,
-                author_principal_id: Some(remote.author_principal_id),
-            },
-            now_unix_ms(),
-        )
-        .await
-        .map_err(local_error)?;
-    }
-    let recorded = db.harness_config().await.map_err(local_error)?;
-    let roots = resolve_harness_roots(&paths, recorded.as_ref()).map_err(local_error)?;
-    prepare_harness_roots(&roots).map_err(local_error)?;
-    Ok(InstalledContext {
-        paths,
-        db,
-        roots,
-        client,
-        limits: capabilities.limits,
-    })
-}
-
-fn load_credential(
-    paths: &LocalPaths,
-    installation: &InstallationRecord,
-) -> Result<InstallCredential, RuntimeError> {
-    let backend =
-        CredentialBackend::from_str(&installation.credential_backend).map_err(|error| {
-            RuntimeError::new(CliErrorCode::CredentialUnavailable, error.to_string())
-        })?;
-    CredentialManager::load(paths, backend)
-        .map_err(|error| RuntimeError::new(CliErrorCode::CredentialUnavailable, error.to_string()))
-}
-
-async fn load_active_bearer(
-    paths: &LocalPaths,
-    db: &LocalDatabase,
-    installation: &InstallationRecord,
-) -> Result<String, RuntimeError> {
-    if let Some(identity) = db.identity().await.map_err(local_error)? {
-        let backend_name = identity.session_backend.as_deref().ok_or_else(|| {
-            RuntimeError::new(
-                CliErrorCode::CredentialUnavailable,
-                format!("{} is not logged in on this device", identity.username),
-            )
-            .recovery(format!("denju login {}", identity.username))
-        })?;
-        let backend = CredentialBackend::from_str(backend_name).map_err(|error| {
-            RuntimeError::new(CliErrorCode::CredentialUnavailable, error.to_string())
-        })?;
-        let session: SessionCredential =
-            CredentialManager::load_session(paths, backend).map_err(|error| {
-                RuntimeError::new(CliErrorCode::CredentialUnavailable, error.to_string())
-                    .recovery("denju login <@username>")
-            })?;
-        Ok(session.bearer_token())
-    } else {
-        Ok(load_credential(paths, installation)?.bearer_token())
-    }
-}
-
-pub(crate) fn client_error(error: ClientError) -> RuntimeError {
-    match &error {
-        ClientError::Registry(api) if api.code == ApiErrorCode::NotFound => {
-            RuntimeError::new(CliErrorCode::NotFound, api.message.clone())
-        }
-        ClientError::ContentMismatch(_) => {
-            RuntimeError::new(CliErrorCode::ContentVerification, error.to_string())
-                .recovery("denju sync")
-        }
-        ClientError::Registry(api) if api.code == ApiErrorCode::QuotaExceeded => {
-            RuntimeError::new(CliErrorCode::QuotaExceeded, api.message.clone())
-        }
-        ClientError::Registry(api)
-            if matches!(
-                api.code,
-                ApiErrorCode::InvalidRequest
-                    | ApiErrorCode::InvalidRequestHash
-                    | ApiErrorCode::OperationConflict
-                    | ApiErrorCode::GenerationConflict
-            ) =>
-        {
-            RuntimeError::new(CliErrorCode::InvalidArguments, api.message.clone())
-        }
-        ClientError::Registry(api) if api.code == ApiErrorCode::Unauthorized => {
-            RuntimeError::new(CliErrorCode::CredentialUnavailable, api.message.clone())
-        }
-        _ => RuntimeError::new(CliErrorCode::RegistryUnavailable, error.to_string())
-            .recovery("denju doctor"),
-    }
-}
-
-pub(crate) fn local_error(error: impl std::fmt::Display) -> RuntimeError {
-    RuntimeError::new(CliErrorCode::LocalState, error.to_string()).recovery("denju doctor")
-}
-
-fn now_unix_ms() -> i64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let millis = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
-    i64::try_from(millis).unwrap_or(i64::MAX)
-}
+pub(crate) use crate::context::{
+    InstalledContext, client_error, installed_context, local_error, now_unix_ms,
+};

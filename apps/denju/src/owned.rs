@@ -358,15 +358,19 @@ async fn create_import_journal(
         .map_err(|error| RuntimeError::new(CliErrorCode::Internal, error.to_string()))?;
     let manifest = PublicSkillManifest::from_core(snapshot.manifest());
     let snapshot_sha256 = BlobId::hash(snapshot.bytes()).to_string();
-    let request_hash = private_skill_import_request_hash(
-        &operation_id.to_string(),
-        0,
-        &skill_name,
-        &manifest,
-        &snapshot_sha256,
-        snapshot_size,
-    )
-    .map_err(|error| RuntimeError::new(CliErrorCode::Internal, error.to_string()))?;
+    let operation = operation_id.to_string();
+    let request_hash =
+        private_skill_import_request_hash(&denju_wire::PrivateSkillImportRequestHashInput {
+            operation_id: &operation,
+            expected_generation: 0,
+            name: &skill_name,
+            manifest: &manifest,
+            snapshot_sha256: &snapshot_sha256,
+            snapshot_size_bytes: snapshot_size,
+            revision_author_principal_id: None,
+            fork: None,
+        })
+        .map_err(|error| RuntimeError::new(CliErrorCode::Internal, error.to_string()))?;
     let snapshot_path = context
         .paths
         .imports
@@ -436,15 +440,19 @@ fn import_request(
     journal: &ImportJournal,
     manifest: &PublicSkillManifest,
 ) -> Result<PrivateSkillImportRequest, RuntimeError> {
-    let expected_hash = private_skill_import_request_hash(
-        &journal.operation_id.to_string(),
-        0,
-        &journal.payload.skill_name,
-        manifest,
-        &journal.payload.snapshot_sha256,
-        journal.payload.snapshot_size_bytes,
-    )
-    .map_err(|error| RuntimeError::new(CliErrorCode::Internal, error.to_string()))?;
+    let operation = journal.operation_id.to_string();
+    let expected_hash =
+        private_skill_import_request_hash(&denju_wire::PrivateSkillImportRequestHashInput {
+            operation_id: &operation,
+            expected_generation: 0,
+            name: &journal.payload.skill_name,
+            manifest,
+            snapshot_sha256: &journal.payload.snapshot_sha256,
+            snapshot_size_bytes: journal.payload.snapshot_size_bytes,
+            revision_author_principal_id: None,
+            fork: None,
+        })
+        .map_err(|error| RuntimeError::new(CliErrorCode::Internal, error.to_string()))?;
     if expected_hash.to_string() != journal.payload.request_hash {
         return Err(RuntimeError::new(
             CliErrorCode::LocalState,
@@ -458,6 +466,8 @@ fn import_request(
         manifest: manifest.clone(),
         snapshot_sha256: journal.payload.snapshot_sha256.clone(),
         snapshot_size_bytes: journal.payload.snapshot_size_bytes,
+        revision_author_principal_id: None,
+        fork: None,
         request_hash: journal.payload.request_hash.clone(),
     })
 }

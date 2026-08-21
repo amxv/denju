@@ -2,6 +2,8 @@
 
 mod credentials;
 mod db;
+mod desired_db;
+mod fork_db;
 mod harness;
 mod lifecycle;
 mod materialize;
@@ -19,8 +21,9 @@ pub use credentials::{
 pub use db::{
     AccountDeleteJournal, AccountDeleteJournalPayload, BootstrapJournal, BootstrapJournalPayload,
     HarnessConfig, IdentityRecord, ImportJournal, ImportJournalPayload, InstallationRecord,
-    JournalState, LocalDatabase, LocalDbError, ManagedSkillRecord, MaterializationJournal,
-    MaterializationJournalPayload, OwnedSkillRecord, ServiceRecord, SubscriptionRecord,
+    JournalState, LocalDatabase, LocalDbError, LocalForkRecord, ManagedSkillRecord,
+    MaterializationJournal, MaterializationJournalPayload, OwnedSkillRecord, ServiceRecord,
+    SubscriptionRecord,
 };
 pub use harness::{
     HarnessEnvironment, HarnessError, ResolvedHarnessRoots, detect_unmanaged_skills,

@@ -47,6 +47,19 @@ pub struct SubscriptionRecord {
     pub materialized_revision_id: Option<String>,
     pub retain_on_delete: bool,
     pub retained_after_delete: bool,
+    pub live_private: bool,
+    pub desired_root_tree_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalForkRecord {
+    pub resource_id: String,
+    pub upstream_resource_id: String,
+    pub upstream_locator: String,
+    pub created_from_revision_id: String,
+    pub sync_base_revision_id: String,
+    pub desired_name: String,
+    pub state: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

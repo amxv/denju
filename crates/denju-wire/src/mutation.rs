@@ -24,6 +24,8 @@ const UNPUBLISH_SKILL_DOMAIN: &[u8] = b"denju:http:v1:unpublish-skill\0";
 const DELETE_SKILL_DOMAIN: &[u8] = b"denju:http:v1:delete-skill\0";
 const DEPRECATE_SKILL_DOMAIN: &[u8] = b"denju:http:v1:deprecate-skill\0";
 const HISTORY_PRUNE_DOMAIN: &[u8] = b"denju:http:v1:history-prune\0";
+const SHARE_SKILL_DOMAIN: &[u8] = b"denju:http:v1:share-skill\0";
+const UNSHARE_SKILL_DOMAIN: &[u8] = b"denju:http:v1:unshare-skill\0";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct RequestHash([u8; 32]);
@@ -356,67 +358,76 @@ pub fn restore_skill_request_hash(
     Ok(RequestHash::from_bytes(hasher.finalize().into()))
 }
 
+#[derive(Serialize)]
+pub struct PrivateRevisionRequestHashInput<'a> {
+    pub operation_id: &'a str,
+    pub resource_id: &'a str,
+    pub expected_generation: u64,
+    pub expected_head_revision_id: &'a str,
+    pub parent_revision_ids: &'a [String],
+    pub manifest: &'a crate::PublicSkillManifest,
+    pub revision_author_principal_id: Option<&'a str>,
+    pub fork_sync: Option<&'a crate::ForkSyncIntent>,
+    pub historical_skill_name: Option<&'a str>,
+}
+
 pub fn private_revision_request_hash(
-    operation_id: &str,
-    resource_id: &str,
-    expected_generation: u64,
-    expected_head_revision_id: &str,
-    parent_revision_ids: &[String],
-    manifest: &crate::PublicSkillManifest,
+    input: &PrivateRevisionRequestHashInput<'_>,
 ) -> Result<RequestHash, RequestHashError> {
-    #[derive(Serialize)]
-    struct HashInput<'a> {
-        operation_id: &'a str,
-        resource_id: &'a str,
-        expected_generation: u64,
-        expected_head_revision_id: &'a str,
-        parent_revision_ids: &'a [String],
-        manifest: &'a crate::PublicSkillManifest,
-    }
-    let canonical = serde_json_canonicalizer::to_vec(&HashInput {
-        operation_id,
-        resource_id,
-        expected_generation,
-        expected_head_revision_id,
-        parent_revision_ids,
-        manifest,
-    })
-    .map_err(|error| RequestHashError::Canonicalization(error.to_string()))?;
+    let canonical = serde_json_canonicalizer::to_vec(input)
+        .map_err(|error| RequestHashError::Canonicalization(error.to_string()))?;
     let mut hasher = Sha256::new();
     hasher.update(PRIVATE_REVISION_DOMAIN);
     hasher.update(canonical);
     Ok(RequestHash::from_bytes(hasher.finalize().into()))
 }
 
+#[derive(Serialize)]
+pub struct PrivateSkillImportRequestHashInput<'a, T> {
+    pub operation_id: &'a str,
+    pub expected_generation: u64,
+    pub name: &'a str,
+    pub manifest: &'a T,
+    pub snapshot_sha256: &'a str,
+    pub snapshot_size_bytes: u64,
+    pub revision_author_principal_id: Option<&'a str>,
+    pub fork: Option<&'a crate::ForkImportIntent>,
+}
+
 pub fn private_skill_import_request_hash<T: Serialize>(
+    input: &PrivateSkillImportRequestHashInput<'_, T>,
+) -> Result<RequestHash, RequestHashError> {
+    let canonical = serde_json_canonicalizer::to_vec(input)
+        .map_err(|error| RequestHashError::Canonicalization(error.to_string()))?;
+    let mut hasher = Sha256::new();
+    hasher.update(PRIVATE_SKILL_IMPORT_DOMAIN);
+    hasher.update(canonical);
+    Ok(RequestHash::from_bytes(hasher.finalize().into()))
+}
+
+pub fn share_skill_request_hash(
+    kind: crate::ShareMutationKind,
     operation_id: &str,
-    expected_generation: u64,
-    name: &str,
-    manifest: &T,
-    snapshot_sha256: &str,
-    snapshot_size_bytes: u64,
+    resource_id: &str,
+    recipient: &str,
 ) -> Result<RequestHash, RequestHashError> {
     #[derive(Serialize)]
-    struct ImportHashInput<'a, T> {
+    struct HashInput<'a> {
         operation_id: &'a str,
-        expected_generation: u64,
-        name: &'a str,
-        manifest: &'a T,
-        snapshot_sha256: &'a str,
-        snapshot_size_bytes: u64,
+        resource_id: &'a str,
+        recipient: &'a str,
     }
-
-    let canonical = serde_json_canonicalizer::to_vec(&ImportHashInput {
+    let canonical = serde_json_canonicalizer::to_vec(&HashInput {
         operation_id,
-        expected_generation,
-        name,
-        manifest,
-        snapshot_sha256,
-        snapshot_size_bytes,
+        resource_id,
+        recipient,
     })
     .map_err(|error| RequestHashError::Canonicalization(error.to_string()))?;
     let mut hasher = Sha256::new();
-    hasher.update(PRIVATE_SKILL_IMPORT_DOMAIN);
+    hasher.update(match kind {
+        crate::ShareMutationKind::Share => SHARE_SKILL_DOMAIN,
+        crate::ShareMutationKind::Unshare => UNSHARE_SKILL_DOMAIN,
+    });
     hasher.update(canonical);
     Ok(RequestHash::from_bytes(hasher.finalize().into()))
 }
@@ -457,6 +468,39 @@ mod tests {
         )
         .unwrap();
         assert_ne!(subscribe, unsubscribe);
+    }
+
+    #[test]
+    fn private_share_hash_binds_action_resource_and_recipient() {
+        let operation = "01890f47-6a1c-7cc2-98c1-5f6c1ed8a3a1";
+        let resource = "01890f47-6a1d-7ad0-8f43-9a4d8c29f002";
+        let share =
+            share_skill_request_hash(crate::ShareMutationKind::Share, operation, resource, "@bob")
+                .unwrap();
+        let unshare = share_skill_request_hash(
+            crate::ShareMutationKind::Unshare,
+            operation,
+            resource,
+            "@bob",
+        )
+        .unwrap();
+        let other_recipient = share_skill_request_hash(
+            crate::ShareMutationKind::Share,
+            operation,
+            resource,
+            "@charlie",
+        )
+        .unwrap();
+        let other_resource = share_skill_request_hash(
+            crate::ShareMutationKind::Share,
+            operation,
+            "01890f47-6a1d-7ad0-8f43-9a4d8c29f003",
+            "@bob",
+        )
+        .unwrap();
+        assert_ne!(share, unshare);
+        assert_ne!(share, other_recipient);
+        assert_ne!(share, other_resource);
     }
 
     #[test]
@@ -568,25 +612,82 @@ mod tests {
     fn private_import_hash_binds_manifest_and_snapshot() {
         let operation = "01890f47-6a1c-7cc2-98c1-5f6c1ed8a3a1";
         let manifest = serde_json::json!({"root_tree_id": "11", "entries": []});
-        let left = private_skill_import_request_hash(
-            operation,
-            0,
-            "review",
-            &manifest,
-            &"22".repeat(32),
-            42,
-        )
+        let snapshot = "22".repeat(32);
+        let left = private_skill_import_request_hash(&PrivateSkillImportRequestHashInput {
+            operation_id: operation,
+            expected_generation: 0,
+            name: "review",
+            manifest: &manifest,
+            snapshot_sha256: &snapshot,
+            snapshot_size_bytes: 42,
+            revision_author_principal_id: None,
+            fork: None,
+        })
         .unwrap();
-        let right = private_skill_import_request_hash(
-            operation,
-            0,
-            "review",
-            &manifest,
-            &"22".repeat(32),
-            43,
-        )
+        let right = private_skill_import_request_hash(&PrivateSkillImportRequestHashInput {
+            operation_id: operation,
+            expected_generation: 0,
+            name: "review",
+            manifest: &manifest,
+            snapshot_sha256: &snapshot,
+            snapshot_size_bytes: 43,
+            revision_author_principal_id: None,
+            fork: None,
+        })
         .unwrap();
         assert_ne!(left, right);
+    }
+
+    #[test]
+    fn private_import_hash_binds_replay_author_and_promotion_intent() {
+        let operation = "01890f47-6a1c-7cc2-98c1-5f6c1ed8a3a1";
+        let manifest = serde_json::json!({"root_tree_id": "11", "entries": []});
+        let fork = crate::ForkImportIntent {
+            upstream_resource_id: "01890f47-6a1d-7ad0-8f43-9a4d8c29f002".to_owned(),
+            upstream_revision_id: "22".repeat(32),
+            replace_subscription: true,
+            promotion_head_revision_id: Some("33".repeat(32)),
+            historical_skill_name: Some("review".to_owned()),
+        };
+        let snapshot = "44".repeat(32);
+        let base = private_skill_import_request_hash(&PrivateSkillImportRequestHashInput {
+            operation_id: operation,
+            expected_generation: 0,
+            name: "review-renamed",
+            manifest: &manifest,
+            snapshot_sha256: &snapshot,
+            snapshot_size_bytes: 42,
+            revision_author_principal_id: Some("01890f47-6a1e-72ce-88bf-ef23fc661004"),
+            fork: Some(&fork),
+        })
+        .unwrap();
+        let other_author = private_skill_import_request_hash(&PrivateSkillImportRequestHashInput {
+            operation_id: operation,
+            expected_generation: 0,
+            name: "review-renamed",
+            manifest: &manifest,
+            snapshot_sha256: &snapshot,
+            snapshot_size_bytes: 42,
+            revision_author_principal_id: Some("01890f47-6a1f-72ce-88bf-ef23fc661005"),
+            fork: Some(&fork),
+        })
+        .unwrap();
+        let mut other_fork = fork.clone();
+        other_fork.promotion_head_revision_id = Some("55".repeat(32));
+        let other_promotion =
+            private_skill_import_request_hash(&PrivateSkillImportRequestHashInput {
+                operation_id: operation,
+                expected_generation: 0,
+                name: "review-renamed",
+                manifest: &manifest,
+                snapshot_sha256: &snapshot,
+                snapshot_size_bytes: 42,
+                revision_author_principal_id: Some("01890f47-6a1e-72ce-88bf-ef23fc661004"),
+                fork: Some(&other_fork),
+            })
+            .unwrap();
+        assert_ne!(base, other_author);
+        assert_ne!(base, other_promotion);
     }
 
     #[test]
@@ -604,24 +705,98 @@ mod tests {
             )
             .unwrap(),
         );
-        let a = private_revision_request_hash(
-            "01890f47-6a1c-7cc2-98c1-5f6c1ed8a3a1",
-            "01890f47-6a1d-7ad0-8f43-9a4d8c29f002",
-            7,
-            &"11".repeat(32),
-            &["11".repeat(32)],
-            &manifest,
-        )
+        let head = "11".repeat(32);
+        let parents = vec![head.clone()];
+        let a = private_revision_request_hash(&PrivateRevisionRequestHashInput {
+            operation_id: "01890f47-6a1c-7cc2-98c1-5f6c1ed8a3a1",
+            resource_id: "01890f47-6a1d-7ad0-8f43-9a4d8c29f002",
+            expected_generation: 7,
+            expected_head_revision_id: &head,
+            parent_revision_ids: &parents,
+            manifest: &manifest,
+            revision_author_principal_id: None,
+            fork_sync: None,
+            historical_skill_name: None,
+        })
         .unwrap();
-        let b = private_revision_request_hash(
-            "01890f47-6a1c-7cc2-98c1-5f6c1ed8a3a1",
-            "01890f47-6a1d-7ad0-8f43-9a4d8c29f002",
-            8,
-            &"11".repeat(32),
-            &["11".repeat(32)],
-            &manifest,
-        )
+        let b = private_revision_request_hash(&PrivateRevisionRequestHashInput {
+            operation_id: "01890f47-6a1c-7cc2-98c1-5f6c1ed8a3a1",
+            resource_id: "01890f47-6a1d-7ad0-8f43-9a4d8c29f002",
+            expected_generation: 8,
+            expected_head_revision_id: &head,
+            parent_revision_ids: &parents,
+            manifest: &manifest,
+            revision_author_principal_id: None,
+            fork_sync: None,
+            historical_skill_name: None,
+        })
         .unwrap();
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn private_revision_hash_binds_fork_sync_and_historical_replay() {
+        use denju_core::{OwnedSkillEntry, build_skill_manifest};
+
+        let manifest = crate::PublicSkillManifest::from_core(
+            &build_skill_manifest(
+                "review",
+                &[OwnedSkillEntry::File {
+                    path: "SKILL.md".into(),
+                    bytes: b"---\nname: review\ndescription: Review.\n---\n".to_vec(),
+                    executable: false,
+                }],
+            )
+            .unwrap(),
+        );
+        let sync = crate::ForkSyncIntent {
+            expected_sync_base_revision_id: "22".repeat(32),
+            upstream_revision_id: "33".repeat(32),
+        };
+        let head = "11".repeat(32);
+        let parents = vec![head.clone(), "33".repeat(32)];
+        let base = private_revision_request_hash(&PrivateRevisionRequestHashInput {
+            operation_id: "01890f47-6a1c-7cc2-98c1-5f6c1ed8a3a1",
+            resource_id: "01890f47-6a1d-7ad0-8f43-9a4d8c29f002",
+            expected_generation: 7,
+            expected_head_revision_id: &head,
+            parent_revision_ids: &parents,
+            manifest: &manifest,
+            revision_author_principal_id: None,
+            fork_sync: Some(&sync),
+            historical_skill_name: None,
+        })
+        .unwrap();
+        let historical = private_revision_request_hash(&PrivateRevisionRequestHashInput {
+            operation_id: "01890f47-6a1c-7cc2-98c1-5f6c1ed8a3a1",
+            resource_id: "01890f47-6a1d-7ad0-8f43-9a4d8c29f002",
+            expected_generation: 7,
+            expected_head_revision_id: &head,
+            parent_revision_ids: &parents,
+            manifest: &manifest,
+            revision_author_principal_id: None,
+            fork_sync: Some(&sync),
+            historical_skill_name: Some("old-review"),
+        })
+        .unwrap();
+        let other_sync_intent = crate::ForkSyncIntent {
+            expected_sync_base_revision_id: "22".repeat(32),
+            upstream_revision_id: "44".repeat(32),
+        };
+        let other_parents = vec![head.clone(), "44".repeat(32)];
+        let other_sync = private_revision_request_hash(&PrivateRevisionRequestHashInput {
+            operation_id: "01890f47-6a1c-7cc2-98c1-5f6c1ed8a3a1",
+            resource_id: "01890f47-6a1d-7ad0-8f43-9a4d8c29f002",
+            expected_generation: 7,
+            expected_head_revision_id: &head,
+            parent_revision_ids: &other_parents,
+            manifest: &manifest,
+            revision_author_principal_id: None,
+            fork_sync: Some(&other_sync_intent),
+            historical_skill_name: None,
+        })
+        .unwrap();
+        assert_ne!(base, historical);
+        assert_ne!(base, other_sync);
     }
 }

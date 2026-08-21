@@ -16,16 +16,15 @@ use denju_wire::{
     SkillRevisionSummary, SnapshotDownload, SyncHint, SyncReconcileRequest, SyncReconcileResponse,
     publish_skill_request_hash, restore_skill_request_hash,
 };
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::{FromRow, Row};
 use uuid::Uuid;
 
 use crate::{
     Registry, RegistryWake,
+    access::{skill_access_for_user, user_can_read_revision},
     ingest::{decode_32, manifest_blobs},
     internal_api_error,
-    realtime::wake_as_sync_hint,
     release_validation::validate_release_metadata,
 };
 
@@ -62,11 +61,7 @@ impl ReleaseWorkspaceRow {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct ResourceWakePayload {
-    resource_id: String,
-    generation: u64,
-}
+pub(crate) use crate::outbox::enqueue_resource_wake;
 
 impl Registry {
     /// Lazily starts the disposable cross-instance wake bridge. Correctness never depends on
@@ -279,7 +274,8 @@ impl Registry {
                         name: current.name,
                         description: current.description,
                         generation,
-                        version: release_version,
+                        version: Some(release_version),
+                        live_private: false,
                         revision_id: hex::encode(revision),
                         deprecation,
                     },
@@ -378,7 +374,8 @@ impl Registry {
                 name: current.name,
                 description: current.description,
                 generation,
-                version: release_version,
+                version: Some(release_version),
+                live_private: false,
                 revision_id: hex::encode(revision),
                 deprecation,
             },
@@ -429,20 +426,29 @@ impl Registry {
         .map_err(internal_api_error)?
         .ok_or_else(|| ApiError::new(ApiErrorCode::NotFound, "skill not found"))?;
         let resource_id = resolved.resource_id;
-        let owner_namespace = resolved.owner_namespace_id;
         let visibility: String = row.get(0);
         let generation: i64 = row.get(1);
         let latest_release: Option<i64> = row.get(2);
         let private_head: Vec<u8> = row.get(3);
-        let owner = match bearer {
-            Some(token) => self
-                .user_authority(token, "skills:read")
-                .await
-                .ok()
-                .is_some_and(|authority| authority.namespace_id == owner_namespace),
-            None => false,
+        let access = match bearer {
+            Some(token) => match self.user_authority(token, "skills:read").await {
+                Ok(authority) => Some(
+                    skill_access_for_user(
+                        &self.pool,
+                        authority.user_id,
+                        authority.namespace_id,
+                        resource_id,
+                    )
+                    .await?,
+                ),
+                Err(_) => None,
+            },
+            None => None,
         };
-        if visibility != "public" && !owner {
+        let private_read = access
+            .as_ref()
+            .is_some_and(|access| access.can_read_private());
+        if visibility != "public" && !private_read {
             return Err(ApiError::new(ApiErrorCode::NotFound, "skill not found"));
         }
 
@@ -462,7 +468,7 @@ impl Registry {
         let mut revisions = Vec::new();
         for row in rows {
             let revision = hex::encode(decode_32(&row.get::<Vec<u8>, _>(0), "stored revision ID")?);
-            if !owner && !released_ids.contains(&revision) {
+            if !private_read && !released_ids.contains(&revision) {
                 continue;
             }
             let parents = revision_parents(&self.pool, &revision).await?;
@@ -477,7 +483,7 @@ impl Registry {
                 released_versions,
             });
         }
-        let workspace_revision_id = if owner {
+        let workspace_revision_id = if private_read {
             hex::encode(decode_32(&private_head, "stored revision ID")?)
         } else {
             releases
@@ -524,18 +530,30 @@ impl Registry {
         .map_err(internal_api_error)?
         .ok_or_else(|| ApiError::new(ApiErrorCode::NotFound, "revision not found"))?;
         let resource_id = resolved.resource_id;
-        let owner_namespace = resolved.owner_namespace_id;
         let visibility: String = row.get(0);
-        let owner = match bearer {
-            Some(token) => self
-                .user_authority(token, "skills:read")
-                .await
-                .ok()
-                .is_some_and(|authority| authority.namespace_id == owner_namespace),
-            None => false,
+        let access = match bearer {
+            Some(token) => match self.user_authority(token, "skills:read").await {
+                Ok(authority) => Some(
+                    skill_access_for_user(
+                        &self.pool,
+                        authority.user_id,
+                        authority.namespace_id,
+                        resource_id,
+                    )
+                    .await?,
+                ),
+                Err(_) => None,
+            },
+            None => None,
         };
         let released: bool = row.get(5);
-        if !(owner || (visibility == "public" && released)) {
+        let readable = match access.as_ref() {
+            Some(access) => {
+                user_can_read_revision(&self.pool, access, resource_id, revision.as_bytes()).await?
+            }
+            None => visibility == "public" && released,
+        };
+        if !readable {
             return Err(ApiError::new(ApiErrorCode::NotFound, "revision not found"));
         }
         let manifest: PublicSkillManifest = serde_json::from_value(row.get(1))
@@ -801,7 +819,7 @@ impl Registry {
         let desired_ids = catalog
             .skills
             .iter()
-            .map(|skill| skill.skill.resource_id.as_str())
+            .map(|skill| skill.resource_id.as_str())
             .collect::<BTreeSet<_>>();
         let removed_resource_ids = request
             .known
@@ -813,12 +831,9 @@ impl Registry {
             .skills
             .into_iter()
             .filter(|skill| {
-                known
-                    .get(skill.skill.resource_id.as_str())
-                    .is_none_or(|local| {
-                        local.generation != skill.skill.generation
-                            || local.revision_id != skill.skill.revision_id
-                    })
+                known.get(skill.resource_id.as_str()).is_none_or(|local| {
+                    local.generation != skill.generation || local.revision_id != skill.revision_id
+                })
             })
             .collect();
         Ok(SyncReconcileResponse {
@@ -851,57 +866,6 @@ impl Registry {
             }
         };
         Ok(rows.into_iter().collect())
-    }
-
-    pub async fn drain_outbox(&self, limit: u32) -> Result<usize, ApiError> {
-        let limit = i64::from(limit.clamp(1, 256));
-        let mut tx = self.pool.begin().await.map_err(internal_api_error)?;
-        let rows = sqlx::query(
-            "SELECT event_id,event_kind,payload_json FROM outbox_events WHERE dispatched_at IS NULL \
-             ORDER BY event_id FOR UPDATE SKIP LOCKED LIMIT $1",
-        )
-        .bind(limit)
-        .fetch_all(&mut *tx)
-        .await
-        .map_err(internal_api_error)?;
-        let count = rows.len();
-        for row in rows {
-            let id: i64 = row.get(0);
-            let kind: String = row.get(1);
-            let payload: Value = row.get(2);
-            let wake = match kind.as_str() {
-                "resource_dirty" => {
-                    let payload: ResourceWakePayload =
-                        serde_json::from_value(payload).map_err(|error| {
-                            ApiError::new(ApiErrorCode::Internal, error.to_string())
-                        })?;
-                    RegistryWake::Resource {
-                        resource_id: Uuid::parse_str(&payload.resource_id).map_err(|error| {
-                            ApiError::new(ApiErrorCode::Internal, error.to_string())
-                        })?,
-                        generation: payload.generation,
-                    }
-                }
-                _ => RegistryWake::ResyncAll,
-            };
-            let notification = serde_json::to_string(&wake_as_sync_hint(&wake))
-                .map_err(|error| ApiError::new(ApiErrorCode::Internal, error.to_string()))?;
-            // NOTIFY is transactional here: other instances observe it only if the outbox
-            // dispatch commit succeeds. The LISTEN side uses a direct session connection.
-            sqlx::query("SELECT pg_notify('denju_wake',$1)")
-                .bind(notification)
-                .execute(&mut *tx)
-                .await
-                .map_err(internal_api_error)?;
-            let _ = self.wake_tx.send(wake);
-            sqlx::query("UPDATE outbox_events SET dispatched_at=now() WHERE event_id=$1")
-                .bind(id)
-                .execute(&mut *tx)
-                .await
-                .map_err(internal_api_error)?;
-        }
-        tx.commit().await.map_err(internal_api_error)?;
-        Ok(count)
     }
 
     pub fn hint_for_wake(wake: &RegistryWake, watched: &BTreeSet<Uuid>) -> Option<SyncHint> {
@@ -958,35 +922,4 @@ async fn revision_parents(pool: &sqlx::PgPool, revision_id: &str) -> Result<Vec<
     rows.into_iter()
         .map(|bytes| decode_32(&bytes, "stored parent revision ID").map(hex::encode))
         .collect()
-}
-
-pub(crate) async fn enqueue_resource_wake(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    resource_id: Uuid,
-    generation: u64,
-) -> Result<(), ApiError> {
-    let payload = serde_json::to_value(ResourceWakePayload {
-        resource_id: resource_id.to_string(),
-        generation,
-    })
-    .map_err(|error| ApiError::new(ApiErrorCode::Internal, error.to_string()))?;
-    let event_id = sqlx::query_scalar::<_, i64>(
-        "INSERT INTO authority_events (event_kind,resource_id,resource_generation,payload_json) \
-         VALUES ('skill_release_published',$1,$2,$3) RETURNING id",
-    )
-    .bind(resource_id)
-    .bind(
-        i64::try_from(generation).map_err(|_| {
-            ApiError::new(ApiErrorCode::Internal, "generation exceeds database range")
-        })?,
-    )
-    .bind(payload.clone())
-    .fetch_one(&mut **tx)
-    .await
-    .map_err(internal_api_error)?;
-    sqlx::query(
-        "INSERT INTO outbox_events (event_id,event_kind,payload_json) VALUES ($1,'resource_dirty',$2)",
-    )
-    .bind(event_id).bind(payload).execute(&mut **tx).await.map_err(internal_api_error)?;
-    Ok(())
 }
