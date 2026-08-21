@@ -37,19 +37,53 @@ pub fn resolve_harness_roots(
     recorded: Option<&HarnessConfig>,
 ) -> Result<ResolvedHarnessRoots, HarnessError> {
     if std::env::var_os(TEST_HOME_ENV).is_some() {
-        return Ok(isolated_test_harness_roots(paths));
+        return isolated_test_harness_roots(paths);
     }
     resolve_harness_roots_for(paths, recorded, &HarnessEnvironment::current())
 }
 
-fn isolated_test_harness_roots(paths: &LocalPaths) -> ResolvedHarnessRoots {
+fn isolated_test_harness_roots(paths: &LocalPaths) -> Result<ResolvedHarnessRoots, HarnessError> {
     // Test runs intentionally ignore inherited CODEX_HOME/CLAUDE_CONFIG_DIR and recorded
     // harness state. This is a hard safety boundary: test projection I/O stays beneath the
     // explicitly marked DENJU_TEST_HOME and can never reach a developer's real harness roots.
-    ResolvedHarnessRoots {
+    let roots = ResolvedHarnessRoots {
         codex_root: paths.home.join(".agents/skills/denju"),
         claude_root: paths.home.join(".claude/skills"),
+    };
+    validate_isolated_test_root(&paths.home, &roots.codex_root)?;
+    validate_isolated_test_root(&paths.home, &roots.claude_root)?;
+    Ok(roots)
+}
+
+fn validate_isolated_test_root(home: &Path, root: &Path) -> Result<(), HarnessError> {
+    let relative = root
+        .strip_prefix(home)
+        .map_err(|_| HarnessError::UnsafeTestHarnessRoot {
+            path: root.to_owned(),
+            reason: "outside DENJU_TEST_HOME".to_owned(),
+        })?;
+    let mut cursor = home.to_owned();
+    for component in relative.components() {
+        let std::path::Component::Normal(component) = component else {
+            return Err(HarnessError::UnsafeTestHarnessRoot {
+                path: root.to_owned(),
+                reason: "contains a non-normal path component".to_owned(),
+            });
+        };
+        cursor.push(component);
+        match fs::symlink_metadata(&cursor) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(HarnessError::UnsafeTestHarnessRoot {
+                    path: root.to_owned(),
+                    reason: format!("test harness ancestor is a symlink: {}", cursor.display()),
+                });
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(HarnessError::Io(error)),
+        }
     }
+    Ok(())
 }
 
 pub fn resolve_harness_roots_for(
@@ -179,6 +213,8 @@ pub enum HarnessError {
     UnmanagedOldCodexRoot(PathBuf),
     #[error("failed to scan harness skills: {0}")]
     Walk(walkdir::Error),
+    #[error("unsafe isolated test harness root {path}: {reason}", path = path.display())]
+    UnsafeTestHarnessRoot { path: PathBuf, reason: String },
 }
 
 #[cfg(test)]
@@ -212,7 +248,7 @@ mod tests {
     fn isolated_test_roots_ignore_custom_real_harness_shapes() {
         let home = tempdir().unwrap();
         let paths = LocalPaths::from_home(home.path().to_owned());
-        let isolated = isolated_test_harness_roots(&paths);
+        let isolated = isolated_test_harness_roots(&paths).unwrap();
         assert_eq!(
             isolated.codex_root,
             home.path().join(".agents/skills/denju")
@@ -223,5 +259,18 @@ mod tests {
             assert!(!isolated.codex_root.starts_with(&protected));
             assert!(!isolated.claude_root.starts_with(&protected));
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn isolated_test_roots_reject_symlink_escape() {
+        let home = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        std::os::unix::fs::symlink(outside.path(), home.path().join(".agents")).unwrap();
+        let paths = LocalPaths::from_home(home.path().to_owned());
+        assert!(matches!(
+            isolated_test_harness_roots(&paths),
+            Err(HarnessError::UnsafeTestHarnessRoot { .. })
+        ));
     }
 }

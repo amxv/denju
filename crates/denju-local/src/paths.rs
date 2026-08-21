@@ -160,6 +160,11 @@ fn validate_test_home(home: PathBuf) -> Result<PathBuf, LocalPathError> {
             home.display()
         )));
     }
+    let home = fs::canonicalize(&home).map_err(|error| {
+        LocalPathError::InvalidTestHome(format!(
+            "DENJU_TEST_HOME could not be canonicalized safely: {error}"
+        ))
+    })?;
     let marker = home.join(TEST_HOME_MARKER);
     let metadata = fs::symlink_metadata(&marker).map_err(|error| {
         LocalPathError::InvalidTestHome(format!(
@@ -229,7 +234,7 @@ mod tests {
         fs::write(home.path().join(TEST_HOME_MARKER), b"isolated\n").unwrap();
         assert_eq!(
             validate_test_home(home.path().to_owned()).unwrap(),
-            home.path()
+            fs::canonicalize(home.path()).unwrap()
         );
     }
 }
