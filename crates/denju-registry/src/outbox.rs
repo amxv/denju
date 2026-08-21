@@ -70,6 +70,15 @@ pub(crate) async fn enqueue_resource_wake(
     resource_id: Uuid,
     generation: u64,
 ) -> Result<(), ApiError> {
+    enqueue_resource_wake_with_event(tx, resource_id, generation, "resource_changed").await
+}
+
+pub(crate) async fn enqueue_resource_wake_with_event(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    resource_id: Uuid,
+    generation: u64,
+    authority_event_kind: &str,
+) -> Result<(), ApiError> {
     let payload = serde_json::to_value(ResourceWakePayload {
         resource_id: resource_id.to_string(),
         generation,
@@ -77,8 +86,9 @@ pub(crate) async fn enqueue_resource_wake(
     .map_err(|error| ApiError::new(ApiErrorCode::Internal, error.to_string()))?;
     let event_id = sqlx::query_scalar::<_, i64>(
         "INSERT INTO authority_events (event_kind,resource_id,resource_generation,payload_json) \
-         VALUES ('skill_release_published',$1,$2,$3) RETURNING id",
+         VALUES ($1,$2,$3,$4) RETURNING id",
     )
+    .bind(authority_event_kind)
     .bind(resource_id)
     .bind(
         i64::try_from(generation).map_err(|_| {

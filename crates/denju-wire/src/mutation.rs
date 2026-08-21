@@ -26,6 +26,10 @@ const DEPRECATE_SKILL_DOMAIN: &[u8] = b"denju:http:v1:deprecate-skill\0";
 const HISTORY_PRUNE_DOMAIN: &[u8] = b"denju:http:v1:history-prune\0";
 const SHARE_SKILL_DOMAIN: &[u8] = b"denju:http:v1:share-skill\0";
 const UNSHARE_SKILL_DOMAIN: &[u8] = b"denju:http:v1:unshare-skill\0";
+const PROPOSAL_CREATE_DOMAIN: &[u8] = b"denju:http:v1:proposal-create\0";
+const PROPOSAL_ACCEPT_DOMAIN: &[u8] = b"denju:http:v1:proposal-accept\0";
+const PROPOSAL_REJECT_DOMAIN: &[u8] = b"denju:http:v1:proposal-reject\0";
+const PROPOSAL_WITHDRAW_DOMAIN: &[u8] = b"denju:http:v1:proposal-withdraw\0";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct RequestHash([u8; 32]);
@@ -432,6 +436,86 @@ pub fn share_skill_request_hash(
     Ok(RequestHash::from_bytes(hasher.finalize().into()))
 }
 
+pub fn proposal_create_request_hash(
+    operation_id: &str,
+    source_resource_id: &str,
+    expected_source_generation: u64,
+    message: Option<&str>,
+) -> Result<RequestHash, RequestHashError> {
+    #[derive(Serialize)]
+    struct Input<'a> {
+        operation_id: &'a str,
+        source_resource_id: &'a str,
+        expected_source_generation: u64,
+        message: Option<&'a str>,
+    }
+    hash_payload(
+        PROPOSAL_CREATE_DOMAIN,
+        &Input {
+            operation_id,
+            source_resource_id,
+            expected_source_generation,
+            message,
+        },
+    )
+}
+
+pub fn proposal_close_request_hash(
+    kind: crate::ProposalCloseKind,
+    operation_id: &str,
+    proposal_id: &str,
+    expected_generation: u64,
+) -> Result<RequestHash, RequestHashError> {
+    #[derive(Serialize)]
+    struct Input<'a> {
+        operation_id: &'a str,
+        proposal_id: &'a str,
+        expected_generation: u64,
+    }
+    let domain = match kind {
+        crate::ProposalCloseKind::Reject => PROPOSAL_REJECT_DOMAIN,
+        crate::ProposalCloseKind::Withdraw => PROPOSAL_WITHDRAW_DOMAIN,
+    };
+    hash_payload(
+        domain,
+        &Input {
+            operation_id,
+            proposal_id,
+            expected_generation,
+        },
+    )
+}
+
+pub fn proposal_accept_request_hash(
+    operation_id: &str,
+    proposal_id: &str,
+    expected_generation: u64,
+    expected_proposed_revision_id: &str,
+    expected_source_generation: u64,
+    expected_target_generation: u64,
+) -> Result<RequestHash, RequestHashError> {
+    #[derive(Serialize)]
+    struct Input<'a> {
+        operation_id: &'a str,
+        proposal_id: &'a str,
+        expected_generation: u64,
+        expected_proposed_revision_id: &'a str,
+        expected_source_generation: u64,
+        expected_target_generation: u64,
+    }
+    hash_payload(
+        PROPOSAL_ACCEPT_DOMAIN,
+        &Input {
+            operation_id,
+            proposal_id,
+            expected_generation,
+            expected_proposed_revision_id,
+            expected_source_generation,
+            expected_target_generation,
+        },
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -501,6 +585,36 @@ mod tests {
         assert_ne!(share, unshare);
         assert_ne!(share, other_recipient);
         assert_ne!(share, other_resource);
+    }
+
+    #[test]
+    fn proposal_hashes_bind_action_head_and_generations() {
+        let operation = "01890f47-6a1c-7cc2-98c1-5f6c1ed8a3a1";
+        let proposal = "01890f47-6a1d-7ad0-8f43-9a4d8c29f002";
+        let source = "01890f47-6a1d-7ad0-8f43-9a4d8c29f003";
+        let created =
+            proposal_create_request_hash(operation, source, 7, Some("please review")).unwrap();
+        let renamed_message =
+            proposal_create_request_hash(operation, source, 7, Some("other")).unwrap();
+        assert_ne!(created, renamed_message);
+
+        let rejected =
+            proposal_close_request_hash(crate::ProposalCloseKind::Reject, operation, proposal, 4)
+                .unwrap();
+        let withdrawn =
+            proposal_close_request_hash(crate::ProposalCloseKind::Withdraw, operation, proposal, 4)
+                .unwrap();
+        assert_ne!(rejected, withdrawn);
+
+        let head = "11".repeat(32);
+        let accepted = proposal_accept_request_hash(operation, proposal, 4, &head, 8, 12).unwrap();
+        let newer_target =
+            proposal_accept_request_hash(operation, proposal, 4, &head, 8, 13).unwrap();
+        let newer_head =
+            proposal_accept_request_hash(operation, proposal, 4, &"22".repeat(32), 9, 12).unwrap();
+        assert_ne!(accepted, rejected);
+        assert_ne!(accepted, newer_target);
+        assert_ne!(accepted, newer_head);
     }
 
     #[test]

@@ -36,6 +36,21 @@ pub fn merge_skill_entries(
     head_a: &[OwnedSkillEntry],
     head_b: &[OwnedSkillEntry],
 ) -> SkillMergeResult {
+    merge_skill_entries_with_resolutions(base, head_a, head_b, &BTreeSet::new())
+}
+
+/// Re-runs the deterministic three-way merge while treating selected conflicting paths as
+/// explicitly resolved by `head_a`.
+///
+/// Callers must only populate `resolved_head_a_paths` after an explicit user edit/resolution
+/// step. Clean paths still use the ordinary symmetric merge rules, so choosing a resolution for
+/// one overlapping path never suppresses unrelated upstream changes.
+pub fn merge_skill_entries_with_resolutions(
+    base: &[OwnedSkillEntry],
+    head_a: &[OwnedSkillEntry],
+    head_b: &[OwnedSkillEntry],
+    resolved_head_a_paths: &BTreeSet<String>,
+) -> SkillMergeResult {
     let base = by_path(base);
     let head_a = by_path(head_a);
     let head_b = by_path(head_b);
@@ -74,10 +89,12 @@ pub fn merge_skill_entries(
         match merge_changed_path(base_entry, a, b) {
             Ok(Some(entry)) => entries.push(entry),
             Ok(None) => {}
-            Err(kind) => conflicts.push(MergeConflict {
-                path: path.clone(),
-                kind,
-            }),
+            Err(_) if resolved_head_a_paths.contains(&path) => {
+                if let Some(entry) = a {
+                    entries.push(entry.clone());
+                }
+            }
+            Err(kind) => conflicts.push(MergeConflict { path, kind }),
         }
     }
 
@@ -319,6 +336,30 @@ mod tests {
                 kind: MergeConflictKind::TextOverlap,
             }]
         );
+    }
+
+    #[test]
+    fn explicit_path_resolution_keeps_clean_upstream_changes() {
+        let base = vec![
+            file("notes.txt", "one\ntwo\nthree\n"),
+            file("upstream.txt", "base\n"),
+        ];
+        let resolved = vec![
+            file("notes.txt", "one\nTWO-RESOLVED\nthree\n"),
+            file("upstream.txt", "base\n"),
+        ];
+        let upstream = vec![
+            file("notes.txt", "one\nTWO-UPSTREAM\nthree\n"),
+            file("upstream.txt", "upstream\n"),
+        ];
+        let resolved_paths = BTreeSet::from(["notes.txt".to_owned()]);
+        let SkillMergeResult::Clean { entries } =
+            merge_skill_entries_with_resolutions(&base, &resolved, &upstream, &resolved_paths)
+        else {
+            panic!("expected explicit resolution to settle the conflicting path")
+        };
+        assert_eq!(bytes(&entries, "notes.txt"), "one\nTWO-RESOLVED\nthree\n");
+        assert_eq!(bytes(&entries, "upstream.txt"), "upstream\n");
     }
 
     #[test]

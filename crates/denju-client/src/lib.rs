@@ -13,13 +13,15 @@ use denju_wire::{
     PrivateRevisionCommitRequest, PrivateRevisionCommitResponse, PrivateRevisionPrepareResponse,
     PrivateRevisionRequest, PrivateSkillCatalog, PrivateSkillImportCommitRequest,
     PrivateSkillImportPrepareResponse, PrivateSkillImportRequest, PrivateSkillImportResponse,
-    PublicSkillDetail, PublicSkillSearchResponse, PublishSkillRequest, PublishSkillResponse,
-    RecoveryResetRequest, RegistryCapabilities, RenameSkillRequest, RenameSkillResponse,
-    ResourceLifecycleRequest, RestoreSkillRequest, RestoreSkillResponse, ShareMutationKind,
-    ShareSkillRequest, ShareSkillResponse, SkillHistoryResponse, SkillRevisionDetail,
-    SnapshotDownload, StagedBlobUpload, SubscriptionCatalog, SubscriptionMutationRequest,
-    SubscriptionMutationResponse, SubscriptionTarget, SyncHint, SyncReconcileRequest,
-    SyncReconcileResponse, UnpublishSkillResponse, UsageResponse,
+    ProposalAcceptRequest, ProposalCloseRequest, ProposalCreateRequest, PublicSkillDetail,
+    PublicSkillSearchResponse, PublishSkillRequest, PublishSkillResponse, RecoveryResetRequest,
+    RegistryCapabilities, RenameSkillRequest, RenameSkillResponse, ResourceLifecycleRequest,
+    RestoreSkillRequest, RestoreSkillResponse, ShareMutationKind, ShareSkillRequest,
+    ShareSkillResponse, SkillHistoryResponse, SkillProposal, SkillProposalDetail,
+    SkillProposalList, SkillRevisionDetail, SnapshotDownload, StagedBlobUpload,
+    SubscriptionCatalog, SubscriptionMutationRequest, SubscriptionMutationResponse,
+    SubscriptionTarget, SyncHint, SyncReconcileRequest, SyncReconcileResponse,
+    UnpublishSkillResponse, UsageResponse,
 };
 use futures_util::StreamExt;
 use reqwest::{Client, RequestBuilder, StatusCode};
@@ -345,6 +347,56 @@ impl RegistryClient {
             ShareMutationKind::Unshare => "v1/shares/remove",
         };
         self.authenticated_post_json(path, request).await
+    }
+
+    pub async fn create_proposal(
+        &self,
+        request: &ProposalCreateRequest,
+    ) -> Result<SkillProposal, ClientError> {
+        self.authenticated_post_json("v1/proposals", request).await
+    }
+
+    pub async fn proposals(&self) -> Result<SkillProposalList, ClientError> {
+        self.authenticated_get_json("v1/proposals").await
+    }
+
+    pub async fn proposal_detail(
+        &self,
+        proposal_id: &str,
+    ) -> Result<SkillProposalDetail, ClientError> {
+        let response = self
+            .with_auth(
+                self.http
+                    .get(self.endpoint("v1/proposals/show")?)
+                    .query(&[("id", proposal_id)]),
+            )?
+            .send()
+            .await?;
+        decode_response(response).await
+    }
+
+    pub async fn accept_proposal(
+        &self,
+        request: &ProposalAcceptRequest,
+    ) -> Result<SkillProposal, ClientError> {
+        self.authenticated_post_json("v1/proposals/accept", request)
+            .await
+    }
+
+    pub async fn reject_proposal(
+        &self,
+        request: &ProposalCloseRequest,
+    ) -> Result<SkillProposal, ClientError> {
+        self.authenticated_post_json("v1/proposals/reject", request)
+            .await
+    }
+
+    pub async fn withdraw_proposal(
+        &self,
+        request: &ProposalCloseRequest,
+    ) -> Result<SkillProposal, ClientError> {
+        self.authenticated_post_json("v1/proposals/withdraw", request)
+            .await
     }
 
     pub async fn reconcile_subscriptions(

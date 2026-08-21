@@ -63,6 +63,15 @@ pub struct LocalForkRecord {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForkSyncConflictRecord {
+    pub resource_id: String,
+    pub sync_base_revision_id: String,
+    pub fork_revision_id: String,
+    pub upstream_revision_id: String,
+    pub conflict_paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OwnedSkillRecord {
     pub resource_id: String,
     pub locator: String,

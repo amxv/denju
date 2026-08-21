@@ -1,6 +1,7 @@
 use denju_wire::{
     AutomationTokenList, DeviceList, PublicSkillDetail, PublicSkillSearchResponse,
-    SkillDeprecation, SkillHistoryResponse,
+    SkillDeprecation, SkillHistoryResponse, SkillProposal, SkillProposalDetail, SkillProposalList,
+    SkillProposalState,
 };
 
 use crate::{
@@ -51,6 +52,58 @@ pub(crate) fn show_text(outcome: &PublicSkillDetail) -> String {
         ));
     }
     text
+}
+
+pub(crate) fn proposal_text(outcome: &SkillProposal) -> String {
+    let state = proposal_state(outcome.state);
+    let mut lines = vec![
+        format!(
+            "{}  {} -> {}  {state}",
+            outcome.proposal_id, outcome.source_locator, outcome.target_locator
+        ),
+        format!("Revision: {}", outcome.proposed_revision_id),
+    ];
+    if matches!(outcome.state, SkillProposalState::NeedsSync) {
+        lines.push(format!("Next: denju fork sync {}", outcome.source_locator));
+    }
+    if let Some(message) = outcome.message.as_deref() {
+        lines.push(format!("Message: {message}"));
+    }
+    lines.join("\n")
+}
+
+pub(crate) fn proposals_text(outcome: &SkillProposalList) -> String {
+    if outcome.proposals.is_empty() {
+        return "No proposals.".to_owned();
+    }
+    outcome
+        .proposals
+        .iter()
+        .map(|proposal| {
+            format!(
+                "{}  {} -> {}  {}",
+                proposal.proposal_id,
+                proposal.source_locator,
+                proposal.target_locator,
+                proposal_state(proposal.state)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+pub(crate) fn proposal_detail_text(outcome: &SkillProposalDetail) -> String {
+    proposal_text(&outcome.proposal)
+}
+
+fn proposal_state(state: SkillProposalState) -> &'static str {
+    match state {
+        SkillProposalState::Open => "open",
+        SkillProposalState::NeedsSync => "needs_sync",
+        SkillProposalState::Accepted => "accepted",
+        SkillProposalState::Rejected => "rejected",
+        SkillProposalState::Withdrawn => "withdrawn",
+    }
 }
 
 pub(crate) fn append_deprecation_notice(

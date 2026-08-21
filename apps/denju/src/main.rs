@@ -1,3 +1,4 @@
+mod commands;
 mod context;
 mod fork_ops;
 mod fork_resolve;
@@ -8,6 +9,7 @@ mod identity;
 mod lifecycle;
 mod output;
 mod owned;
+mod proposals;
 mod public;
 mod release;
 mod setup;
@@ -15,14 +17,19 @@ mod sharing;
 mod workspace;
 mod workspace_merge;
 
-use std::{ffi::OsString, path::PathBuf, process::ExitCode};
+use std::{ffi::OsString, process::ExitCode};
 
-use clap::{ArgAction, Parser, Subcommand};
+use clap::Parser;
+use commands::{
+    Cli, Command, DevicesCommand, ForkCommand, HistoryCommand, IdentityCommand, ProposalCommand,
+    TokenCommand,
+};
 use denju_wire::{
     AutomationTokenList, AutomationTokenRevokeResponse, CliEnvelope, CliError, CliErrorCode,
     DeleteSkillResponse, DeprecateSkillResponse, DeviceList, DeviceRevokeResponse,
     HistoryPruneResponse, IdentityInfo, PublicSkillDetail, PublicSkillSearchResponse,
-    PublishSkillResponse, RenameSkillResponse, SkillHistoryResponse, UnpublishSkillResponse,
+    PublishSkillResponse, RenameSkillResponse, SkillHistoryResponse, SkillProposal,
+    SkillProposalDetail, SkillProposalList, UnpublishSkillResponse,
 };
 use help::HELP;
 use identity::{
@@ -32,196 +39,15 @@ use identity::{
 use lifecycle::UsageOutcome;
 use output::{
     append_deprecation_notice, backup_text, claim_text, devices_text, diff_text, doctor_text,
-    history_text, login_text, recovery_text, search_text, setup_text, short_revision, show_text,
-    status_text, sync_text, token_text, tokens_text, usage_text,
+    history_text, login_text, proposal_detail_text, proposal_text, proposals_text, recovery_text,
+    search_text, setup_text, short_revision, show_text, status_text, sync_text, token_text,
+    tokens_text, usage_text,
 };
 use owned::ImportOutcome;
 use public::{SubscribeOutcome, SyncOutcome, UnsubscribeOutcome};
 use release::{DiffOutcome, ExportOutcome, RestoreOutcome};
 use serde::Serialize;
 use setup::{DoctorOutcome, Guidance, RuntimeError, SetupOutcome};
-
-#[derive(Debug, Parser)]
-#[command(
-    name = "denju",
-    disable_help_flag = true,
-    disable_version_flag = true,
-    disable_help_subcommand = true,
-    color = clap::ColorChoice::Never
-)]
-struct Cli {
-    #[arg(long, global = true, action = ArgAction::SetTrue)]
-    json: bool,
-    #[arg(short = 'V', long, action = ArgAction::SetTrue)]
-    version: bool,
-    #[arg(short = 'h', long, global = true, action = ArgAction::SetTrue)]
-    help: bool,
-    #[command(subcommand)]
-    command: Option<Command>,
-}
-
-#[derive(Debug, Subcommand)]
-enum Command {
-    Setup {
-        #[arg(long, value_name = "URL")]
-        registry: Option<String>,
-    },
-    Claim {
-        username: String,
-    },
-    Login {
-        username: String,
-    },
-    Identity {
-        #[command(subcommand)]
-        command: Option<IdentityCommand>,
-    },
-    Devices {
-        #[command(subcommand)]
-        command: Option<DevicesCommand>,
-    },
-    Tokens {
-        #[command(subcommand)]
-        command: Option<TokenCommand>,
-    },
-    Search {
-        query: String,
-    },
-    Show {
-        locator: String,
-    },
-    Import {
-        path: PathBuf,
-    },
-    Publish {
-        locator: String,
-        #[arg(long)]
-        message: Option<String>,
-        #[arg(long = "tag")]
-        tags: Vec<String>,
-    },
-    Rename {
-        locator: String,
-        new_name: String,
-    },
-    Unpublish {
-        locator: String,
-    },
-    Delete {
-        locator: String,
-        #[arg(long, action = ArgAction::SetTrue)]
-        yes: bool,
-    },
-    Deprecate {
-        locator: String,
-        #[arg(long)]
-        replacement: Option<String>,
-        #[arg(long, action = ArgAction::SetTrue)]
-        undo: bool,
-    },
-    Usage,
-    History {
-        locator: Option<String>,
-        #[command(subcommand)]
-        command: Option<HistoryCommand>,
-    },
-    Diff {
-        locator: String,
-        revision_a: Option<String>,
-        revision_b: Option<String>,
-    },
-    Restore {
-        locator: String,
-        revision: String,
-    },
-    Export {
-        locator: String,
-        destination: PathBuf,
-    },
-    Subscribe {
-        locator: String,
-        #[arg(long = "version", value_name = "N")]
-        release_version: Option<u64>,
-        #[arg(long, action = ArgAction::SetTrue)]
-        retain_on_delete: bool,
-    },
-    Unsubscribe {
-        locator: String,
-    },
-    Share {
-        locator: String,
-        recipient: String,
-    },
-    Unshare {
-        locator: String,
-        recipient: String,
-    },
-    Fork {
-        locator: Option<String>,
-        #[command(subcommand)]
-        command: Option<ForkCommand>,
-    },
-    Status,
-    Sync,
-    Doctor,
-    #[command(hide = true)]
-    Daemon,
-}
-
-#[derive(Debug, Subcommand)]
-enum IdentityCommand {
-    Backup,
-    Recover {
-        username: String,
-    },
-    Delete {
-        #[arg(long, action = ArgAction::SetTrue)]
-        yes: bool,
-    },
-}
-
-#[derive(Debug, Subcommand)]
-enum HistoryCommand {
-    Prune {
-        locator: String,
-        #[arg(long, action = ArgAction::SetTrue)]
-        yes: bool,
-    },
-}
-
-#[derive(Debug, Subcommand)]
-enum ForkCommand {
-    Sync {
-        locator: String,
-    },
-    Resolve {
-        locator: String,
-        #[arg(long = "as", value_name = "NAME")]
-        as_name: Option<String>,
-        #[arg(long = "merge-into", value_name = "LOCATOR")]
-        merge_into: Option<String>,
-        #[arg(long, action = ArgAction::SetTrue)]
-        discard: bool,
-    },
-}
-
-#[derive(Debug, Subcommand)]
-enum DevicesCommand {
-    Revoke { session_id: String },
-}
-
-#[derive(Debug, Subcommand)]
-enum TokenCommand {
-    Create {
-        #[arg(long = "scope", required = true)]
-        scopes: Vec<String>,
-        #[arg(long, default_value_t = 86_400)]
-        expires_in_seconds: u64,
-    },
-    Revoke {
-        token_id: String,
-    },
-}
 
 #[derive(Debug, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -366,6 +192,18 @@ enum ResultPayload {
     ForkResolve {
         #[serde(flatten)]
         outcome: fork_ops::ForkResolveOutcome,
+    },
+    Proposal {
+        #[serde(flatten)]
+        outcome: SkillProposal,
+    },
+    Proposals {
+        #[serde(flatten)]
+        outcome: SkillProposalList,
+    },
+    ProposalDetail {
+        #[serde(flatten)]
+        outcome: SkillProposalDetail,
     },
     Status {
         #[serde(flatten)]
@@ -810,12 +648,62 @@ async fn run(args: impl IntoIterator<Item = OsString>) -> ExitCode {
             CliErrorCode::InvalidArguments,
             "use `denju fork @owner/skill`, `denju fork sync @you/skill`, or `denju fork resolve @upstream/skill ...`",
         )),
+        Some(Command::Propose { locator, message }) => {
+            proposals::create(&locator, message.as_deref())
+                .await
+                .map(|outcome| CommandOutput {
+                    text: proposal_text(&outcome),
+                    payload: ResultPayload::Proposal { outcome },
+                    exit: ExitCode::SUCCESS,
+                })
+        }
+        Some(Command::Proposals) => proposals::list().await.map(|outcome| CommandOutput {
+            text: proposals_text(&outcome),
+            payload: ResultPayload::Proposals { outcome },
+            exit: ExitCode::SUCCESS,
+        }),
+        Some(Command::Proposal {
+            command: ProposalCommand::Show { proposal_id },
+        }) => proposals::show(&proposal_id)
+            .await
+            .map(|outcome| CommandOutput {
+                text: proposal_detail_text(&outcome),
+                payload: ResultPayload::ProposalDetail { outcome },
+                exit: ExitCode::SUCCESS,
+            }),
+        Some(Command::Proposal {
+            command: ProposalCommand::Accept { proposal_id },
+        }) => proposals::accept(&proposal_id)
+            .await
+            .map(|outcome| CommandOutput {
+                text: proposal_text(&outcome),
+                payload: ResultPayload::Proposal { outcome },
+                exit: ExitCode::SUCCESS,
+            }),
+        Some(Command::Proposal {
+            command: ProposalCommand::Reject { proposal_id },
+        }) => proposals::reject(&proposal_id)
+            .await
+            .map(|outcome| CommandOutput {
+                text: proposal_text(&outcome),
+                payload: ResultPayload::Proposal { outcome },
+                exit: ExitCode::SUCCESS,
+            }),
+        Some(Command::Proposal {
+            command: ProposalCommand::Withdraw { proposal_id },
+        }) => proposals::withdraw(&proposal_id)
+            .await
+            .map(|outcome| CommandOutput {
+                text: proposal_text(&outcome),
+                payload: ResultPayload::Proposal { outcome },
+                exit: ExitCode::SUCCESS,
+            }),
         Some(Command::Status) => workspace::status().await.map(|outcome| CommandOutput {
             text: status_text(&outcome),
             payload: ResultPayload::Status { outcome },
             exit: ExitCode::SUCCESS,
         }),
-        Some(Command::Sync) => public::sync_once().await.map(|outcome| CommandOutput {
+        Some(Command::Sync) => proposals::sync_once().await.map(|outcome| CommandOutput {
             text: sync_text(&outcome),
             payload: ResultPayload::Sync { outcome },
             exit: ExitCode::SUCCESS,

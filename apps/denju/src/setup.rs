@@ -362,7 +362,7 @@ pub async fn daemon() -> Result<ExitCode, RuntimeError> {
         let _ = crate::workspace::capture_local_edits(&paths, &db, force_full_hash).await;
         // Remote synchronization is opportunistic background work. The daemon stays alive
         // through registry/network outages; the foreground `denju sync` path surfaces them.
-        let _ = crate::public::sync_once().await;
+        let _ = crate::proposals::sync_once().await;
         if let Some(native) = watcher.as_mut() {
             tokio::select! {
                 _ = tokio::signal::ctrl_c() => return Ok(ExitCode::SUCCESS),

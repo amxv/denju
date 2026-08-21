@@ -10,7 +10,10 @@ mod snapshot;
 
 pub use ids::{AuthorPrincipalId, Generation, IdError, NamespaceId, OperationId, ResourceId};
 pub use locator::{LocatorError, ResourceKind, ResourceLocator};
-pub use merge::{MergeConflict, MergeConflictKind, SkillMergeResult, merge_skill_entries};
+pub use merge::{
+    MergeConflict, MergeConflictKind, SkillMergeResult, merge_skill_entries,
+    merge_skill_entries_with_resolutions,
+};
 pub use object::{
     BlobId, ObjectIdError, Revision, RevisionError, RevisionId, TreeEntry, TreeEntryKind,
     TreeError, TreeId,

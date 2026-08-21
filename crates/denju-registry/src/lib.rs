@@ -10,6 +10,7 @@ mod lifecycle;
 mod lifecycle_storage;
 mod outbox;
 mod private_catalog;
+mod proposals;
 mod public_registry;
 mod public_seed;
 mod realtime;
@@ -44,7 +45,7 @@ use url::Url;
 use uuid::Uuid;
 
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
-const EXPECTED_SCHEMA_VERSION: i64 = 9;
+const EXPECTED_SCHEMA_VERSION: i64 = 10;
 const SNAPSHOT_URL_TTL: Duration = Duration::from_secs(5 * 60);
 const STAGING_URL_TTL: Duration = Duration::from_secs(10 * 60);
 

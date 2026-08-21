@@ -62,6 +62,7 @@ impl ReleaseWorkspaceRow {
 }
 
 pub(crate) use crate::outbox::enqueue_resource_wake;
+use crate::outbox::enqueue_resource_wake_with_event;
 
 impl Registry {
     /// Lazily starts the disposable cross-instance wake bridge. Correctness never depends on
@@ -398,7 +399,13 @@ impl Registry {
         .execute(&mut *tx)
         .await
         .map_err(internal_api_error)?;
-        enqueue_resource_wake(&mut tx, resource_id.as_uuid(), generation).await?;
+        enqueue_resource_wake_with_event(
+            &mut tx,
+            resource_id.as_uuid(),
+            generation,
+            "skill_release_published",
+        )
+        .await?;
         tx.commit().await.map_err(internal_api_error)?;
 
         // Common-case wake delivery is bounded and request-adjacent. The authoritative

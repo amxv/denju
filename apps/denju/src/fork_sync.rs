@@ -1,9 +1,10 @@
-use std::str::FromStr;
+use std::{collections::BTreeSet, str::FromStr};
 
 use denju_core::{
-    ResourceLocator, SkillMergeResult, build_deterministic_skill_snapshot, merge_skill_entries,
-    validate_skill_snapshot,
+    OwnedSkillEntry, ResourceLocator, SkillMergeResult, build_deterministic_skill_snapshot,
+    merge_skill_entries, merge_skill_entries_with_resolutions, validate_skill_snapshot,
 };
+use denju_local::ForkSyncConflictRecord;
 use denju_wire::{
     CliErrorCode, ForkSyncIntent, PrivateRevisionCommitRequest, PrivateRevisionCommitResponse,
     PrivateRevisionRequest, PublicSkillManifest, private_revision_request_hash,
@@ -52,6 +53,11 @@ pub(crate) async fn sync(locator: &str) -> Result<ForkSyncOutcome, RuntimeError>
         .map_err(client_error)?;
     let upstream_revision = upstream_history.workspace_revision_id;
     if upstream_revision == provenance.sync_base_revision_id {
+        context
+            .db
+            .clear_fork_sync_conflict(remote.resource_id.clone())
+            .await
+            .map_err(local_error)?;
         return Ok(ForkSyncOutcome {
             state: "current",
             locator: remote.locator,
@@ -88,22 +94,80 @@ pub(crate) async fn sync(locator: &str) -> Result<ForkSyncOutcome, RuntimeError>
         .map_err(|error| RuntimeError::new(CliErrorCode::ContentVerification, error))?;
     let fork_entries =
         validate_skill_snapshot(&remote.name, &fork_manifest, &fork_bytes).map_err(local_error)?;
-    let merged = match merge_skill_entries(&base, &fork_entries, &upstream) {
+    let stored_conflict = context
+        .db
+        .fork_sync_conflict(remote.resource_id.clone())
+        .await
+        .map_err(local_error)?;
+    let resolved_paths = if let Some(conflict) = stored_conflict.as_ref()
+        && conflict.sync_base_revision_id == provenance.sync_base_revision_id
+        && conflict.upstream_revision_id == upstream_revision
+    {
+        if conflict.fork_revision_id == remote.revision_id {
+            return Err(unresolved_fork_sync_error(
+                &remote.locator,
+                &conflict.conflict_paths,
+            ));
+        }
+        let conflicted_fork = fetch_revision_entries(
+            &context,
+            &remote.locator,
+            &remote.name,
+            &conflict.fork_revision_id,
+        )
+        .await?;
+        let unresolved = conflict
+            .conflict_paths
+            .iter()
+            .filter(|path| entry_at(&conflicted_fork, path) == entry_at(&fork_entries, path))
+            .cloned()
+            .collect::<Vec<_>>();
+        if !unresolved.is_empty() {
+            return Err(unresolved_fork_sync_error(&remote.locator, &unresolved));
+        }
+        Some(
+            conflict
+                .conflict_paths
+                .iter()
+                .cloned()
+                .collect::<BTreeSet<_>>(),
+        )
+    } else {
+        if stored_conflict.is_some() {
+            context
+                .db
+                .clear_fork_sync_conflict(remote.resource_id.clone())
+                .await
+                .map_err(local_error)?;
+        }
+        None
+    };
+    let merge = match resolved_paths.as_ref() {
+        Some(paths) => merge_skill_entries_with_resolutions(&base, &fork_entries, &upstream, paths),
+        None => merge_skill_entries(&base, &fork_entries, &upstream),
+    };
+    let merged = match merge {
         SkillMergeResult::Clean { entries } => entries,
         SkillMergeResult::Conflicted { conflicts } => {
             let paths = conflicts
                 .into_iter()
                 .map(|conflict| conflict.path)
                 .collect::<Vec<_>>();
-            return Err(RuntimeError::new(
-                CliErrorCode::LocalState,
-                format!(
-                    "{} conflicts with upstream in {}; edit the fork and retry `denju fork sync {}`",
-                    remote.locator,
-                    paths.join(", "),
-                    remote.locator
-                ),
-            ));
+            context
+                .db
+                .save_fork_sync_conflict(
+                    ForkSyncConflictRecord {
+                        resource_id: remote.resource_id.clone(),
+                        sync_base_revision_id: provenance.sync_base_revision_id.clone(),
+                        fork_revision_id: remote.revision_id.clone(),
+                        upstream_revision_id: upstream_revision.clone(),
+                        conflict_paths: paths.clone(),
+                    },
+                    crate::context::now_unix_ms(),
+                )
+                .await
+                .map_err(local_error)?;
+            return Err(unresolved_fork_sync_error(&remote.locator, &paths));
         }
     };
     let snapshot = build_deterministic_skill_snapshot(&remote.name, &merged)
@@ -174,6 +238,11 @@ pub(crate) async fn sync(locator: &str) -> Result<ForkSyncOutcome, RuntimeError>
         snapshot.bytes(),
     )
     .await?;
+    context
+        .db
+        .clear_fork_sync_conflict(remote.resource_id.clone())
+        .await
+        .map_err(local_error)?;
     Ok(ForkSyncOutcome {
         state: "synced",
         locator: remote.locator,
@@ -181,4 +250,18 @@ pub(crate) async fn sync(locator: &str) -> Result<ForkSyncOutcome, RuntimeError>
         upstream_locator: provenance.upstream_locator,
         upstream_revision_id: upstream_revision,
     })
+}
+
+fn unresolved_fork_sync_error(locator: &str, paths: &[String]) -> RuntimeError {
+    RuntimeError::new(
+        CliErrorCode::LocalState,
+        format!(
+            "{locator} conflicts with upstream in {}; resolve each listed path in the fork, then retry `denju fork sync {locator}`",
+            paths.join(", ")
+        ),
+    )
+}
+
+fn entry_at<'a>(entries: &'a [OwnedSkillEntry], path: &str) -> Option<&'a OwnedSkillEntry> {
+    entries.iter().find(|entry| entry.path() == path)
 }

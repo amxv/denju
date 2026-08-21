@@ -20,7 +20,7 @@ Forks do not follow upstream automatically. When upstream advances, `denju statu
 denju fork sync @you/skill
 ```
 
-`fork sync` performs the same deterministic three-way merge used for concurrent private workspace edits. Independent changes merge into a new fork revision; overlapping changes pause for explicit conflict resolution rather than overwriting either side. The fork's original creation provenance never changes even as its synchronization base advances.
+`fork sync` performs the same deterministic three-way merge used for concurrent private workspace edits. Independent changes merge into a new fork revision; overlapping changes pause rather than overwriting either side. Denju lists the conflicting paths. Resolve each of those paths in the fork's ordinary working tree, then run the same command again. Denju verifies that every previously conflicting path actually changed before treating it as an explicit resolution, keeps clean upstream changes automatically, and commits the result as a two-parent fork revision. The fork's original creation provenance never changes even as its synchronization base advances.
 
 ## Explicit forks
 
@@ -56,3 +56,8 @@ denju unshare @you/skill @alice
 `share` does not install anything for the recipient and does not create an inbox. It prints the exact `denju subscribe @you/skill` command to send them. While authorized, the private skill appears in their normal `denju search` and `denju show` results.
 
 A subscription to a shared private skill follows every coherent valid private save, not only published releases. Revoking the share removes the recipient's managed upstream copy as soon as no public, pack, team, or other access source requires it. A personal fork the recipient already created is independent and survives revocation.
+
+
+## Propose changes upstream
+
+A fork can send its current private head back to the upstream maintainer without becoming a review thread or automatically publishing anything. Open proposals follow later fork heads and reuse explicit fork synchronization when upstream advances. See [Proposals](/docs/proposals).

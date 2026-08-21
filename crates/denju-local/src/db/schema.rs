@@ -216,3 +216,20 @@ CREATE TABLE subscription_edit_locks (
 PRAGMA user_version = 8;
 COMMIT;
 "#;
+
+pub(super) const MIGRATION_V9: &str = r#"
+BEGIN IMMEDIATE;
+
+CREATE TABLE fork_sync_conflicts (
+    resource_id TEXT PRIMARY KEY REFERENCES owned_skills(resource_id) ON DELETE CASCADE,
+    sync_base_revision_id TEXT NOT NULL,
+    fork_revision_id TEXT NOT NULL,
+    upstream_revision_id TEXT NOT NULL,
+    conflict_paths_json TEXT NOT NULL CHECK (json_valid(conflict_paths_json)),
+    created_at_unix_ms INTEGER NOT NULL,
+    updated_at_unix_ms INTEGER NOT NULL
+);
+
+PRAGMA user_version = 9;
+COMMIT;
+"#;

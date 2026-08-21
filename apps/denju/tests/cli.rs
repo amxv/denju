@@ -178,6 +178,52 @@ fn fork_and_sharing_cli_shapes_parse_without_ambiguity() {
 }
 
 #[test]
+fn proposal_cli_shapes_parse_without_ambiguity() {
+    for args in [
+        vec!["--json", "propose", "@alice/review"],
+        vec![
+            "--json",
+            "propose",
+            "@alice/review",
+            "--message",
+            "please review",
+        ],
+        vec!["--json", "proposals"],
+        vec![
+            "--json",
+            "proposal",
+            "show",
+            "01890f47-6a1d-7ad0-8f43-9a4d8c29f002",
+        ],
+        vec![
+            "--json",
+            "proposal",
+            "accept",
+            "01890f47-6a1d-7ad0-8f43-9a4d8c29f002",
+        ],
+        vec![
+            "--json",
+            "proposal",
+            "reject",
+            "01890f47-6a1d-7ad0-8f43-9a4d8c29f002",
+        ],
+        vec![
+            "--json",
+            "proposal",
+            "withdraw",
+            "01890f47-6a1d-7ad0-8f43-9a4d8c29f002",
+        ],
+    ] {
+        let output = denju(&args);
+        assert_eq!(output.status.code(), Some(1), "args: {args:?}");
+        assert!(stderr(&output).is_empty(), "args: {args:?}");
+        let value: Value = serde_json::from_str(stdout(&output).trim()).expect("valid JSON error");
+        assert_eq!(value["ok"], false, "args: {args:?}");
+        assert_eq!(value["error"]["code"], "setup_required", "args: {args:?}");
+    }
+}
+
+#[test]
 fn destructive_lifecycle_json_requires_prior_confirmation() {
     for args in [
         vec!["--json", "delete", "@alice/review"],

@@ -27,6 +27,9 @@ Commands:\n\
   share   Grant another user private read/subscription access\n\
   unshare Remove a user's private read/subscription access\n\
   fork    Fork a skill, sync a fork from upstream, or resolve a claim collision\n\
+  propose Open a private proposal from a fork to its upstream maintainer\n\
+  proposals  List proposals visible to you\n\
+  proposal   Show, accept, reject, or withdraw a proposal\n\
   status  Show local synchronization and conflict state\n\
   sync    Reconcile subscriptions and harness projections\n\
   doctor  Check and repair the local Denju installation\n\

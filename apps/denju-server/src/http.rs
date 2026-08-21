@@ -19,14 +19,15 @@ use denju_wire::{
     IdentitySessionResponse, LoginRequest, PrivateRevisionCommitRequest,
     PrivateRevisionCommitResponse, PrivateRevisionPrepareResponse, PrivateRevisionRequest,
     PrivateSkillCatalog, PrivateSkillImportCommitRequest, PrivateSkillImportPrepareResponse,
-    PrivateSkillImportRequest, PrivateSkillImportResponse, PublicSkillDetail,
-    PublicSkillSearchResponse, PublishSkillRequest, PublishSkillResponse, RecoveryResetRequest,
-    RegistryCapabilities, RenameSkillRequest, RenameSkillResponse, ResourceLifecycleRequest,
-    RestoreSkillRequest, RestoreSkillResponse, ShareMutationKind, ShareSkillRequest,
-    ShareSkillResponse, SkillHistoryResponse, SkillRevisionDetail, SubscriptionCatalog,
-    SubscriptionMutationKind, SubscriptionMutationRequest, SubscriptionMutationResponse,
-    SubscriptionTarget, SyncHint, SyncReconcileRequest, SyncReconcileResponse,
-    UnpublishSkillResponse, UsageResponse,
+    PrivateSkillImportRequest, PrivateSkillImportResponse, ProposalAcceptRequest,
+    ProposalCloseRequest, ProposalCreateRequest, PublicSkillDetail, PublicSkillSearchResponse,
+    PublishSkillRequest, PublishSkillResponse, RecoveryResetRequest, RegistryCapabilities,
+    RenameSkillRequest, RenameSkillResponse, ResourceLifecycleRequest, RestoreSkillRequest,
+    RestoreSkillResponse, ShareMutationKind, ShareSkillRequest, ShareSkillResponse,
+    SkillHistoryResponse, SkillProposal, SkillProposalDetail, SkillProposalList,
+    SkillRevisionDetail, SubscriptionCatalog, SubscriptionMutationKind,
+    SubscriptionMutationRequest, SubscriptionMutationResponse, SubscriptionTarget, SyncHint,
+    SyncReconcileRequest, SyncReconcileResponse, UnpublishSkillResponse, UsageResponse,
 };
 use futures_util::stream;
 use serde::Deserialize;
@@ -87,6 +88,11 @@ pub(super) fn router(registry: Arc<Registry>) -> Router {
         .route("/v1/subscriptions/remove", post(unsubscribe))
         .route("/v1/shares", post(share_skill))
         .route("/v1/shares/remove", post(unshare_skill))
+        .route("/v1/proposals", get(proposals).post(create_proposal))
+        .route("/v1/proposals/show", get(show_proposal))
+        .route("/v1/proposals/accept", post(accept_proposal))
+        .route("/v1/proposals/reject", post(reject_proposal))
+        .route("/v1/proposals/withdraw", post(withdraw_proposal))
         .route("/v1/sync/reconcile", post(sync_reconcile))
         .route("/v1/events", get(events))
         .with_state(registry)
@@ -547,6 +553,88 @@ async fn unshare_skill(
     let bearer = bearer_token(&headers)?;
     registry
         .mutate_private_share(bearer, ShareMutationKind::Unshare, &request)
+        .await
+        .map(Json)
+        .map_err(ApiResponseError)
+}
+
+#[derive(Debug, Deserialize)]
+struct ProposalQuery {
+    id: String,
+}
+
+async fn proposals(
+    State(registry): State<Arc<Registry>>,
+    headers: HeaderMap,
+) -> Result<Json<SkillProposalList>, ApiResponseError> {
+    let bearer = bearer_token(&headers)?;
+    registry
+        .proposals(bearer)
+        .await
+        .map(Json)
+        .map_err(ApiResponseError)
+}
+
+async fn show_proposal(
+    State(registry): State<Arc<Registry>>,
+    headers: HeaderMap,
+    Query(query): Query<ProposalQuery>,
+) -> Result<Json<SkillProposalDetail>, ApiResponseError> {
+    let bearer = bearer_token(&headers)?;
+    registry
+        .proposal_detail(bearer, &query.id)
+        .await
+        .map(Json)
+        .map_err(ApiResponseError)
+}
+
+async fn create_proposal(
+    State(registry): State<Arc<Registry>>,
+    headers: HeaderMap,
+    Json(request): Json<ProposalCreateRequest>,
+) -> Result<Json<SkillProposal>, ApiResponseError> {
+    let bearer = bearer_token(&headers)?;
+    registry
+        .create_proposal(bearer, &request)
+        .await
+        .map(Json)
+        .map_err(ApiResponseError)
+}
+
+async fn accept_proposal(
+    State(registry): State<Arc<Registry>>,
+    headers: HeaderMap,
+    Json(request): Json<ProposalAcceptRequest>,
+) -> Result<Json<SkillProposal>, ApiResponseError> {
+    let bearer = bearer_token(&headers)?;
+    registry
+        .accept_proposal(bearer, &request)
+        .await
+        .map(Json)
+        .map_err(ApiResponseError)
+}
+
+async fn reject_proposal(
+    State(registry): State<Arc<Registry>>,
+    headers: HeaderMap,
+    Json(request): Json<ProposalCloseRequest>,
+) -> Result<Json<SkillProposal>, ApiResponseError> {
+    let bearer = bearer_token(&headers)?;
+    registry
+        .reject_proposal(bearer, &request)
+        .await
+        .map(Json)
+        .map_err(ApiResponseError)
+}
+
+async fn withdraw_proposal(
+    State(registry): State<Arc<Registry>>,
+    headers: HeaderMap,
+    Json(request): Json<ProposalCloseRequest>,
+) -> Result<Json<SkillProposal>, ApiResponseError> {
+    let bearer = bearer_token(&headers)?;
+    registry
+        .withdraw_proposal(bearer, &request)
         .await
         .map(Json)
         .map_err(ApiResponseError)

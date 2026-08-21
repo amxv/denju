@@ -1,8 +1,93 @@
 use rusqlite::{OptionalExtension, params};
 
-use crate::{LocalDatabase, LocalDbError, LocalForkRecord, LocalRevisionRecord};
+use crate::{
+    ForkSyncConflictRecord, LocalDatabase, LocalDbError, LocalForkRecord, LocalRevisionRecord,
+};
 
 impl LocalDatabase {
+    pub async fn fork_sync_conflict(
+        &self,
+        resource_id: String,
+    ) -> Result<Option<ForkSyncConflictRecord>, LocalDbError> {
+        self.call(move |connection| {
+            let row = connection
+                .query_row(
+                    "SELECT resource_id,sync_base_revision_id,fork_revision_id,upstream_revision_id,conflict_paths_json \
+                     FROM fork_sync_conflicts WHERE resource_id=?1",
+                    params![resource_id],
+                    |row| {
+                        let paths: String = row.get(4)?;
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            paths,
+                        ))
+                    },
+                )
+                .optional()?;
+            row.map(|(resource_id, sync_base_revision_id, fork_revision_id, upstream_revision_id, paths)| {
+                Ok(ForkSyncConflictRecord {
+                    resource_id,
+                    sync_base_revision_id,
+                    fork_revision_id,
+                    upstream_revision_id,
+                    conflict_paths: serde_json::from_str(&paths)?,
+                })
+            })
+            .transpose()
+        })
+        .await
+    }
+
+    pub async fn save_fork_sync_conflict(
+        &self,
+        conflict: ForkSyncConflictRecord,
+        now_unix_ms: i64,
+    ) -> Result<(), LocalDbError> {
+        if conflict.conflict_paths.is_empty() {
+            return Err(LocalDbError::Corrupt(
+                "fork sync conflict must contain at least one path".to_owned(),
+            ));
+        }
+        let paths = serde_json::to_string(&conflict.conflict_paths)?;
+        self.call(move |connection| {
+            connection.execute(
+                "INSERT INTO fork_sync_conflicts \
+                 (resource_id,sync_base_revision_id,fork_revision_id,upstream_revision_id,conflict_paths_json,created_at_unix_ms,updated_at_unix_ms) \
+                 VALUES (?1,?2,?3,?4,?5,?6,?6) \
+                 ON CONFLICT(resource_id) DO UPDATE SET \
+                   sync_base_revision_id=excluded.sync_base_revision_id, \
+                   fork_revision_id=excluded.fork_revision_id, \
+                   upstream_revision_id=excluded.upstream_revision_id, \
+                   conflict_paths_json=excluded.conflict_paths_json, \
+                   updated_at_unix_ms=excluded.updated_at_unix_ms",
+                params![
+                    conflict.resource_id,
+                    conflict.sync_base_revision_id,
+                    conflict.fork_revision_id,
+                    conflict.upstream_revision_id,
+                    paths,
+                    now_unix_ms,
+                ],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
+    pub async fn clear_fork_sync_conflict(&self, resource_id: String) -> Result<(), LocalDbError> {
+        self.call(move |connection| {
+            connection.execute(
+                "DELETE FROM fork_sync_conflicts WHERE resource_id=?1",
+                params![resource_id],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
     pub async fn local_forks(&self) -> Result<Vec<LocalForkRecord>, LocalDbError> {
         self.call(|connection| {
             let mut statement = connection.prepare(

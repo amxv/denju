@@ -53,7 +53,7 @@ async fn local_schema_converges_directly_to_current_version() {
         })
         .await
         .unwrap();
-    assert_eq!(version, 8);
+    assert_eq!(version, 9);
 }
 
 #[tokio::test]
@@ -163,6 +163,48 @@ async fn merge_revision_parent_order_round_trips_canonically() {
         queued.parent_revision_ids,
         vec![detached_head, "ff".repeat(32)]
     );
+}
+
+#[tokio::test]
+async fn fork_sync_conflict_round_trips_and_clears() {
+    let dir = tempdir().unwrap();
+    let db = LocalDatabase::open(dir.path().join("state.db"))
+        .await
+        .unwrap();
+    let resource_id = "01890f47-6a1c-7cc2-98c1-5f6c1ed8a3a1".to_owned();
+    db.upsert_owned_skill_desired(
+        OwnedSkillRecord {
+            resource_id: resource_id.clone(),
+            locator: "@alice/review".to_owned(),
+            owner: "alice".to_owned(),
+            skill_name: "review".to_owned(),
+            resource_generation: 2,
+            desired_revision_id: "11".repeat(32),
+            harness_name: None,
+            materialized_revision_id: None,
+        },
+        1,
+    )
+    .await
+    .unwrap();
+    let conflict = ForkSyncConflictRecord {
+        resource_id: resource_id.clone(),
+        sync_base_revision_id: "22".repeat(32),
+        fork_revision_id: "33".repeat(32),
+        upstream_revision_id: "44".repeat(32),
+        conflict_paths: vec!["SKILL.md".to_owned(), "notes.txt".to_owned()],
+    };
+    db.save_fork_sync_conflict(conflict.clone(), 2)
+        .await
+        .unwrap();
+    assert_eq!(
+        db.fork_sync_conflict(resource_id.clone()).await.unwrap(),
+        Some(conflict)
+    );
+    db.clear_fork_sync_conflict(resource_id.clone())
+        .await
+        .unwrap();
+    assert_eq!(db.fork_sync_conflict(resource_id).await.unwrap(), None);
 }
 
 #[tokio::test]
