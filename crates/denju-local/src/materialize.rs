@@ -181,9 +181,29 @@ async fn materialize_with_lease(
     db.create_materialization_journal(operation_id, payload, now_unix_ms())
         .await?;
 
-    if generation_dir.is_dir() {
-        verify_generation(&generation_dir, &desired.skill_name, &desired.manifest)?;
+    let generation_ready = if generation_dir.is_dir() {
+        match verify_generation(&generation_dir, &desired.skill_name, &desired.manifest) {
+            Ok(()) => true,
+            Err(MaterializationError::ManifestMismatch)
+                if !canonical_targets_generation(&canonical_path, &generation_dir)? =>
+            {
+                // Managed generations are writable working views. Once an edited
+                // subscription has been replaced by a fork, its former upstream
+                // generation is no longer visible but may still be cached under the
+                // immutable upstream revision ID. A later resubscribe must rebuild that
+                // inactive dirty cache from authoritative bytes instead of treating it as
+                // trusted content. Never do this while the generation is still the active
+                // canonical working tree; that could destroy an edit before fork capture.
+                fs::remove_dir_all(&generation_dir)?;
+                sync_parent(&resource_root)?;
+                false
+            }
+            Err(error) => return Err(error),
+        }
     } else {
+        false
+    };
+    if !generation_ready {
         let _ = fs::remove_dir_all(&stage_dir);
         write_generation(paths, &stage_dir, entries)?;
     }
@@ -230,6 +250,18 @@ async fn materialize_with_lease(
     )
     .await?;
     Ok(generation_dir)
+}
+
+fn canonical_targets_generation(
+    canonical_path: &Path,
+    generation_dir: &Path,
+) -> Result<bool, MaterializationError> {
+    let canonical = match fs::canonicalize(canonical_path) {
+        Ok(path) => path,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(MaterializationError::Io(error)),
+    };
+    Ok(canonical == fs::canonicalize(generation_dir)?)
 }
 
 pub async fn recover_materializations(
@@ -716,6 +748,45 @@ mod tests {
                 .is_err()
         );
         assert!(!paths.skills.join("alice/review").exists());
+    }
+
+    #[tokio::test]
+    async fn inactive_dirty_generation_is_rebuilt_but_active_edit_is_preserved() {
+        let (_home, paths, db, desired, bytes) = fixture().await;
+        let generation = materialize_skill_snapshot(&paths, &db, &desired, &bytes)
+            .await
+            .unwrap();
+        let canonical = paths.skills.join("alice/review");
+        let skill_md = generation.join("SKILL.md");
+        let edited = b"---\nname: review\ndescription: Reviews code.\n---\n# Review\nlocal edit\n";
+        fs::write(&skill_md, edited).unwrap();
+
+        let error = materialize_skill_snapshot(&paths, &db, &desired, &bytes)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, MaterializationError::ManifestMismatch));
+        assert_eq!(fs::read(&skill_md).unwrap(), edited);
+
+        remove_canonical_skill(&paths, "alice", "review").unwrap();
+        assert!(!canonical.exists());
+        let repaired = materialize_skill_snapshot(&paths, &db, &desired, &bytes)
+            .await
+            .unwrap();
+        assert_eq!(repaired, generation);
+        assert_eq!(
+            fs::read(repaired.join("SKILL.md")).unwrap(),
+            entries()
+                .into_iter()
+                .find_map(|entry| match entry {
+                    OwnedSkillEntry::File { path, bytes, .. } if path == "SKILL.md" => Some(bytes),
+                    _ => None,
+                })
+                .unwrap()
+        );
+        assert_eq!(
+            fs::canonicalize(canonical).unwrap(),
+            fs::canonicalize(generation).unwrap()
+        );
     }
 
     #[tokio::test]

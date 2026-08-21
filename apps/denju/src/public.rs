@@ -305,7 +305,11 @@ async fn sync_with_context(
                 )
                 .recovery("denju doctor")
             })?,
-            revision_id: record.desired_revision_id.clone(),
+            // Reconcile what is actually visible on this device, not merely the remote
+            // revision we last recorded as desired. If a download/materialization failed
+            // after desired-state persistence, advertising that desired revision here would
+            // make the registry omit it as unchanged and strand the local retry forever.
+            revision_id: record.materialized_revision_id.clone().unwrap_or_default(),
         });
     }
     let reconcile = context
