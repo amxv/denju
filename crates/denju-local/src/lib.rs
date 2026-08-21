@@ -31,8 +31,8 @@ pub use materialize::{
     materialize_skill_snapshot, recover_materializations, remove_canonical_skill,
 };
 pub use paths::{
-    LocalPathError, LocalPaths, create_native_directory_link, ensure_local_layout,
-    verify_native_directory_links,
+    LocalPathError, LocalPaths, TEST_HOME_ENV, TEST_HOME_MARKER, create_native_directory_link,
+    ensure_local_layout, verify_native_directory_links,
 };
 pub use projection::{
     ProjectionError, reconcile_harness_projections, reconcile_owned_derived_projection,

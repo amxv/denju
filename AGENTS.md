@@ -45,9 +45,13 @@ cargo xtask check
 
 `cargo xtask check` is the canonical repository-wide gate and CI contract. `just` is only the low-friction command menu; never duplicate Rust build/generation/dev logic in the Justfile. Do not add a Makefile as a second command authority. The docs and npm workspaces are intentionally separate from runtime Rust code.
 
+For line-count feedback, `locguard` checks the dirty/changed source tree quickly and `locguard scan` checks the complete eligible repository. Use it while iterating when useful; it supplements, never replaces, the canonical Cargo/xtask gates.
+
 ## Safety
 
 - Keep `tmp/gg/` local and untracked.
 - Never commit credentials, local databases, object blobs, or live private fixtures.
+- **Tests and live acceptance fixtures must use `DENJU_TEST_HOME` pointing at a dedicated disposable directory containing `.denju-test-home-v1`.** Test mode intentionally ignores inherited `CODEX_HOME` and `CLAUDE_CONFIG_DIR`, forces file credentials, and never starts the real background service. Do not simulate isolation by changing only `HOME`.
+- No test/e2e/acceptance run may read, write, migrate, remove, or project into the developer's real harness homes. On this machine the custom homes are `~/.gg/codex/` and `~/.gg/claude/`; the standard homes `~/.codex/`, `~/.claude/`, and `~/.agents/` are equally protected. All harness fixtures must remain beneath `DENJU_TEST_HOME`.
 - Preserve the single Rust implementation path on `main`; no Go or Agentbox fallback.
 - Current source and tests are truth if they have advanced beyond the planning baseline. Amend the plan when a load-bearing assumption proves false instead of silently diverging.

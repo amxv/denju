@@ -638,7 +638,8 @@ fn device_name() -> String {
 }
 
 fn force_file_credentials() -> bool {
-    std::env::var_os("DENJU_TEST_FILE_CREDENTIALS").is_some()
+    std::env::var_os(denju_local::TEST_HOME_ENV).is_some()
+        || std::env::var_os("DENJU_TEST_FILE_CREDENTIALS").is_some()
 }
 
 fn client_error(error: ClientError) -> RuntimeError {

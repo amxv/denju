@@ -5,6 +5,9 @@ use std::{
 
 use thiserror::Error;
 
+pub const TEST_HOME_ENV: &str = "DENJU_TEST_HOME";
+pub const TEST_HOME_MARKER: &str = ".denju-test-home-v1";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LocalPaths {
     pub home: PathBuf,
@@ -119,6 +122,12 @@ pub fn create_native_directory_link(target: &Path, link: &Path) -> io::Result<()
 }
 
 fn discover_home() -> Result<PathBuf, LocalPathError> {
+    if let Some(test_home) = std::env::var_os(TEST_HOME_ENV) {
+        return validate_test_home(PathBuf::from(test_home));
+    }
+    if test_mode_requested() {
+        return Err(LocalPathError::TestHomeRequired);
+    }
     #[cfg(windows)]
     {
         if let Some(home) = std::env::var_os("USERPROFILE") {
@@ -139,10 +148,51 @@ fn discover_home() -> Result<PathBuf, LocalPathError> {
     Err(LocalPathError::HomeUnavailable)
 }
 
+fn validate_test_home(home: PathBuf) -> Result<PathBuf, LocalPathError> {
+    if !home.is_absolute() {
+        return Err(LocalPathError::InvalidTestHome(
+            "DENJU_TEST_HOME must be an absolute path".to_owned(),
+        ));
+    }
+    if !home.is_dir() {
+        return Err(LocalPathError::InvalidTestHome(format!(
+            "DENJU_TEST_HOME is not a directory: {}",
+            home.display()
+        )));
+    }
+    let marker = home.join(TEST_HOME_MARKER);
+    let metadata = fs::symlink_metadata(&marker).map_err(|error| {
+        LocalPathError::InvalidTestHome(format!(
+            "DENJU_TEST_HOME must contain a regular {TEST_HOME_MARKER} marker: {error}"
+        ))
+    })?;
+    if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
+        return Err(LocalPathError::InvalidTestHome(format!(
+            "DENJU_TEST_HOME marker must be a regular file: {}",
+            marker.display()
+        )));
+    }
+    Ok(home)
+}
+
+fn test_mode_requested() -> bool {
+    [
+        "DENJU_TEST_FILE_CREDENTIALS",
+        "DENJU_TEST_SERVICE_INSTALL_ONLY",
+        "DENJU_DAEMON_ONCE",
+    ]
+    .iter()
+    .any(|name| std::env::var_os(name).is_some())
+}
+
 #[derive(Debug, Error)]
 pub enum LocalPathError {
     #[error("cannot determine the current user's home directory")]
     HomeUnavailable,
+    #[error("Denju test mode requires an explicit isolated DENJU_TEST_HOME")]
+    TestHomeRequired,
+    #[error("invalid isolated Denju test home: {0}")]
+    InvalidTestHome(String),
     #[error("local filesystem error: {0}")]
     Io(#[from] io::Error),
     #[error("native directory links are unavailable: {0}")]
@@ -163,5 +213,23 @@ mod tests {
         assert!(paths.state_db.starts_with(home.path()));
         assert!(paths.objects.is_dir());
         assert!(paths.skills.is_dir());
+    }
+
+    #[test]
+    fn isolated_test_home_requires_absolute_marked_directory() {
+        let home = tempdir().unwrap();
+        assert!(matches!(
+            validate_test_home(PathBuf::from("relative")),
+            Err(LocalPathError::InvalidTestHome(_))
+        ));
+        assert!(matches!(
+            validate_test_home(home.path().to_owned()),
+            Err(LocalPathError::InvalidTestHome(_))
+        ));
+        fs::write(home.path().join(TEST_HOME_MARKER), b"isolated\n").unwrap();
+        assert_eq!(
+            validate_test_home(home.path().to_owned()).unwrap(),
+            home.path()
+        );
     }
 }

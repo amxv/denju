@@ -7,7 +7,7 @@ use std::{
 use thiserror::Error;
 use walkdir::WalkDir;
 
-use crate::{HarnessConfig, LocalPaths};
+use crate::{HarnessConfig, LocalPaths, TEST_HOME_ENV};
 
 const CODEX_MARKER: &str = ".denju-managed-v1";
 
@@ -36,7 +36,20 @@ pub fn resolve_harness_roots(
     paths: &LocalPaths,
     recorded: Option<&HarnessConfig>,
 ) -> Result<ResolvedHarnessRoots, HarnessError> {
+    if std::env::var_os(TEST_HOME_ENV).is_some() {
+        return Ok(isolated_test_harness_roots(paths));
+    }
     resolve_harness_roots_for(paths, recorded, &HarnessEnvironment::current())
+}
+
+fn isolated_test_harness_roots(paths: &LocalPaths) -> ResolvedHarnessRoots {
+    // Test runs intentionally ignore inherited CODEX_HOME/CLAUDE_CONFIG_DIR and recorded
+    // harness state. This is a hard safety boundary: test projection I/O stays beneath the
+    // explicitly marked DENJU_TEST_HOME and can never reach a developer's real harness roots.
+    ResolvedHarnessRoots {
+        codex_root: paths.home.join(".agents/skills/denju"),
+        claude_root: paths.home.join(".claude/skills"),
+    }
 }
 
 pub fn resolve_harness_roots_for(
@@ -193,5 +206,22 @@ mod tests {
             resolve_harness_roots_for(&paths, None, &HarnessEnvironment::default()),
             Err(HarnessError::DuplicateCodexProjections(_))
         ));
+    }
+
+    #[test]
+    fn isolated_test_roots_ignore_custom_real_harness_shapes() {
+        let home = tempdir().unwrap();
+        let paths = LocalPaths::from_home(home.path().to_owned());
+        let isolated = isolated_test_harness_roots(&paths);
+        assert_eq!(
+            isolated.codex_root,
+            home.path().join(".agents/skills/denju")
+        );
+        assert_eq!(isolated.claude_root, home.path().join(".claude/skills"));
+        for protected_suffix in [".gg/codex", ".gg/claude", ".codex", ".claude", ".agents"] {
+            let protected = PathBuf::from("/developer-home").join(protected_suffix);
+            assert!(!isolated.codex_root.starts_with(&protected));
+            assert!(!isolated.claude_root.starts_with(&protected));
+        }
     }
 }

@@ -118,13 +118,44 @@ fn subscribe_release_version_does_not_conflict_with_binary_version_flag() {
     assert_eq!(value["error"]["code"], "setup_required");
 }
 
+#[test]
+fn legacy_test_knobs_cannot_run_without_an_explicit_marked_test_home() {
+    let home = tempdir().expect("temporary HOME");
+    let output = Command::new(env!("CARGO_BIN_EXE_denju"))
+        .args(["--json", "setup", "--registry", "http://127.0.0.1:9"])
+        .env("HOME", home.path())
+        .env("DENJU_TEST_FILE_CREDENTIALS", "1")
+        .env_remove(denju_local::TEST_HOME_ENV)
+        .output()
+        .expect("run denju setup");
+    assert_eq!(output.status.code(), Some(1));
+    assert!(stderr(&output).is_empty());
+    let value: Value = serde_json::from_str(stdout(&output).trim()).expect("valid JSON error");
+    assert_eq!(value["ok"], false);
+    assert_eq!(value["error"]["code"], "local_state");
+    assert!(
+        value["error"]["message"]
+            .as_str()
+            .expect("error message")
+            .contains("DENJU_TEST_HOME")
+    );
+    assert!(!home.path().join(".denju").exists());
+}
+
 fn denju(args: &[&str]) -> Output {
     let home = tempdir().expect("isolated test home");
+    std::fs::write(
+        home.path().join(denju_local::TEST_HOME_MARKER),
+        b"isolated\n",
+    )
+    .expect("mark isolated test home");
     Command::new(env!("CARGO_BIN_EXE_denju"))
         .args(args)
-        .env("HOME", home.path())
-        .env("CODEX_HOME", ".codex")
-        .env("CLAUDE_CONFIG_DIR", ".claude")
+        .env(denju_local::TEST_HOME_ENV, home.path())
+        // Deliberately poison inherited harness overrides. DENJU_TEST_HOME must make these
+        // irrelevant so tests can never project into a developer's custom real roots.
+        .env("CODEX_HOME", "/developer-home/.gg/codex")
+        .env("CLAUDE_CONFIG_DIR", "/developer-home/.gg/claude")
         .env_remove("DENJU_TEST_FILE_CREDENTIALS")
         .env_remove("DENJU_TEST_SERVICE_INSTALL_ONLY")
         .env_remove("DENJU_DAEMON_ONCE")
