@@ -6,6 +6,7 @@ mod identity;
 mod ingest;
 mod mutation;
 mod public;
+mod release;
 mod workspace;
 
 pub use api::{
@@ -28,12 +29,18 @@ pub use ingest::{
 pub use mutation::{
     IdentityMutationDomain, RequestHash, RequestHashError, SubscriptionMutationKind,
     create_installation_request_hash, identity_mutation_request_hash,
-    private_revision_request_hash, private_skill_import_request_hash, subscription_request_hash,
+    private_revision_request_hash, private_skill_import_request_hash, publish_skill_request_hash,
+    restore_skill_request_hash, subscription_request_hash,
 };
 pub use public::{
     PublicSkill, PublicSkillDetail, PublicSkillManifest, PublicSkillManifestEntry,
     PublicSkillSearchResponse, SnapshotDownload, SubscribedSkill, SubscriptionCatalog,
     SubscriptionMutationRequest, SubscriptionMutationResponse,
+};
+pub use release::{
+    DirtyResource, PublishSkillRequest, PublishSkillResponse, RestoreSkillRequest,
+    RestoreSkillResponse, SkillHistoryResponse, SkillRelease, SkillRevisionDetail,
+    SkillRevisionSummary, SyncHint, SyncKnownResource, SyncReconcileRequest, SyncReconcileResponse,
 };
 pub use workspace::{
     PrivateRevisionCommitRequest, PrivateRevisionPrepareResponse, PrivateRevisionRequest,

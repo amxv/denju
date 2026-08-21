@@ -27,8 +27,8 @@ pub use harness::{
     resolve_harness_roots_for,
 };
 pub use materialize::{
-    DesiredSkillMaterialization, MaterializationError, materialize_skill_snapshot,
-    recover_materializations, remove_canonical_skill,
+    DesiredSkillMaterialization, MaterializationError, export_skill_snapshot,
+    materialize_skill_snapshot, recover_materializations, remove_canonical_skill,
 };
 pub use paths::{
     LocalPathError, LocalPaths, create_native_directory_link, ensure_local_layout,

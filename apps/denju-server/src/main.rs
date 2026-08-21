@@ -1,21 +1,25 @@
 use std::{
+    collections::BTreeMap,
+    convert::Infallible,
     fs,
     net::SocketAddr,
     path::{Path, PathBuf},
     process::ExitCode,
     sync::Arc,
+    time::Duration,
 };
 
 use axum::{
     Json, Router,
     extract::{Query, State},
     http::{HeaderMap, StatusCode, header::AUTHORIZATION},
+    response::sse::{Event, KeepAlive, Sse},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
 use clap::{Parser, Subcommand};
 use denju_core::{OwnedSkillEntry, build_deterministic_skill_snapshot};
-use denju_registry::{Registry, RegistrySettings};
+use denju_registry::{Registry, RegistrySettings, RegistryWake};
 use denju_wire::{
     AccountDeleteRequest, AccountDeleteResponse, ApiError, ApiErrorCode,
     AutomationTokenCreateRequest, AutomationTokenCreateResponse, AutomationTokenList,
@@ -25,10 +29,13 @@ use denju_wire::{
     LoginRequest, PrivateRevisionCommitRequest, PrivateRevisionPrepareResponse,
     PrivateRevisionRequest, PrivateRevisionResponse, PrivateSkillCatalog,
     PrivateSkillImportCommitRequest, PrivateSkillImportPrepareResponse, PrivateSkillImportRequest,
-    PrivateSkillImportResponse, PublicSkillDetail, PublicSkillSearchResponse, RecoveryResetRequest,
-    RegistryCapabilities, RegistryLimits, SubscriptionCatalog, SubscriptionMutationKind,
-    SubscriptionMutationRequest, SubscriptionMutationResponse,
+    PrivateSkillImportResponse, PublicSkillDetail, PublicSkillSearchResponse, PublishSkillRequest,
+    PublishSkillResponse, RecoveryResetRequest, RegistryCapabilities, RegistryLimits,
+    RestoreSkillRequest, RestoreSkillResponse, SkillHistoryResponse, SkillRevisionDetail,
+    SubscriptionCatalog, SubscriptionMutationKind, SubscriptionMutationRequest,
+    SubscriptionMutationResponse, SyncHint, SyncReconcileRequest, SyncReconcileResponse,
 };
+use futures_util::stream;
 use serde::Deserialize;
 use url::Url;
 use walkdir::WalkDir;
@@ -155,6 +162,10 @@ async fn serve(config: ServerConfig) -> Result<(), String> {
         .route("/v1/account/delete", post(delete_account))
         .route("/v1/search", get(search_public_skills))
         .route("/v1/skills/show", get(show_public_skill))
+        .route("/v1/skills/publish", post(publish_skill))
+        .route("/v1/skills/history", get(skill_history))
+        .route("/v1/skills/revision", get(skill_revision))
+        .route("/v1/skills/restore", post(restore_skill))
         .route("/v1/private-skills", get(private_skills))
         .route(
             "/v1/private-skills/imports/prepare",
@@ -177,6 +188,8 @@ async fn serve(config: ServerConfig) -> Result<(), String> {
             get(subscription_catalog).post(subscribe),
         )
         .route("/v1/subscriptions/remove", post(unsubscribe))
+        .route("/v1/sync/reconcile", post(sync_reconcile))
+        .route("/v1/events", get(events))
         .with_state(registry);
     let listener = tokio::net::TcpListener::bind(config.bind)
         .await
@@ -363,6 +376,66 @@ async fn show_public_skill(
         .map_err(ApiResponseError)
 }
 
+async fn publish_skill(
+    State(registry): State<Arc<Registry>>,
+    headers: HeaderMap,
+    Json(request): Json<PublishSkillRequest>,
+) -> Result<Json<PublishSkillResponse>, ApiResponseError> {
+    let bearer = bearer_token(&headers)?;
+    registry
+        .publish_skill(bearer, &request)
+        .await
+        .map(Json)
+        .map_err(ApiResponseError)
+}
+
+async fn skill_history(
+    State(registry): State<Arc<Registry>>,
+    headers: HeaderMap,
+    Query(query): Query<ShowQuery>,
+) -> Result<Json<SkillHistoryResponse>, ApiResponseError> {
+    registry
+        .skill_history(optional_bearer_token(&headers), &query.locator)
+        .await
+        .map(Json)
+        .map_err(ApiResponseError)
+}
+
+#[derive(Debug, Deserialize)]
+struct RevisionQuery {
+    locator: String,
+    revision: String,
+}
+
+async fn skill_revision(
+    State(registry): State<Arc<Registry>>,
+    headers: HeaderMap,
+    Query(query): Query<RevisionQuery>,
+) -> Result<Json<SkillRevisionDetail>, ApiResponseError> {
+    registry
+        .skill_revision_detail(
+            optional_bearer_token(&headers),
+            &query.locator,
+            &query.revision,
+        )
+        .await
+        .map(Json)
+        .map_err(ApiResponseError)
+}
+
+async fn restore_skill(
+    State(registry): State<Arc<Registry>>,
+    headers: HeaderMap,
+    Json(request): Json<RestoreSkillRequest>,
+) -> Result<Json<RestoreSkillResponse>, ApiResponseError> {
+    let bearer = bearer_token(&headers)?;
+    registry
+        .restore_skill(bearer, &request)
+        .await
+        .map(Json)
+        .map_err(ApiResponseError)
+}
+
 async fn private_skills(
     State(registry): State<Arc<Registry>>,
     headers: HeaderMap,
@@ -465,6 +538,120 @@ async fn subscription_catalog(
         .map_err(ApiResponseError)
 }
 
+async fn sync_reconcile(
+    State(registry): State<Arc<Registry>>,
+    headers: HeaderMap,
+    Json(request): Json<SyncReconcileRequest>,
+) -> Result<Json<SyncReconcileResponse>, ApiResponseError> {
+    let bearer = bearer_token(&headers)?;
+    registry
+        .reconcile_subscriptions(bearer, &request)
+        .await
+        .map(Json)
+        .map_err(ApiResponseError)
+}
+
+async fn events(
+    State(registry): State<Arc<Registry>>,
+    headers: HeaderMap,
+) -> Result<Sse<impl futures_util::Stream<Item = Result<Event, Infallible>>>, ApiResponseError> {
+    let bearer = bearer_token(&headers)?;
+    registry.ensure_wake_listener();
+    let watched = registry
+        .watched_resource_ids(bearer)
+        .await
+        .map_err(ApiResponseError)?;
+    let receiver = registry.subscribe_wakes();
+    let _ = registry.drain_outbox(256).await;
+    let event_stream = stream::unfold((receiver, watched), |(mut receiver, watched)| async move {
+        loop {
+            match next_sync_hint(&mut receiver, &watched).await {
+                Some(hint) => {
+                    let event = Event::default()
+                        .event("sync")
+                        .json_data(hint)
+                        .unwrap_or_else(|_| {
+                            Event::default()
+                                .event("sync")
+                                .data("{\"kind\":\"resync_all\"}")
+                        });
+                    return Some((Ok(event), (receiver, watched)));
+                }
+                None if receiver.is_closed() => return None,
+                None => continue,
+            }
+        }
+    });
+    Ok(Sse::new(event_stream).keep_alive(
+        KeepAlive::new()
+            .interval(Duration::from_secs(15))
+            .text("keepalive"),
+    ))
+}
+
+async fn next_sync_hint(
+    receiver: &mut tokio::sync::broadcast::Receiver<RegistryWake>,
+    watched: &std::collections::BTreeSet<uuid::Uuid>,
+) -> Option<SyncHint> {
+    const MAX_DIRTY: usize = 64;
+    let first = match receiver.recv().await {
+        Ok(wake) => wake,
+        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+            return Some(SyncHint::ResyncAll);
+        }
+        Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
+    };
+    if matches!(first, RegistryWake::ResyncAll) {
+        return Some(SyncHint::ResyncAll);
+    }
+    let mut dirty = BTreeMap::<uuid::Uuid, u64>::new();
+    if let RegistryWake::Resource {
+        resource_id,
+        generation,
+    } = first
+        && watched.contains(&resource_id)
+    {
+        dirty.insert(resource_id, generation);
+    }
+    loop {
+        match receiver.try_recv() {
+            Ok(RegistryWake::ResyncAll) => return Some(SyncHint::ResyncAll),
+            Ok(RegistryWake::Resource {
+                resource_id,
+                generation,
+            }) => {
+                if watched.contains(&resource_id) {
+                    dirty
+                        .entry(resource_id)
+                        .and_modify(|current| *current = (*current).max(generation))
+                        .or_insert(generation);
+                    if dirty.len() > MAX_DIRTY {
+                        return Some(SyncHint::ResyncAll);
+                    }
+                }
+            }
+            Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {
+                return Some(SyncHint::ResyncAll);
+            }
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty) => break,
+            Err(tokio::sync::broadcast::error::TryRecvError::Closed) => break,
+        }
+    }
+    if dirty.is_empty() {
+        None
+    } else {
+        Some(SyncHint::Dirty {
+            resources: dirty
+                .into_iter()
+                .map(|(resource_id, generation)| denju_wire::DirtyResource {
+                    resource_id: resource_id.to_string(),
+                    generation,
+                })
+                .collect(),
+        })
+    }
+}
+
 fn bearer_token(headers: &HeaderMap) -> Result<&str, ApiResponseError> {
     headers
         .get(AUTHORIZATION)
@@ -477,6 +664,14 @@ fn bearer_token(headers: &HeaderMap) -> Result<&str, ApiResponseError> {
                 "installation credential required",
             ))
         })
+}
+
+fn optional_bearer_token(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get(AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .filter(|value| !value.is_empty())
 }
 
 async fn health_live() -> StatusCode {
@@ -534,6 +729,7 @@ struct ServerConfig {
     bind: SocketAddr,
     public_origin: Url,
     database_url: String,
+    database_listen_url: Option<String>,
     s3_bucket: String,
     s3_endpoint: Url,
     s3_region: String,
@@ -550,6 +746,9 @@ impl ServerConfig {
             .map_err(|error| format!("invalid DENJU_BIND: {error}"))?;
         let public_origin = parse_http_url("DENJU_PUBLIC_URL", &required_env("DENJU_PUBLIC_URL")?)?;
         let database_url = required_env("DENJU_DATABASE_URL")?;
+        let database_listen_url = std::env::var("DENJU_DATABASE_DIRECT_URL")
+            .ok()
+            .filter(|value| !value.is_empty());
         let s3_bucket = required_env("DENJU_S3_BUCKET")?;
         let s3_endpoint = parse_http_url("DENJU_S3_ENDPOINT", &required_env("DENJU_S3_ENDPOINT")?)?;
         let s3_region = required_env("DENJU_S3_REGION")?;
@@ -566,6 +765,7 @@ impl ServerConfig {
             bind,
             public_origin,
             database_url,
+            database_listen_url,
             s3_bucket,
             s3_endpoint,
             s3_region,
@@ -587,6 +787,7 @@ impl ServerConfig {
     fn registry_settings(&self) -> RegistrySettings {
         RegistrySettings {
             database_url: self.database_url.clone(),
+            database_listen_url: self.database_listen_url.clone(),
             public_origin: self.public_origin.clone(),
             object_store_endpoint: self.s3_endpoint.clone(),
             object_store_bucket: self.s3_bucket.clone(),
@@ -694,4 +895,69 @@ fn env_u64(name: &str, default: u64) -> Result<u64, String> {
 
 fn build_version() -> &'static str {
     option_env!("DENJU_BUILD_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeSet;
+    use tokio::sync::broadcast;
+
+    #[tokio::test]
+    async fn sync_hints_coalesce_duplicate_resources_and_filter_unwatched_resources() {
+        let (sender, mut receiver) = broadcast::channel(16);
+        let watched_id = uuid::Uuid::now_v7();
+        let unrelated_id = uuid::Uuid::now_v7();
+        let watched = BTreeSet::from([watched_id]);
+        sender
+            .send(RegistryWake::Resource {
+                resource_id: watched_id,
+                generation: 2,
+            })
+            .unwrap();
+        sender
+            .send(RegistryWake::Resource {
+                resource_id: unrelated_id,
+                generation: 99,
+            })
+            .unwrap();
+        sender
+            .send(RegistryWake::Resource {
+                resource_id: watched_id,
+                generation: 4,
+            })
+            .unwrap();
+
+        let hint = next_sync_hint(&mut receiver, &watched).await.unwrap();
+        assert_eq!(
+            hint,
+            SyncHint::Dirty {
+                resources: vec![denju_wire::DirtyResource {
+                    resource_id: watched_id.to_string(),
+                    generation: 4,
+                }],
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn sync_hint_overflow_degrades_to_resync_all() {
+        let (sender, mut receiver) = broadcast::channel(128);
+        let watched = (0..65)
+            .map(|_| uuid::Uuid::now_v7())
+            .collect::<BTreeSet<_>>();
+        for resource_id in &watched {
+            sender
+                .send(RegistryWake::Resource {
+                    resource_id: *resource_id,
+                    generation: 1,
+                })
+                .unwrap();
+        }
+
+        assert_eq!(
+            next_sync_hint(&mut receiver, &watched).await,
+            Some(SyncHint::ResyncAll)
+        );
+    }
 }

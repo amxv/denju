@@ -2,9 +2,14 @@
 
 mod identity;
 mod ingest;
+mod release;
 mod workspace;
 
-use std::{str::FromStr, time::Duration};
+use std::{
+    str::FromStr,
+    sync::{Arc, atomic::AtomicBool},
+    time::Duration,
+};
 
 use aws_credential_types::Credentials;
 use aws_sdk_s3::{
@@ -24,17 +29,21 @@ use denju_wire::{
 use sha2::{Digest, Sha256};
 use sqlx::{PgPool, postgres::PgPoolOptions};
 use thiserror::Error;
+use tokio::sync::broadcast;
 use url::Url;
 use uuid::Uuid;
 
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
-const EXPECTED_SCHEMA_VERSION: i64 = 5;
+const EXPECTED_SCHEMA_VERSION: i64 = 6;
 const SNAPSHOT_URL_TTL: Duration = Duration::from_secs(5 * 60);
 const STAGING_URL_TTL: Duration = Duration::from_secs(10 * 60);
 
 #[derive(Debug, Clone)]
 pub struct RegistrySettings {
     pub database_url: String,
+    /// Optional session-mode/direct PostgreSQL URL used only for LISTEN/NOTIFY. Never point
+    /// this at a transaction-mode pooler such as Neon's pooled endpoint.
+    pub database_listen_url: Option<String>,
     pub public_origin: Url,
     pub object_store_endpoint: Url,
     pub object_store_bucket: String,
@@ -51,6 +60,15 @@ pub struct Registry {
     objects: ObjectStore,
     public_origin: Url,
     limits: RegistryLimits,
+    wake_tx: broadcast::Sender<RegistryWake>,
+    database_listen_url: Option<String>,
+    wake_listener_started: Arc<AtomicBool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RegistryWake {
+    Resource { resource_id: Uuid, generation: u64 },
+    ResyncAll,
 }
 
 impl Registry {
@@ -60,12 +78,20 @@ impl Registry {
             .connect(&settings.database_url)
             .await?;
         let objects = ObjectStore::new(&settings);
+        let (wake_tx, _) = broadcast::channel(256);
         Ok(Self {
             pool,
             objects,
             public_origin: settings.public_origin,
             limits: settings.limits,
+            wake_tx,
+            database_listen_url: settings.database_listen_url,
+            wake_listener_started: Arc::new(AtomicBool::new(false)),
         })
+    }
+
+    pub fn subscribe_wakes(&self) -> broadcast::Receiver<RegistryWake> {
+        self.wake_tx.subscribe()
     }
 
     pub async fn migrate(database_url: &str) -> Result<(), RegistryError> {
@@ -346,6 +372,7 @@ impl Registry {
             &request.operation_id,
             &request.resource_id,
             request.expected_generation,
+            request.release_version,
         )
         .map_err(|error| ApiError::new(ApiErrorCode::InvalidRequestHash, error.to_string()))?;
         if supplied_hash != expected_hash {
@@ -358,8 +385,8 @@ impl Registry {
         let mut tx = self.pool.begin().await.map_err(internal_api_error)?;
         let replay = match subject {
             identity::SubscriptionSubject::Installation(installation_id) => {
-                sqlx::query_as::<_, (Vec<u8>, Uuid, bool)>(
-                    "SELECT request_hash, resource_id, subscribed FROM subscription_operations \
+                sqlx::query_as::<_, (Vec<u8>, Uuid, bool, Option<i64>)>(
+                    "SELECT request_hash, resource_id, subscribed, pinned_release_version FROM subscription_operations \
                      WHERE installation_id = $1 AND operation_id = $2",
                 )
                 .bind(installation_id)
@@ -370,9 +397,9 @@ impl Registry {
             }
             identity::SubscriptionSubject::User(user_id) => sqlx::query_as::<
                 _,
-                (Vec<u8>, Uuid, bool),
+                (Vec<u8>, Uuid, bool, Option<i64>),
             >(
-                "SELECT request_hash, resource_id, subscribed FROM account_subscription_operations \
+                "SELECT request_hash, resource_id, subscribed, pinned_release_version FROM account_subscription_operations \
                      WHERE user_id = $1 AND operation_id = $2",
             )
             .bind(user_id)
@@ -381,7 +408,7 @@ impl Registry {
             .await
             .map_err(internal_api_error)?,
         };
-        if let Some((stored_hash, stored_resource, subscribed)) = replay {
+        if let Some((stored_hash, stored_resource, subscribed, pinned_release_version)) = replay {
             if stored_hash.as_slice() != supplied_hash.as_bytes()
                 || stored_resource != resource_id.as_uuid()
             {
@@ -394,6 +421,10 @@ impl Registry {
             return Ok(SubscriptionMutationResponse {
                 resource_id: stored_resource.to_string(),
                 subscribed,
+                pinned_release_version: pinned_release_version
+                    .map(u64::try_from)
+                    .transpose()
+                    .map_err(|_| ApiError::new(ApiErrorCode::Internal, "stored pin is invalid"))?,
             });
         }
 
@@ -414,6 +445,39 @@ impl Registry {
             ));
         }
 
+        if kind == SubscriptionMutationKind::Unsubscribe && request.release_version.is_some() {
+            return Err(ApiError::new(
+                ApiErrorCode::InvalidRequest,
+                "unsubscribe does not accept a release pin",
+            ));
+        }
+        let pinned_release_version = request
+            .release_version
+            .map(i64::try_from)
+            .transpose()
+            .map_err(|_| {
+                ApiError::new(
+                    ApiErrorCode::InvalidRequest,
+                    "release version exceeds database range",
+                )
+            })?;
+        if let Some(version) = pinned_release_version {
+            let exists = sqlx::query_scalar::<_, bool>(
+                "SELECT EXISTS(SELECT 1 FROM skill_releases WHERE resource_id=$1 AND version=$2)",
+            )
+            .bind(resource_id.as_uuid())
+            .bind(version)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(internal_api_error)?;
+            if !exists {
+                return Err(ApiError::new(
+                    ApiErrorCode::NotFound,
+                    "requested release does not exist",
+                ));
+            }
+        }
+
         let subscribed = kind == SubscriptionMutationKind::Subscribe;
         match (subject, kind) {
             (
@@ -421,11 +485,13 @@ impl Registry {
                 SubscriptionMutationKind::Subscribe,
             ) => {
                 sqlx::query(
-                    "INSERT INTO installation_subscriptions (installation_id, resource_id) \
-                     VALUES ($1, $2) ON CONFLICT DO NOTHING",
+                    "INSERT INTO installation_subscriptions (installation_id, resource_id, pinned_release_version) \
+                     VALUES ($1, $2, $3) ON CONFLICT(installation_id,resource_id) DO UPDATE \
+                     SET pinned_release_version=excluded.pinned_release_version",
                 )
                 .bind(installation_id)
                 .bind(resource_id.as_uuid())
+                .bind(pinned_release_version)
                 .execute(&mut *tx)
                 .await
                 .map_err(internal_api_error)?;
@@ -445,10 +511,12 @@ impl Registry {
             }
             (identity::SubscriptionSubject::User(user_id), SubscriptionMutationKind::Subscribe) => {
                 sqlx::query(
-                    "INSERT INTO account_subscriptions (user_id, resource_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+                    "INSERT INTO account_subscriptions (user_id, resource_id, pinned_release_version) VALUES ($1, $2, $3) \
+                     ON CONFLICT(user_id,resource_id) DO UPDATE SET pinned_release_version=excluded.pinned_release_version",
                 )
                 .bind(user_id)
                 .bind(resource_id.as_uuid())
+                .bind(pinned_release_version)
                 .execute(&mut *tx)
                 .await
                 .map_err(internal_api_error)?;
@@ -475,8 +543,8 @@ impl Registry {
             identity::SubscriptionSubject::Installation(installation_id) => {
                 sqlx::query(
                     "INSERT INTO subscription_operations \
-                     (installation_id, operation_id, request_hash, action, resource_id, subscribed) \
-                     VALUES ($1, $2, $3, $4, $5, $6)",
+                     (installation_id, operation_id, request_hash, action, resource_id, subscribed, pinned_release_version) \
+                     VALUES ($1, $2, $3, $4, $5, $6, $7)",
                 )
                 .bind(installation_id)
                 .bind(operation_id.as_uuid())
@@ -484,6 +552,7 @@ impl Registry {
                 .bind(action)
                 .bind(resource_id.as_uuid())
                 .bind(subscribed)
+                .bind(pinned_release_version)
                 .execute(&mut *tx)
                 .await
                 .map_err(internal_api_error)?;
@@ -491,8 +560,8 @@ impl Registry {
             identity::SubscriptionSubject::User(user_id) => {
                 sqlx::query(
                     "INSERT INTO account_subscription_operations \
-                     (user_id, operation_id, request_hash, action, resource_id, subscribed) \
-                     VALUES ($1, $2, $3, $4, $5, $6)",
+                     (user_id, operation_id, request_hash, action, resource_id, subscribed, pinned_release_version) \
+                     VALUES ($1, $2, $3, $4, $5, $6, $7)",
                 )
                 .bind(user_id)
                 .bind(operation_id.as_uuid())
@@ -500,16 +569,22 @@ impl Registry {
                 .bind(action)
                 .bind(resource_id.as_uuid())
                 .bind(subscribed)
+                .bind(pinned_release_version)
                 .execute(&mut *tx)
                 .await
                 .map_err(internal_api_error)?;
             }
         }
         tx.commit().await.map_err(internal_api_error)?;
+        // Subscription membership changes the per-connection reverse watch set. Wake local
+        // listeners without exposing any resource ID so a long-lived daemon reconnects and
+        // rebuilds that disposable index from authoritative subscription rows.
+        let _ = self.wake_tx.send(RegistryWake::ResyncAll);
 
         Ok(SubscriptionMutationResponse {
             resource_id: resource_id.to_string(),
             subscribed,
+            pinned_release_version: request.release_version,
         })
     }
 
@@ -522,11 +597,11 @@ impl Registry {
             identity::SubscriptionSubject::Installation(installation_id) => {
                 sqlx::query_as::<_, SubscriptionRow>(
                     "SELECT r.id, n.slug AS owner, r.slug AS name, r.description, r.generation, sr.version, sr.revision_id, \
-                            sr.manifest_json, sr.snapshot_key, sr.snapshot_sha256, sr.snapshot_size \
+                            sr.manifest_json, sr.snapshot_key, sr.snapshot_sha256, sr.snapshot_size, s.pinned_release_version \
                      FROM installation_subscriptions s \
                      JOIN resources r ON r.id = s.resource_id \
                      JOIN namespaces n ON n.id = r.owner_namespace_id \
-                     JOIN skill_releases sr ON sr.resource_id = r.id AND sr.version = r.latest_release_version \
+                     JOIN skill_releases sr ON sr.resource_id = r.id AND sr.version = COALESCE(s.pinned_release_version,r.latest_release_version) \
                      WHERE s.installation_id = $1 AND r.visibility = 'public' AND r.kind = 'skill' \
                      ORDER BY n.slug, r.slug, r.id",
                 )
@@ -538,11 +613,11 @@ impl Registry {
             identity::SubscriptionSubject::User(user_id) => {
                 sqlx::query_as::<_, SubscriptionRow>(
                     "SELECT r.id, n.slug AS owner, r.slug AS name, r.description, r.generation, sr.version, sr.revision_id, \
-                            sr.manifest_json, sr.snapshot_key, sr.snapshot_sha256, sr.snapshot_size \
+                            sr.manifest_json, sr.snapshot_key, sr.snapshot_sha256, sr.snapshot_size, s.pinned_release_version \
                      FROM account_subscriptions s \
                      JOIN resources r ON r.id = s.resource_id \
                      JOIN namespaces n ON n.id = r.owner_namespace_id \
-                     JOIN skill_releases sr ON sr.resource_id = r.id AND sr.version = r.latest_release_version \
+                     JOIN skill_releases sr ON sr.resource_id = r.id AND sr.version = COALESCE(s.pinned_release_version,r.latest_release_version) \
                      WHERE s.user_id = $1 AND r.visibility = 'public' AND r.kind = 'skill' \
                      ORDER BY n.slug, r.slug, r.id",
                 )
@@ -681,6 +756,29 @@ impl Registry {
         .bind(snapshot_sha256.as_slice())
         .bind(snapshot_size)
         .bind(author_id.as_uuid())
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "INSERT INTO revisions (revision_id,root_tree_id,author_principal_id,operation_id) \
+             VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING",
+        )
+        .bind(revision_id.as_bytes().as_slice())
+        .bind(snapshot.manifest().root_tree().as_bytes().as_slice())
+        .bind(author_id.as_uuid())
+        .bind(operation_id.as_uuid())
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "INSERT INTO resource_revision_snapshots \
+             (resource_id,revision_id,manifest_json,snapshot_key,snapshot_sha256,snapshot_size) \
+             VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING",
+        )
+        .bind(resource_id.as_uuid())
+        .bind(revision_id.as_bytes().as_slice())
+        .bind(serde_json::to_value(&manifest)?)
+        .bind(&snapshot_key)
+        .bind(snapshot_sha256.as_slice())
+        .bind(snapshot_size)
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
@@ -916,6 +1014,7 @@ struct SubscriptionRow {
     snapshot_key: String,
     snapshot_sha256: Vec<u8>,
     snapshot_size: i64,
+    pinned_release_version: Option<i64>,
 }
 
 impl SubscriptionRow {
@@ -948,6 +1047,7 @@ impl SubscriptionRow {
                 size_bytes,
                 url: snapshot_url,
             },
+            following_latest: self.pinned_release_version.is_none(),
         })
     }
 }

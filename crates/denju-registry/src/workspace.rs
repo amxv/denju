@@ -114,7 +114,7 @@ impl Registry {
         let current = sqlx::query_as::<_, (Uuid, i64, Vec<u8>)>(
             "SELECT r.owner_namespace_id,r.generation,w.revision_id \
              FROM resources r JOIN skill_private_workspaces w ON w.resource_id=r.id \
-             WHERE r.id=$1 AND r.kind='skill' AND r.visibility='private' FOR UPDATE",
+             WHERE r.id=$1 AND r.kind='skill' FOR UPDATE",
         )
         .bind(resource_id.as_uuid())
         .fetch_optional(&mut *tx)
@@ -309,7 +309,7 @@ impl Registry {
         }
 
         let resource = sqlx::query_as::<_, (String, Uuid)>(
-            "SELECT slug,owner_namespace_id FROM resources WHERE id=$1 AND kind='skill' AND visibility='private'",
+            "SELECT slug,owner_namespace_id FROM resources WHERE id=$1 AND kind='skill'",
         )
         .bind(operation.resource_id)
         .fetch_optional(&self.pool)
@@ -386,7 +386,7 @@ impl Registry {
         let current = sqlx::query_as::<_, (Uuid, i64, Vec<u8>)>(
             "SELECT r.owner_namespace_id,r.generation,w.revision_id \
              FROM resources r JOIN skill_private_workspaces w ON w.resource_id=r.id \
-             WHERE r.id=$1 AND r.kind='skill' AND r.visibility='private' FOR UPDATE",
+             WHERE r.id=$1 AND r.kind='skill' FOR UPDATE",
         )
         .bind(operation.resource_id)
         .fetch_optional(&mut *tx)
@@ -488,6 +488,28 @@ impl Registry {
             ApiError::new(ApiErrorCode::Internal, "snapshot size exceeds database range")
         })?)
         .bind(operation.resource_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(internal_api_error)?;
+        sqlx::query(
+            "INSERT INTO resource_revision_snapshots \
+             (resource_id,revision_id,manifest_json,snapshot_key,snapshot_sha256,snapshot_size) \
+             VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING",
+        )
+        .bind(operation.resource_id)
+        .bind(revision_id.as_slice())
+        .bind(
+            serde_json::to_value(&manifest_wire)
+                .map_err(|error| ApiError::new(ApiErrorCode::Internal, error.to_string()))?,
+        )
+        .bind(&snapshot_key)
+        .bind(snapshot_sha.as_bytes().as_slice())
+        .bind(i64::try_from(snapshot.bytes().len()).map_err(|_| {
+            ApiError::new(
+                ApiErrorCode::Internal,
+                "snapshot size exceeds database range",
+            )
+        })?)
         .execute(&mut *tx)
         .await
         .map_err(internal_api_error)?;

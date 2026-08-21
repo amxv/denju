@@ -1058,8 +1058,10 @@ version = "0.0.0"
 dependencies = [
  "denju-core",
  "denju-wire",
+ "futures-util",
  "reqwest",
  "serde",
+ "serde_json",
  "thiserror",
  "url",
  "uuid",
@@ -1124,6 +1126,7 @@ dependencies = [
  "sha2 0.10.9",
  "sqlx",
  "thiserror",
+ "tokio",
  "url",
  "uuid",
 ]
@@ -1137,11 +1140,13 @@ dependencies = [
  "denju-core",
  "denju-registry",
  "denju-wire",
+ "futures-util",
  "serde",
  "serde_json",
  "sqlx",
  "tokio",
  "url",
+ "uuid",
  "walkdir",
 ]
 
@@ -2614,6 +2619,7 @@ dependencies = [
  "base64",
  "bytes",
  "futures-core",
+ "futures-util",
  "http 1.5.0",
  "http-body 1.1.0",
  "http-body-util",
@@ -2634,12 +2640,14 @@ dependencies = [
  "sync_wrapper",
  "tokio",
  "tokio-rustls 0.26.4",
+ "tokio-util",
  "tower",
  "tower-http",
  "tower-service",
  "url",
  "wasm-bindgen",
  "wasm-bindgen-futures",
+ "wasm-streams",
  "web-sys",
 ]
 
@@ -3875,6 +3883,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7ef64dbcc55df09c7e5a46182d181c2cfa3e925f3da937ea764728b4bbb9dcbf"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "wasm-streams"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9d1ec4f6517c9e11ae630e200b2b65d193279042e28edd4a2cda233e46670bbb"
+dependencies = [
+ "futures-util",
+ "js-sys",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
 ]
 
 [[package]]

@@ -108,6 +108,16 @@ fn json_identity_commands_never_prompt_for_human_secrets() {
     }
 }
 
+#[test]
+fn subscribe_release_version_does_not_conflict_with_binary_version_flag() {
+    let output = denju(&["--json", "subscribe", "@alice/review", "--version", "1"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(stderr(&output).is_empty());
+    let value: Value = serde_json::from_str(stdout(&output).trim()).expect("valid JSON error");
+    assert_eq!(value["ok"], false);
+    assert_eq!(value["error"]["code"], "setup_required");
+}
+
 fn denju(args: &[&str]) -> Output {
     let home = tempdir().expect("isolated test home");
     Command::new(env!("CARGO_BIN_EXE_denju"))

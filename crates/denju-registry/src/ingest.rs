@@ -486,6 +486,28 @@ impl Registry {
         .execute(&mut *tx)
         .await
         .map_err(internal_api_error)?;
+        sqlx::query(
+            "INSERT INTO resource_revision_snapshots \
+             (resource_id,revision_id,manifest_json,snapshot_key,snapshot_sha256,snapshot_size) \
+             VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING",
+        )
+        .bind(operation.resource_id)
+        .bind(revision_id.as_slice())
+        .bind(
+            serde_json::to_value(&manifest_wire)
+                .map_err(|error| ApiError::new(ApiErrorCode::Internal, error.to_string()))?,
+        )
+        .bind(&snapshot_key)
+        .bind(snapshot_sha.as_bytes().as_slice())
+        .bind(i64::try_from(snapshot.bytes().len()).map_err(|_| {
+            ApiError::new(
+                ApiErrorCode::Internal,
+                "snapshot size exceeds database range",
+            )
+        })?)
+        .execute(&mut *tx)
+        .await
+        .map_err(internal_api_error)?;
         for blob in expected_blobs.keys() {
             sqlx::query(
                 "INSERT INTO resource_blob_reachability (resource_id,blob_id,reference_count) \
@@ -538,7 +560,7 @@ impl Registry {
              FROM resources r \
              JOIN namespaces n ON n.id=r.owner_namespace_id \
              JOIN skill_private_workspaces w ON w.resource_id=r.id \
-             WHERE r.owner_namespace_id=$1 AND r.kind='skill' AND r.visibility='private' \
+             WHERE r.owner_namespace_id=$1 AND r.kind='skill' \
              ORDER BY r.slug,r.id",
         )
         .bind(authority.namespace_id)

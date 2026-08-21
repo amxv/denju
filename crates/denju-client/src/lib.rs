@@ -12,10 +12,13 @@ use denju_wire::{
     PrivateRevisionCommitRequest, PrivateRevisionPrepareResponse, PrivateRevisionRequest,
     PrivateRevisionResponse, PrivateSkillCatalog, PrivateSkillImportCommitRequest,
     PrivateSkillImportPrepareResponse, PrivateSkillImportRequest, PrivateSkillImportResponse,
-    PublicSkillDetail, PublicSkillSearchResponse, RecoveryResetRequest, RegistryCapabilities,
-    SnapshotDownload, StagedBlobUpload, SubscriptionCatalog, SubscriptionMutationRequest,
-    SubscriptionMutationResponse,
+    PublicSkillDetail, PublicSkillSearchResponse, PublishSkillRequest, PublishSkillResponse,
+    RecoveryResetRequest, RegistryCapabilities, RestoreSkillRequest, RestoreSkillResponse,
+    SkillHistoryResponse, SkillRevisionDetail, SnapshotDownload, StagedBlobUpload,
+    SubscriptionCatalog, SubscriptionMutationRequest, SubscriptionMutationResponse, SyncHint,
+    SyncReconcileRequest, SyncReconcileResponse,
 };
+use futures_util::StreamExt;
 use reqwest::{Client, RequestBuilder, StatusCode};
 use thiserror::Error;
 use url::Url;
@@ -174,6 +177,56 @@ impl RegistryClient {
         decode_response(response).await
     }
 
+    pub async fn publish_skill(
+        &self,
+        request: &PublishSkillRequest,
+    ) -> Result<PublishSkillResponse, ClientError> {
+        self.authenticated_post_json("v1/skills/publish", request)
+            .await
+    }
+
+    pub async fn skill_history(&self, locator: &str) -> Result<SkillHistoryResponse, ClientError> {
+        let builder = self
+            .http
+            .get(self.endpoint("v1/skills/history")?)
+            .query(&[("locator", locator)]);
+        let response = if self.bearer.is_some() {
+            self.with_auth(builder)?
+        } else {
+            builder
+        }
+        .send()
+        .await?;
+        decode_response(response).await
+    }
+
+    pub async fn skill_revision(
+        &self,
+        locator: &str,
+        revision: &str,
+    ) -> Result<SkillRevisionDetail, ClientError> {
+        let builder = self
+            .http
+            .get(self.endpoint("v1/skills/revision")?)
+            .query(&[("locator", locator), ("revision", revision)]);
+        let response = if self.bearer.is_some() {
+            self.with_auth(builder)?
+        } else {
+            builder
+        }
+        .send()
+        .await?;
+        decode_response(response).await
+    }
+
+    pub async fn restore_skill(
+        &self,
+        request: &RestoreSkillRequest,
+    ) -> Result<RestoreSkillResponse, ClientError> {
+        self.authenticated_post_json("v1/skills/restore", request)
+            .await
+    }
+
     pub async fn subscribe(
         &self,
         request: &SubscriptionMutationRequest,
@@ -196,6 +249,50 @@ impl RegistryClient {
             .send()
             .await?;
         decode_response(response).await
+    }
+
+    pub async fn reconcile_subscriptions(
+        &self,
+        request: &SyncReconcileRequest,
+    ) -> Result<SyncReconcileResponse, ClientError> {
+        self.authenticated_post_json("v1/sync/reconcile", request)
+            .await
+    }
+
+    pub async fn wait_for_sync_hint(&self) -> Result<SyncHint, ClientError> {
+        let response = self
+            .with_auth(self.http.get(self.endpoint("v1/events")?))?
+            .send()
+            .await?;
+        if !response.status().is_success() {
+            return Err(decode_error_response(response).await);
+        }
+
+        let mut stream = response.bytes_stream();
+        let mut buffer = Vec::new();
+        while let Some(chunk) = stream.next().await {
+            buffer.extend_from_slice(&chunk?);
+            while let Some((end, delimiter_len)) = find_sse_record_end(&buffer) {
+                let record = buffer[..end].to_vec();
+                buffer.drain(..end + delimiter_len);
+                let text = std::str::from_utf8(&record)
+                    .map_err(|error| ClientError::InvalidEventStream(error.to_string()))?;
+                let data = text
+                    .lines()
+                    .filter_map(|line| line.strip_prefix("data:"))
+                    .map(str::trim_start)
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                if data.is_empty() {
+                    continue;
+                }
+                return serde_json::from_str(&data)
+                    .map_err(|error| ClientError::InvalidEventStream(error.to_string()));
+            }
+        }
+        Err(ClientError::Unavailable(
+            "registry event stream closed before a sync hint arrived".to_owned(),
+        ))
     }
 
     pub async fn prepare_private_skill_import(
@@ -405,6 +502,33 @@ async fn decode_empty_response(response: reqwest::Response) -> Result<(), Client
     }
 }
 
+async fn decode_error_response(response: reqwest::Response) -> ClientError {
+    let status = response.status();
+    if let Ok(api_error) = response.json::<ApiError>().await {
+        ClientError::Registry(api_error)
+    } else if status == StatusCode::SERVICE_UNAVAILABLE {
+        ClientError::Unavailable("registry is temporarily unavailable".to_owned())
+    } else {
+        ClientError::UnexpectedStatus(status)
+    }
+}
+
+fn find_sse_record_end(bytes: &[u8]) -> Option<(usize, usize)> {
+    let crlf = bytes
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .map(|index| (index, 4));
+    let lf = bytes
+        .windows(2)
+        .position(|window| window == b"\n\n")
+        .map(|index| (index, 2));
+    match (crlf, lf) {
+        (Some(left), Some(right)) => Some(if left.0 <= right.0 { left } else { right }),
+        (Some(value), None) | (None, Some(value)) => Some(value),
+        (None, None) => None,
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum ClientError {
     #[error("invalid registry origin: {0}")]
@@ -423,4 +547,6 @@ pub enum ClientError {
     InvalidDownloadUrl(String),
     #[error("downloaded content failed verification: {0}")]
     ContentMismatch(String),
+    #[error("invalid registry event stream: {0}")]
+    InvalidEventStream(String),
 }

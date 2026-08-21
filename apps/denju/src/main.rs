@@ -1,6 +1,7 @@
 mod identity;
 mod owned;
 mod public;
+mod release;
 mod setup;
 mod workspace;
 
@@ -10,6 +11,7 @@ use clap::{ArgAction, Parser, Subcommand};
 use denju_wire::{
     AutomationTokenList, AutomationTokenRevokeResponse, CliEnvelope, CliError, CliErrorCode,
     DeviceList, DeviceRevokeResponse, IdentityInfo, PublicSkillDetail, PublicSkillSearchResponse,
+    PublishSkillResponse, SkillHistoryResponse,
 };
 use identity::{
     AutomationTokenOutcome, BackupOutcome, ClaimOutcome, DeleteOutcome, LoginOutcome,
@@ -17,6 +19,7 @@ use identity::{
 };
 use owned::ImportOutcome;
 use public::{SubscribeOutcome, SyncOutcome, UnsubscribeOutcome};
+use release::{DiffOutcome, ExportOutcome, RestoreOutcome};
 use serde::Serialize;
 use setup::{DoctorOutcome, Guidance, RuntimeError, SetupOutcome};
 
@@ -34,6 +37,11 @@ Commands:\n\
   search  Search public Agent Skills\n\
   show    Show one public skill\n\
   import  Transfer a local skill into your private Denju workspace\n\
+  publish Publish the current private workspace as a new immutable release\n\
+  history Show private-save and immutable release history\n\
+  diff    Compare two revisions\n\
+  restore Restore an older revision as a new private revision\n\
+  export  Export an accessible revision as an unmanaged directory\n\
   subscribe   Subscribe to a public skill and materialize it\n\
   unsubscribe Remove a direct skill subscription\n\
   sync    Reconcile subscriptions and harness projections\n\
@@ -57,7 +65,7 @@ Run denju with no command for the next useful action.";
 struct Cli {
     #[arg(long, global = true, action = ArgAction::SetTrue)]
     json: bool,
-    #[arg(short = 'V', long, global = true, action = ArgAction::SetTrue)]
+    #[arg(short = 'V', long, action = ArgAction::SetTrue)]
     version: bool,
     #[arg(short = 'h', long, global = true, action = ArgAction::SetTrue)]
     help: bool,
@@ -98,8 +106,33 @@ enum Command {
     Import {
         path: PathBuf,
     },
+    Publish {
+        locator: String,
+        #[arg(long)]
+        message: Option<String>,
+        #[arg(long = "tag")]
+        tags: Vec<String>,
+    },
+    History {
+        locator: String,
+    },
+    Diff {
+        locator: String,
+        revision_a: Option<String>,
+        revision_b: Option<String>,
+    },
+    Restore {
+        locator: String,
+        revision: String,
+    },
+    Export {
+        locator: String,
+        destination: PathBuf,
+    },
     Subscribe {
         locator: String,
+        #[arg(long = "version", value_name = "N")]
+        release_version: Option<u64>,
     },
     Unsubscribe {
         locator: String,
@@ -211,6 +244,26 @@ enum ResultPayload {
     Import {
         #[serde(flatten)]
         outcome: ImportOutcome,
+    },
+    Publish {
+        #[serde(flatten)]
+        outcome: PublishSkillResponse,
+    },
+    History {
+        #[serde(flatten)]
+        outcome: SkillHistoryResponse,
+    },
+    Diff {
+        #[serde(flatten)]
+        outcome: DiffOutcome,
+    },
+    Restore {
+        #[serde(flatten)]
+        outcome: RestoreOutcome,
+    },
+    Export {
+        #[serde(flatten)]
+        outcome: ExportOutcome,
     },
     Subscribe {
         #[serde(flatten)]
@@ -415,18 +468,84 @@ async fn run(args: impl IntoIterator<Item = OsString>) -> ExitCode {
             payload: ResultPayload::Import { outcome },
             exit: ExitCode::SUCCESS,
         }),
-        Some(Command::Subscribe { locator }) => {
-            public::subscribe(&locator)
-                .await
-                .map(|outcome| CommandOutput {
-                    text: format!(
-                        "Subscribed {} as {}",
-                        outcome.skill.locator, outcome.harness_name
-                    ),
-                    payload: ResultPayload::Subscribe { outcome },
+        Some(Command::Publish {
+            locator,
+            message,
+            tags,
+        }) => release::publish(&locator, message, tags)
+            .await
+            .map(|outcome| CommandOutput {
+                text: format!(
+                    "Published {} v{}",
+                    outcome.skill.locator, outcome.release.version
+                ),
+                payload: ResultPayload::Publish { outcome },
+                exit: ExitCode::SUCCESS,
+            }),
+        Some(Command::History { locator }) => release::history(&locator).await.map(|outcome| {
+            let text = history_text(&outcome);
+            CommandOutput {
+                text,
+                payload: ResultPayload::History { outcome },
+                exit: ExitCode::SUCCESS,
+            }
+        }),
+        Some(Command::Diff {
+            locator,
+            revision_a,
+            revision_b,
+        }) => release::diff(&locator, revision_a.as_deref(), revision_b.as_deref())
+            .await
+            .map(|outcome| {
+                let text = diff_text(&outcome);
+                CommandOutput {
+                    text,
+                    payload: ResultPayload::Diff { outcome },
                     exit: ExitCode::SUCCESS,
-                })
-        }
+                }
+            }),
+        Some(Command::Restore { locator, revision }) => release::restore(&locator, &revision)
+            .await
+            .map(|outcome| CommandOutput {
+                text: format!(
+                    "Restored {} as new revision {}",
+                    locator,
+                    short_revision(&outcome.revision.revision_id)
+                ),
+                payload: ResultPayload::Restore { outcome },
+                exit: ExitCode::SUCCESS,
+            }),
+        Some(Command::Export {
+            locator,
+            destination,
+        }) => release::export(&locator, &destination)
+            .await
+            .map(|outcome| CommandOutput {
+                text: format!(
+                    "Exported {} to {}",
+                    outcome.locator,
+                    outcome.destination.display()
+                ),
+                payload: ResultPayload::Export { outcome },
+                exit: ExitCode::SUCCESS,
+            }),
+        Some(Command::Subscribe {
+            locator,
+            release_version,
+        }) => public::subscribe(&locator, release_version)
+            .await
+            .map(|outcome| CommandOutput {
+                text: format!(
+                    "Subscribed {}{} as {}",
+                    outcome.skill.locator,
+                    release_version
+                        .map(|value| format!(" at v{value}"))
+                        .unwrap_or_default(),
+                    outcome.harness_name
+                ),
+                payload: ResultPayload::Subscribe { outcome },
+                exit: ExitCode::SUCCESS,
+            }),
         Some(Command::Unsubscribe { locator }) => {
             public::unsubscribe(&locator)
                 .await
@@ -639,6 +758,50 @@ fn show_text(outcome: &PublicSkillDetail) -> String {
         outcome.skill.version,
         outcome.skill.revision_id
     )
+}
+
+fn history_text(outcome: &SkillHistoryResponse) -> String {
+    if outcome.revisions.is_empty() {
+        return format!("{} has no visible revisions.", outcome.locator);
+    }
+    outcome
+        .revisions
+        .iter()
+        .map(|revision| {
+            let releases = if revision.released_versions.is_empty() {
+                "private".to_owned()
+            } else {
+                revision
+                    .released_versions
+                    .iter()
+                    .map(|version| format!("v{version}"))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            };
+            format!("{}  {releases}", short_revision(&revision.revision_id))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn diff_text(outcome: &DiffOutcome) -> String {
+    if outcome.changes.is_empty() {
+        return format!(
+            "No changes between {} and {}.",
+            short_revision(&outcome.from_revision),
+            short_revision(&outcome.to_revision)
+        );
+    }
+    outcome
+        .changes
+        .iter()
+        .map(|change| format!("{}  {}", change.change, change.path))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn short_revision(revision: &str) -> &str {
+    revision.get(..12).unwrap_or(revision)
 }
 
 fn sync_text(outcome: &SyncOutcome) -> String {

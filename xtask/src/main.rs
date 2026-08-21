@@ -119,6 +119,10 @@ fn dev_server_env() -> Vec<(&'static str, &'static str)> {
             "DENJU_DATABASE_URL",
             "postgresql://denju:denju-dev-only@127.0.0.1:55432/denju",
         ),
+        (
+            "DENJU_DATABASE_DIRECT_URL",
+            "postgresql://denju:denju-dev-only@127.0.0.1:55432/denju",
+        ),
         ("DENJU_S3_BUCKET", "denju-dev"),
         ("DENJU_S3_ENDPOINT", "http://127.0.0.1:53900"),
         ("DENJU_S3_REGION", "garage"),

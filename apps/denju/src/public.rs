@@ -13,7 +13,8 @@ use denju_local::{
 use denju_wire::{
     ApiErrorCode, CliErrorCode, PrivateSkill, PublicSkill, PublicSkillDetail,
     PublicSkillSearchResponse, RegistryLimits, SubscribedSkill, SubscriptionMutationKind,
-    SubscriptionMutationRequest, subscription_request_hash,
+    SubscriptionMutationRequest, SyncKnownResource, SyncReconcileRequest,
+    subscription_request_hash,
 };
 use serde::Serialize;
 use url::Url;
@@ -68,7 +69,10 @@ pub async fn show(locator: &str) -> Result<PublicSkillDetail, RuntimeError> {
         .map_err(client_error)
 }
 
-pub async fn subscribe(locator: &str) -> Result<SubscribeOutcome, RuntimeError> {
+pub async fn subscribe(
+    locator: &str,
+    release_version: Option<u64>,
+) -> Result<SubscribeOutcome, RuntimeError> {
     let context = installed_context(true).await?;
     let detail = context
         .client
@@ -80,6 +84,7 @@ pub async fn subscribe(locator: &str) -> Result<SubscribeOutcome, RuntimeError> 
         SubscriptionMutationKind::Subscribe,
         &detail.skill.resource_id,
         detail.skill.generation,
+        release_version,
     )
     .await?;
     let sync = sync_with_context(context).await?;
@@ -129,6 +134,7 @@ pub async fn unsubscribe(locator: &str) -> Result<UnsubscribeOutcome, RuntimeErr
         SubscriptionMutationKind::Unsubscribe,
         &local.resource_id,
         generation,
+        None,
     )
     .await?;
     let sync = sync_with_context(context).await?;
@@ -171,6 +177,16 @@ pub(crate) async fn sync_once() -> Result<SyncOutcome, RuntimeError> {
     }
 }
 
+pub(crate) async fn wait_for_remote_hint() -> Result<(), RuntimeError> {
+    let context = installed_context(true).await?;
+    context
+        .client
+        .wait_for_sync_hint()
+        .await
+        .map_err(client_error)?;
+    Ok(())
+}
+
 pub(crate) async fn clear_local_managed_state() -> Result<usize, RuntimeError> {
     let paths = LocalPaths::discover().map_err(local_error)?;
     let db = LocalDatabase::open(&paths.state_db)
@@ -197,16 +213,34 @@ async fn sync_with_context(context: InstalledContext) -> Result<SyncOutcome, Run
     recover_materializations(&context.paths, &context.db)
         .await
         .map_err(local_error)?;
-    let catalog = context.client.subscriptions().await.map_err(client_error)?;
-    let remote_ids = catalog
-        .skills
-        .iter()
-        .map(|skill| skill.skill.resource_id.as_str())
-        .collect::<BTreeSet<_>>();
     let existing = context.db.subscriptions().await.map_err(local_error)?;
+    let mut known = Vec::with_capacity(existing.len());
+    for record in &existing {
+        known.push(SyncKnownResource {
+            resource_id: record.resource_id.clone(),
+            generation: u64::try_from(record.resource_generation).map_err(|_| {
+                RuntimeError::new(
+                    CliErrorCode::LocalState,
+                    "stored subscription generation is invalid",
+                )
+                .recovery("denju doctor")
+            })?,
+            revision_id: record.desired_revision_id.clone(),
+        });
+    }
+    let reconcile = context
+        .client
+        .reconcile_subscriptions(&SyncReconcileRequest { known })
+        .await
+        .map_err(client_error)?;
+    let removed_ids = reconcile
+        .removed_resource_ids
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
     let mut removed = 0;
     for record in &existing {
-        if remote_ids.contains(record.resource_id.as_str()) {
+        if !removed_ids.contains(record.resource_id.as_str()) {
             continue;
         }
         remove_subscription_projection(&context.paths, &context.roots, record)
@@ -222,7 +256,7 @@ async fn sync_with_context(context: InstalledContext) -> Result<SyncOutcome, Run
     }
 
     let mut materialized = 0;
-    for remote in &catalog.skills {
+    for remote in &reconcile.skills {
         let existing = context
             .db
             .subscription(remote.skill.resource_id.clone())
@@ -337,7 +371,17 @@ async fn sync_with_context(context: InstalledContext) -> Result<SyncOutcome, Run
         })
         .collect();
     Ok(SyncOutcome {
-        desired: catalog.skills.len() + owned_desired,
+        desired: existing.len().saturating_sub(removed)
+            + reconcile
+                .skills
+                .iter()
+                .filter(|remote| {
+                    !existing
+                        .iter()
+                        .any(|local| local.resource_id == remote.skill.resource_id)
+                })
+                .count()
+            + owned_desired,
         materialized,
         removed,
         projections,
@@ -409,6 +453,22 @@ async fn sync_owned_skill(
         context
             .db
             .ensure_workspace_baseline(
+                remote.resource_id.clone(),
+                resource_generation,
+                remote.revision_id.clone(),
+                root_tree.clone(),
+                working_generation.display().to_string(),
+                now_unix_ms(),
+            )
+            .await
+            .map_err(local_error)?;
+        // A publish advances the resource generation while intentionally retaining the same
+        // private workspace revision. Refresh the clean workspace CAS baseline even when no
+        // bytes need rematerialization, otherwise the next local edit falsely conflicts with
+        // the generation change caused by our own publish.
+        context
+            .db
+            .advance_clean_workspace_baseline(
                 remote.resource_id.clone(),
                 resource_generation,
                 remote.revision_id.clone(),
@@ -518,16 +578,23 @@ async fn mutate_subscription(
     kind: SubscriptionMutationKind,
     resource_id: &str,
     generation: u64,
+    release_version: Option<u64>,
 ) -> Result<(), RuntimeError> {
     let operation_id = OperationId::from_uuid(Uuid::now_v7())
         .map_err(|error| RuntimeError::new(CliErrorCode::Internal, error.to_string()))?;
-    let request_hash =
-        subscription_request_hash(kind, &operation_id.to_string(), resource_id, generation)
-            .map_err(|error| RuntimeError::new(CliErrorCode::Internal, error.to_string()))?;
+    let request_hash = subscription_request_hash(
+        kind,
+        &operation_id.to_string(),
+        resource_id,
+        generation,
+        release_version,
+    )
+    .map_err(|error| RuntimeError::new(CliErrorCode::Internal, error.to_string()))?;
     let request = SubscriptionMutationRequest {
         operation_id: operation_id.to_string(),
         resource_id: resource_id.to_owned(),
         expected_generation: generation,
+        release_version,
         request_hash: request_hash.to_string(),
     };
     match kind {

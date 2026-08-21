@@ -132,6 +132,7 @@ pub struct SubscribedSkill {
     pub skill: PublicSkill,
     pub manifest: PublicSkillManifest,
     pub snapshot: SnapshotDownload,
+    pub following_latest: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -144,6 +145,8 @@ pub struct SubscriptionMutationRequest {
     pub operation_id: String,
     pub resource_id: String,
     pub expected_generation: u64,
+    #[serde(default)]
+    pub release_version: Option<u64>,
     pub request_hash: String,
 }
 
@@ -151,6 +154,7 @@ pub struct SubscriptionMutationRequest {
 pub struct SubscriptionMutationResponse {
     pub resource_id: String,
     pub subscribed: bool,
+    pub pinned_release_version: Option<u64>,
 }
 
 #[cfg(test)]

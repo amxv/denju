@@ -337,6 +337,15 @@ pub async fn daemon() -> Result<ExitCode, RuntimeError> {
         if let Some(native) = watcher.as_mut() {
             tokio::select! {
                 _ = tokio::signal::ctrl_c() => return Ok(ExitCode::SUCCESS),
+                remote = crate::public::wait_for_remote_hint() => {
+                    if remote.is_err() {
+                        // Provider recycle, EOF, and network loss are normal for SSE. The next
+                        // loop performs an authoritative reconcile before reconnecting; a short
+                        // delay prevents an unavailable registry from becoming a busy loop.
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                    }
+                    force_full_hash = false;
+                }
                 hint = native.changed() => {
                     // Collapse editor temp-file/write/rename bursts into one coherent scan.
                     tokio::time::sleep(Duration::from_millis(300)).await;
@@ -352,6 +361,12 @@ pub async fn daemon() -> Result<ExitCode, RuntimeError> {
         } else {
             tokio::select! {
                 _ = tokio::signal::ctrl_c() => return Ok(ExitCode::SUCCESS),
+                remote = crate::public::wait_for_remote_hint() => {
+                    if remote.is_err() {
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                    }
+                    force_full_hash = false;
+                }
                 _ = tokio::time::sleep(Duration::from_secs(10)) => {
                     polling_ticks = polling_ticks.wrapping_add(1);
                     force_full_hash = polling_ticks.is_multiple_of(30);

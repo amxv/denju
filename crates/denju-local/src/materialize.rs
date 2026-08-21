@@ -51,6 +51,77 @@ pub async fn materialize_skill_snapshot(
     result
 }
 
+pub fn export_skill_snapshot(
+    skill_name: &str,
+    manifest: &SkillManifest,
+    snapshot: &[u8],
+    destination: &Path,
+) -> Result<(), MaterializationError> {
+    if destination.exists() {
+        return Err(MaterializationError::Corrupt(format!(
+            "export destination already exists: {}",
+            destination.display()
+        )));
+    }
+    let entries = validate_skill_snapshot(skill_name, manifest, snapshot)?;
+    fs::create_dir_all(destination)?;
+    let result = write_unmanaged_entries(destination, &entries);
+    if result.is_err() {
+        let _ = fs::remove_dir_all(destination);
+    }
+    result
+}
+
+fn write_unmanaged_entries(
+    root: &Path,
+    entries: &[OwnedSkillEntry],
+) -> Result<(), MaterializationError> {
+    let mut directories = entries
+        .iter()
+        .filter_map(|entry| match entry {
+            OwnedSkillEntry::Directory { path } => Some(path.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    directories.sort_by_key(|path| path.split('/').count());
+    for path in directories {
+        fs::create_dir_all(root.join(path))?;
+    }
+    for entry in entries {
+        match entry {
+            OwnedSkillEntry::File {
+                path,
+                bytes,
+                executable,
+            } => {
+                let destination = root.join(path);
+                if let Some(parent) = destination.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                fs::write(&destination, bytes)?;
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    fs::set_permissions(
+                        &destination,
+                        fs::Permissions::from_mode(if *executable { 0o755 } else { 0o644 }),
+                    )?;
+                }
+            }
+            OwnedSkillEntry::Directory { .. } => {}
+            OwnedSkillEntry::Symlink { path, target } => {
+                let destination = root.join(path);
+                if let Some(parent) = destination.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                create_relative_symlink(target, &destination)?;
+            }
+        }
+    }
+    sync_parent(root)?;
+    Ok(())
+}
+
 async fn materialize_with_lease(
     paths: &LocalPaths,
     db: &LocalDatabase,

@@ -17,6 +17,8 @@ const SUBSCRIBE_DOMAIN: &[u8] = b"denju:http:v1:subscribe\0";
 const UNSUBSCRIBE_DOMAIN: &[u8] = b"denju:http:v1:unsubscribe\0";
 const PRIVATE_REVISION_DOMAIN: &[u8] = b"denju:http:v1:private-revision\0";
 const PRIVATE_SKILL_IMPORT_DOMAIN: &[u8] = b"denju:http:v1:private-skill-import\0";
+const PUBLISH_SKILL_DOMAIN: &[u8] = b"denju:http:v1:publish-skill\0";
+const RESTORE_SKILL_DOMAIN: &[u8] = b"denju:http:v1:restore-skill\0";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct RequestHash([u8; 32]);
@@ -140,6 +142,7 @@ struct SubscriptionHashInput<'a> {
     operation_id: &'a str,
     resource_id: &'a str,
     expected_generation: u64,
+    release_version: Option<u64>,
 }
 
 pub fn subscription_request_hash(
@@ -147,11 +150,13 @@ pub fn subscription_request_hash(
     operation_id: &str,
     resource_id: &str,
     expected_generation: u64,
+    release_version: Option<u64>,
 ) -> Result<RequestHash, RequestHashError> {
     let payload = SubscriptionHashInput {
         operation_id,
         resource_id,
         expected_generation,
+        release_version,
     };
     let canonical = serde_json_canonicalizer::to_vec(&payload)
         .map_err(|error| RequestHashError::Canonicalization(error.to_string()))?;
@@ -160,6 +165,61 @@ pub fn subscription_request_hash(
         SubscriptionMutationKind::Subscribe => SUBSCRIBE_DOMAIN,
         SubscriptionMutationKind::Unsubscribe => UNSUBSCRIBE_DOMAIN,
     });
+    hasher.update(canonical);
+    Ok(RequestHash::from_bytes(hasher.finalize().into()))
+}
+
+pub fn publish_skill_request_hash(
+    operation_id: &str,
+    resource_id: &str,
+    expected_generation: u64,
+    message: Option<&str>,
+    tags: &[String],
+) -> Result<RequestHash, RequestHashError> {
+    #[derive(Serialize)]
+    struct HashInput<'a> {
+        operation_id: &'a str,
+        resource_id: &'a str,
+        expected_generation: u64,
+        message: Option<&'a str>,
+        tags: &'a [String],
+    }
+    let canonical = serde_json_canonicalizer::to_vec(&HashInput {
+        operation_id,
+        resource_id,
+        expected_generation,
+        message,
+        tags,
+    })
+    .map_err(|error| RequestHashError::Canonicalization(error.to_string()))?;
+    let mut hasher = Sha256::new();
+    hasher.update(PUBLISH_SKILL_DOMAIN);
+    hasher.update(canonical);
+    Ok(RequestHash::from_bytes(hasher.finalize().into()))
+}
+
+pub fn restore_skill_request_hash(
+    operation_id: &str,
+    resource_id: &str,
+    expected_generation: u64,
+    target_revision_id: &str,
+) -> Result<RequestHash, RequestHashError> {
+    #[derive(Serialize)]
+    struct HashInput<'a> {
+        operation_id: &'a str,
+        resource_id: &'a str,
+        expected_generation: u64,
+        target_revision_id: &'a str,
+    }
+    let canonical = serde_json_canonicalizer::to_vec(&HashInput {
+        operation_id,
+        resource_id,
+        expected_generation,
+        target_revision_id,
+    })
+    .map_err(|error| RequestHashError::Canonicalization(error.to_string()))?;
+    let mut hasher = Sha256::new();
+    hasher.update(RESTORE_SKILL_DOMAIN);
     hasher.update(canonical);
     Ok(RequestHash::from_bytes(hasher.finalize().into()))
 }
@@ -248,6 +308,7 @@ mod tests {
             "01890f47-6a1c-7cc2-98c1-5f6c1ed8a3a1",
             "01890f47-6a1d-7ad0-8f43-9a4d8c29f002",
             7,
+            None,
         )
         .unwrap();
         let unsubscribe = subscription_request_hash(
@@ -255,9 +316,31 @@ mod tests {
             "01890f47-6a1c-7cc2-98c1-5f6c1ed8a3a1",
             "01890f47-6a1d-7ad0-8f43-9a4d8c29f002",
             7,
+            None,
         )
         .unwrap();
         assert_ne!(subscribe, unsubscribe);
+    }
+
+    #[test]
+    fn subscription_pin_is_part_of_the_request_hash() {
+        let following_latest = subscription_request_hash(
+            SubscriptionMutationKind::Subscribe,
+            "01890f47-6a1c-7cc2-98c1-5f6c1ed8a3a1",
+            "01890f47-6a1d-7ad0-8f43-9a4d8c29f002",
+            7,
+            None,
+        )
+        .unwrap();
+        let pinned = subscription_request_hash(
+            SubscriptionMutationKind::Subscribe,
+            "01890f47-6a1c-7cc2-98c1-5f6c1ed8a3a1",
+            "01890f47-6a1d-7ad0-8f43-9a4d8c29f002",
+            7,
+            Some(3),
+        )
+        .unwrap();
+        assert_ne!(following_latest, pinned);
     }
 
     #[test]
