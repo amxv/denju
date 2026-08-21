@@ -7,16 +7,18 @@ use denju_wire::{
     AccountDeleteRequest, AccountDeleteResponse, ApiError, AutomationTokenCreateRequest,
     AutomationTokenCreateResponse, AutomationTokenList, AutomationTokenRevokeRequest,
     AutomationTokenRevokeResponse, ClaimIdentityRequest, CreateInstallationRequest,
-    CreateInstallationResponse, DeviceList, DeviceRevokeRequest, DeviceRevokeResponse,
+    CreateInstallationResponse, DeleteSkillResponse, DeprecateSkillRequest, DeprecateSkillResponse,
+    DeviceList, DeviceRevokeRequest, DeviceRevokeResponse, HistoryPruneResponse,
     IdentityBackupRequest, IdentityInfo, IdentitySessionResponse, LoginRequest,
     PrivateRevisionCommitRequest, PrivateRevisionPrepareResponse, PrivateRevisionRequest,
     PrivateRevisionResponse, PrivateSkillCatalog, PrivateSkillImportCommitRequest,
     PrivateSkillImportPrepareResponse, PrivateSkillImportRequest, PrivateSkillImportResponse,
     PublicSkillDetail, PublicSkillSearchResponse, PublishSkillRequest, PublishSkillResponse,
-    RecoveryResetRequest, RegistryCapabilities, RestoreSkillRequest, RestoreSkillResponse,
-    SkillHistoryResponse, SkillRevisionDetail, SnapshotDownload, StagedBlobUpload,
-    SubscriptionCatalog, SubscriptionMutationRequest, SubscriptionMutationResponse, SyncHint,
-    SyncReconcileRequest, SyncReconcileResponse,
+    RecoveryResetRequest, RegistryCapabilities, RenameSkillRequest, RenameSkillResponse,
+    ResourceLifecycleRequest, RestoreSkillRequest, RestoreSkillResponse, SkillHistoryResponse,
+    SkillRevisionDetail, SnapshotDownload, StagedBlobUpload, SubscriptionCatalog,
+    SubscriptionMutationRequest, SubscriptionMutationResponse, SyncHint, SyncReconcileRequest,
+    SyncReconcileResponse, UnpublishSkillResponse, UsageResponse,
 };
 use futures_util::StreamExt;
 use reqwest::{Client, RequestBuilder, StatusCode};
@@ -224,6 +226,50 @@ impl RegistryClient {
         request: &RestoreSkillRequest,
     ) -> Result<RestoreSkillResponse, ClientError> {
         self.authenticated_post_json("v1/skills/restore", request)
+            .await
+    }
+
+    pub async fn rename_skill(
+        &self,
+        request: &RenameSkillRequest,
+    ) -> Result<RenameSkillResponse, ClientError> {
+        self.authenticated_post_json("v1/skills/rename", request)
+            .await
+    }
+
+    pub async fn unpublish_skill(
+        &self,
+        request: &ResourceLifecycleRequest,
+    ) -> Result<UnpublishSkillResponse, ClientError> {
+        self.authenticated_post_json("v1/skills/unpublish", request)
+            .await
+    }
+
+    pub async fn delete_skill(
+        &self,
+        request: &ResourceLifecycleRequest,
+    ) -> Result<DeleteSkillResponse, ClientError> {
+        self.authenticated_post_json("v1/skills/delete", request)
+            .await
+    }
+
+    pub async fn deprecate_skill(
+        &self,
+        request: &DeprecateSkillRequest,
+    ) -> Result<DeprecateSkillResponse, ClientError> {
+        self.authenticated_post_json("v1/skills/deprecate", request)
+            .await
+    }
+
+    pub async fn usage(&self) -> Result<UsageResponse, ClientError> {
+        self.authenticated_get_json("v1/usage").await
+    }
+
+    pub async fn prune_skill_history(
+        &self,
+        request: &ResourceLifecycleRequest,
+    ) -> Result<HistoryPruneResponse, ClientError> {
+        self.authenticated_post_json("v1/skills/history/prune", request)
             .await
     }
 

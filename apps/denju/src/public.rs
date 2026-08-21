@@ -4,11 +4,12 @@ use denju_client::{ClientError, RegistryClient};
 use denju_core::{OperationId, ResourceId, RevisionId};
 use denju_local::{
     CredentialBackend, CredentialManager, DesiredSkillMaterialization, IdentityRecord,
-    InstallCredential, InstallationRecord, LocalDatabase, LocalPaths, OwnedSkillRecord,
-    ResolvedHarnessRoots, SessionCredential, SubscriptionRecord, WorkspaceStatus,
-    materialize_skill_snapshot, prepare_harness_roots, reconcile_harness_projections,
-    recover_materializations, remove_canonical_skill, remove_managed_skill_projection,
-    remove_subscription_projection, resolve_harness_roots,
+    InstallCredential, InstallationRecord, LocalDatabase, LocalPaths, ManagedDesiredKind,
+    ManagedSkillRecord, OwnedSkillRecord, RegistryRenameState, ResolvedHarnessRoots,
+    SessionCredential, SubscriptionRecord, WorkspaceStatus, apply_registry_rename,
+    journaled_remove_managed_skill, materialize_skill_snapshot, prepare_harness_roots,
+    reconcile_canonical_links, reconcile_harness_projections, recover_local_lifecycle,
+    recover_materializations, resolve_harness_roots,
 };
 use denju_wire::{
     ApiErrorCode, CliErrorCode, PrivateSkill, PublicSkill, PublicSkillDetail,
@@ -72,6 +73,7 @@ pub async fn show(locator: &str) -> Result<PublicSkillDetail, RuntimeError> {
 pub async fn subscribe(
     locator: &str,
     release_version: Option<u64>,
+    retain_on_delete: bool,
 ) -> Result<SubscribeOutcome, RuntimeError> {
     let context = installed_context(true).await?;
     let detail = context
@@ -85,6 +87,7 @@ pub async fn subscribe(
         &detail.skill.resource_id,
         detail.skill.generation,
         release_version,
+        retain_on_delete,
     )
     .await?;
     let sync = sync_with_context(context).await?;
@@ -135,6 +138,7 @@ pub async fn unsubscribe(locator: &str) -> Result<UnsubscribeOutcome, RuntimeErr
         &local.resource_id,
         generation,
         None,
+        false,
     )
     .await?;
     let sync = sync_with_context(context).await?;
@@ -155,6 +159,12 @@ pub(crate) async fn sync_once() -> Result<SyncOutcome, RuntimeError> {
         && paths.state_db.is_file()
     {
         let db = LocalDatabase::open(&paths.state_db)
+            .await
+            .map_err(local_error)?;
+        let recorded = db.harness_config().await.map_err(local_error)?;
+        let roots = resolve_harness_roots(&paths, recorded.as_ref()).map_err(local_error)?;
+        prepare_harness_roots(&roots).map_err(local_error)?;
+        recover_local_lifecycle(&paths, &db, &roots)
             .await
             .map_err(local_error)?;
         let (_workspace_pass, local_blockers) =
@@ -194,23 +204,41 @@ pub(crate) async fn clear_local_managed_state() -> Result<usize, RuntimeError> {
         .map_err(local_error)?;
     let recorded = db.harness_config().await.map_err(local_error)?;
     let roots = resolve_harness_roots(&paths, recorded.as_ref()).map_err(local_error)?;
-    let subscriptions = db.subscriptions().await.map_err(local_error)?;
-    for record in &subscriptions {
-        remove_subscription_projection(&paths, &roots, record).map_err(local_error)?;
-        remove_canonical_skill(&paths, &record.owner, &record.skill_name).map_err(local_error)?;
+    recover_local_lifecycle(&paths, &db, &roots)
+        .await
+        .map_err(local_error)?;
+    let managed = db.managed_skills().await.map_err(local_error)?;
+    let owned = db
+        .owned_skills()
+        .await
+        .map_err(local_error)?
+        .into_iter()
+        .map(|record| record.resource_id)
+        .collect::<BTreeSet<_>>();
+    for record in &managed {
+        let kind = if owned.contains(&record.resource_id) {
+            ManagedDesiredKind::Owned
+        } else {
+            ManagedDesiredKind::Subscription
+        };
+        journaled_remove_managed_skill(&paths, &db, &roots, record, kind)
+            .await
+            .map_err(local_error)?;
     }
-    db.clear_subscriptions().await.map_err(local_error)?;
     for directory in [&paths.generations, &paths.derived, &paths.objects] {
         if directory.exists() {
             fs::remove_dir_all(directory).map_err(local_error)?;
         }
         fs::create_dir_all(directory).map_err(local_error)?;
     }
-    Ok(subscriptions.len())
+    Ok(managed.len())
 }
 
 async fn sync_with_context(context: InstalledContext) -> Result<SyncOutcome, RuntimeError> {
     recover_materializations(&context.paths, &context.db)
+        .await
+        .map_err(local_error)?;
+    recover_local_lifecycle(&context.paths, &context.db, &context.roots)
         .await
         .map_err(local_error)?;
     let existing = context.db.subscriptions().await.map_err(local_error)?;
@@ -243,15 +271,22 @@ async fn sync_with_context(context: InstalledContext) -> Result<SyncOutcome, Run
         if !removed_ids.contains(record.resource_id.as_str()) {
             continue;
         }
-        remove_subscription_projection(&context.paths, &context.roots, record)
-            .map_err(local_error)?;
-        remove_canonical_skill(&context.paths, &record.owner, &record.skill_name)
-            .map_err(local_error)?;
-        context
-            .db
-            .remove_subscription(record.resource_id.clone())
-            .await
-            .map_err(local_error)?;
+        journaled_remove_managed_skill(
+            &context.paths,
+            &context.db,
+            &context.roots,
+            &ManagedSkillRecord {
+                resource_id: record.resource_id.clone(),
+                locator: record.locator.clone(),
+                owner: record.owner.clone(),
+                skill_name: record.skill_name.clone(),
+                harness_name: record.harness_name.clone(),
+                materialized_revision_id: record.materialized_revision_id.clone(),
+            },
+            ManagedDesiredKind::Subscription,
+        )
+        .await
+        .map_err(local_error)?;
         removed += 1;
     }
 
@@ -264,7 +299,10 @@ async fn sync_with_context(context: InstalledContext) -> Result<SyncOutcome, Run
             .map_err(local_error)?;
         upsert_desired(&context.db, remote).await?;
         let already_current = existing.as_ref().is_some_and(|record| {
-            record.materialized_revision_id.as_deref() == Some(remote.skill.revision_id.as_str())
+            record.owner == remote.skill.owner
+                && record.skill_name == remote.skill.name
+                && record.materialized_revision_id.as_deref()
+                    == Some(remote.skill.revision_id.as_str())
                 && context
                     .paths
                     .skills
@@ -345,15 +383,15 @@ async fn sync_with_context(context: InstalledContext) -> Result<SyncOutcome, Run
                         format!("owned resource {} lost managed state", record.resource_id),
                     )
                 })?;
-            remove_managed_skill_projection(&context.paths, &context.roots, &managed)
-                .map_err(local_error)?;
-            remove_canonical_skill(&context.paths, &record.owner, &record.skill_name)
-                .map_err(local_error)?;
-            context
-                .db
-                .remove_owned_skill(record.resource_id.clone())
-                .await
-                .map_err(local_error)?;
+            journaled_remove_managed_skill(
+                &context.paths,
+                &context.db,
+                &context.roots,
+                &managed,
+                ManagedDesiredKind::Owned,
+            )
+            .await
+            .map_err(local_error)?;
             removed += 1;
         }
         for remote in &owned.skills {
@@ -361,6 +399,9 @@ async fn sync_with_context(context: InstalledContext) -> Result<SyncOutcome, Run
         }
     }
 
+    reconcile_canonical_links(&context.paths, &context.db)
+        .await
+        .map_err(local_error)?;
     let projections = reconcile_harness_projections(&context.paths, &context.db, &context.roots)
         .await
         .map_err(local_error)?
@@ -405,6 +446,87 @@ async fn sync_owned_skill(
             "owned resource generation exceeds local storage",
         )
     })?;
+    if let Some(local) = existing.as_ref()
+        && (local.owner != remote.owner || local.skill_name != remote.name)
+    {
+        let workspace = context
+            .db
+            .workspace_state(remote.resource_id.clone())
+            .await
+            .map_err(local_error)?
+            .ok_or_else(|| {
+                RuntimeError::new(
+                    CliErrorCode::LocalState,
+                    format!("{} has no local workspace state", local.locator),
+                )
+                .recovery("denju doctor")
+            })?;
+        let preserve_working = workspace.status == WorkspaceStatus::PendingRename
+            && workspace.pending_rename.as_deref() == Some(remote.name.as_str());
+        if workspace.status != WorkspaceStatus::Clean && !preserve_working {
+            return Err(RuntimeError::new(
+                CliErrorCode::LocalState,
+                format!(
+                    "{} changed identity remotely while local work is unresolved",
+                    local.locator
+                ),
+            )
+            .recovery("denju sync"));
+        }
+        let manifest = remote
+            .manifest
+            .to_core()
+            .map_err(|error| RuntimeError::new(CliErrorCode::ContentVerification, error))?;
+        let authoritative = if preserve_working {
+            None
+        } else {
+            if remote.snapshot.size_bytes > context.limits.max_transfer_bytes {
+                return Err(RuntimeError::new(
+                    CliErrorCode::ContentVerification,
+                    format!(
+                        "snapshot for {} exceeds registry transfer limit",
+                        remote.locator
+                    ),
+                ));
+            }
+            Some(
+                context
+                    .client
+                    .download_snapshot(&remote.snapshot)
+                    .await
+                    .map_err(client_error)?,
+            )
+        };
+        apply_registry_rename(
+            &context.paths,
+            &context.db,
+            &context.roots,
+            &ManagedSkillRecord {
+                resource_id: local.resource_id.clone(),
+                locator: local.locator.clone(),
+                owner: local.owner.clone(),
+                skill_name: local.skill_name.clone(),
+                harness_name: local.harness_name.clone(),
+                materialized_revision_id: local.materialized_revision_id.clone(),
+            },
+            RegistryRenameState {
+                resource_id: remote.resource_id.clone(),
+                owner: remote.owner.clone(),
+                name: remote.name.clone(),
+                locator: remote.locator.clone(),
+                generation: resource_generation,
+                revision_id: remote.revision_id.clone(),
+                root_tree_id: manifest.root_tree().to_string(),
+            },
+            preserve_working,
+            authoritative
+                .as_ref()
+                .map(|snapshot| (&manifest, snapshot.as_slice())),
+        )
+        .await
+        .map_err(local_error)?;
+        return Ok(usize::from(!preserve_working));
+    }
     context
         .db
         .upsert_owned_skill_desired(
@@ -566,6 +688,8 @@ async fn upsert_desired(db: &LocalDatabase, remote: &SubscribedSkill) -> Result<
             desired_revision_id: remote.skill.revision_id.clone(),
             harness_name: None,
             materialized_revision_id: None,
+            retain_on_delete: remote.retain_on_delete,
+            retained_after_delete: remote.retained_after_delete,
         },
         now_unix_ms(),
     )
@@ -579,6 +703,7 @@ async fn mutate_subscription(
     resource_id: &str,
     generation: u64,
     release_version: Option<u64>,
+    retain_on_delete: bool,
 ) -> Result<(), RuntimeError> {
     let operation_id = OperationId::from_uuid(Uuid::now_v7())
         .map_err(|error| RuntimeError::new(CliErrorCode::Internal, error.to_string()))?;
@@ -588,6 +713,7 @@ async fn mutate_subscription(
         resource_id,
         generation,
         release_version,
+        retain_on_delete,
     )
     .map_err(|error| RuntimeError::new(CliErrorCode::Internal, error.to_string()))?;
     let request = SubscriptionMutationRequest {
@@ -595,6 +721,7 @@ async fn mutate_subscription(
         resource_id: resource_id.to_owned(),
         expected_generation: generation,
         release_version,
+        retain_on_delete,
         request_hash: request_hash.to_string(),
     };
     match kind {
@@ -732,6 +859,20 @@ pub(crate) fn client_error(error: ClientError) -> RuntimeError {
         }
         ClientError::Registry(api) if api.code == ApiErrorCode::QuotaExceeded => {
             RuntimeError::new(CliErrorCode::QuotaExceeded, api.message.clone())
+        }
+        ClientError::Registry(api)
+            if matches!(
+                api.code,
+                ApiErrorCode::InvalidRequest
+                    | ApiErrorCode::InvalidRequestHash
+                    | ApiErrorCode::OperationConflict
+                    | ApiErrorCode::GenerationConflict
+            ) =>
+        {
+            RuntimeError::new(CliErrorCode::InvalidArguments, api.message.clone())
+        }
+        ClientError::Registry(api) if api.code == ApiErrorCode::Unauthorized => {
+            RuntimeError::new(CliErrorCode::CredentialUnavailable, api.message.clone())
         }
         _ => RuntimeError::new(CliErrorCode::RegistryUnavailable, error.to_string())
             .recovery("denju doctor"),

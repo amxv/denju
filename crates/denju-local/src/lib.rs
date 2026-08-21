@@ -3,6 +3,7 @@
 mod credentials;
 mod db;
 mod harness;
+mod lifecycle;
 mod materialize;
 mod paths;
 mod projection;
@@ -16,19 +17,24 @@ pub use credentials::{
     CredentialBackend, CredentialError, CredentialManager, InstallCredential, SessionCredential,
 };
 pub use db::{
-    BootstrapJournal, BootstrapJournalPayload, HarnessConfig, IdentityRecord, ImportJournal,
-    ImportJournalPayload, InstallationRecord, JournalState, LocalDatabase, LocalDbError,
-    ManagedSkillRecord, MaterializationJournal, MaterializationJournalPayload, OwnedSkillRecord,
-    ServiceRecord, SubscriptionRecord,
+    AccountDeleteJournal, AccountDeleteJournalPayload, BootstrapJournal, BootstrapJournalPayload,
+    HarnessConfig, IdentityRecord, ImportJournal, ImportJournalPayload, InstallationRecord,
+    JournalState, LocalDatabase, LocalDbError, ManagedSkillRecord, MaterializationJournal,
+    MaterializationJournalPayload, OwnedSkillRecord, ServiceRecord, SubscriptionRecord,
 };
 pub use harness::{
     HarnessEnvironment, HarnessError, ResolvedHarnessRoots, detect_unmanaged_skills,
     prepare_harness_roots, remove_old_codex_projection, resolve_harness_roots,
     resolve_harness_roots_for,
 };
+pub use lifecycle::{
+    LocalLifecycleError, ManagedDesiredKind, RegistryRenameState, apply_registry_rename,
+    journaled_remove_managed_skill, recover_local_lifecycle,
+};
 pub use materialize::{
     DesiredSkillMaterialization, MaterializationError, export_skill_snapshot,
-    materialize_skill_snapshot, recover_materializations, remove_canonical_skill,
+    materialize_skill_snapshot, reconcile_canonical_links, recover_materializations,
+    remove_canonical_skill,
 };
 pub use paths::{
     LocalPathError, LocalPaths, TEST_HOME_ENV, TEST_HOME_MARKER, create_native_directory_link,

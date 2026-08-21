@@ -581,6 +581,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn metadata_generation_advance_rebases_queued_revision_without_rewriting_it() {
+        let (_home, paths, db, record) = fixture().await;
+        fs::write(paths.skills.join("alice/review/notes.txt"), b"changed\n").unwrap();
+        let (_pass, blockers) = capture_local_edits(&paths, &db, false).await.unwrap();
+        assert!(blockers.is_empty());
+        let before = db.queued_local_revisions().await.unwrap().remove(0);
+        assert_eq!(before.expected_generation, 1);
+
+        db.pause_workspace(
+            record.resource_id.clone(),
+            WorkspaceStatus::Quota,
+            "quota".into(),
+            None,
+            3,
+        )
+        .await
+        .unwrap();
+        db.advance_owned_metadata_generation(record.resource_id.clone(), 1, 2, 4)
+            .await
+            .unwrap();
+
+        let after = db.queued_local_revisions().await.unwrap().remove(0);
+        assert_eq!(after.operation_id, before.operation_id);
+        assert_eq!(after.revision_id, before.revision_id);
+        assert_eq!(after.parent_revision_id, before.parent_revision_id);
+        assert_eq!(after.expected_generation, 2);
+        let state = db
+            .workspace_state(record.resource_id.clone())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(state.base_generation, 2);
+        assert_eq!(state.status, WorkspaceStatus::Queued);
+        let owned = db
+            .owned_skills()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|item| item.resource_id == record.resource_id)
+            .unwrap();
+        assert_eq!(owned.resource_generation, 2);
+    }
+
+    #[tokio::test]
     async fn invalid_save_stays_visible_and_pauses_without_revision() {
         let (_home, paths, db, record) = fixture().await;
         let invalid = b"---\nname: review\n---\n# broken but visible\n";

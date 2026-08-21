@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeSet,
     fs::{self, File, OpenOptions},
     io::{self, Write},
     path::{Path, PathBuf},
@@ -49,6 +50,42 @@ pub async fn materialize_skill_snapshot(
     let result = materialize_with_lease(paths, db, desired, &entries, operation_id).await;
     let _ = db.release_lease(resource_key, holder).await;
     result
+}
+
+/// Prepare and verify an immutable generation without exposing it through the canonical path.
+///
+/// Lifecycle rename uses this after registry authority commits but before it records the local
+/// rename journal. If the process dies before the journal write, the only residue is an
+/// unreferenced generation directory; the old canonical/projection paths are still untouched.
+pub(crate) fn stage_skill_generation(
+    paths: &LocalPaths,
+    desired: &DesiredSkillMaterialization,
+    snapshot: &[u8],
+    operation_id: OperationId,
+) -> Result<PathBuf, MaterializationError> {
+    let entries = validate_skill_snapshot(&desired.skill_name, &desired.manifest, snapshot)?;
+    let resource_root = paths.generations.join(desired.resource_id.to_string());
+    fs::create_dir_all(&resource_root)?;
+    let generation_dir = resource_root.join(desired.revision_id.to_string());
+    if generation_dir.is_dir() {
+        verify_generation(&generation_dir, &desired.skill_name, &desired.manifest)?;
+        return Ok(generation_dir);
+    }
+
+    let stage_dir = resource_root.join(format!(".rename-stage-{operation_id}"));
+    let _ = fs::remove_dir_all(&stage_dir);
+    write_generation(paths, &stage_dir, &entries)?;
+    verify_generation(&stage_dir, &desired.skill_name, &desired.manifest)?;
+    match fs::rename(&stage_dir, &generation_dir) {
+        Ok(()) => sync_parent(&resource_root)?,
+        Err(error) if generation_dir.is_dir() => {
+            let _ = fs::remove_dir_all(&stage_dir);
+            verify_generation(&generation_dir, &desired.skill_name, &desired.manifest)?;
+            let _ = error;
+        }
+        Err(error) => return Err(MaterializationError::Io(error)),
+    }
+    Ok(generation_dir)
 }
 
 pub fn export_skill_snapshot(
@@ -278,6 +315,51 @@ pub fn remove_canonical_skill(
         let _ = fs::remove_dir(parent);
     }
     Ok(())
+}
+
+/// Remove canonical links that are no longer represented by local desired state.
+///
+/// The SQLite desired tables are authoritative. This makes locator changes self-healing even
+/// if an older binary updated the row before deleting its previous canonical link, or if a
+/// process died between those two idempotent steps. Only Denju's internal canonical tree is
+/// inspected; harness roots and user source directories are never scanned here.
+pub async fn reconcile_canonical_links(
+    paths: &LocalPaths,
+    db: &LocalDatabase,
+) -> Result<usize, MaterializationError> {
+    let desired = db
+        .managed_skills()
+        .await?
+        .into_iter()
+        .map(|record| (record.owner, record.skill_name))
+        .collect::<BTreeSet<_>>();
+    let mut removed = 0;
+    for owner_entry in fs::read_dir(&paths.skills)? {
+        let owner_entry = owner_entry?;
+        let owner = owner_entry.file_name().into_string().map_err(|_| {
+            MaterializationError::Corrupt("canonical owner directory is not UTF-8".to_owned())
+        })?;
+        let owner_path = owner_entry.path();
+        if !owner_path.is_dir() {
+            return Err(MaterializationError::Corrupt(format!(
+                "unexpected canonical owner entry {}",
+                owner_path.display()
+            )));
+        }
+        for skill_entry in fs::read_dir(&owner_path)? {
+            let skill_entry = skill_entry?;
+            let skill_name = skill_entry.file_name().into_string().map_err(|_| {
+                MaterializationError::Corrupt("canonical skill name is not UTF-8".to_owned())
+            })?;
+            if desired.contains(&(owner.clone(), skill_name)) {
+                continue;
+            }
+            remove_owned_link(&skill_entry.path())?;
+            removed += 1;
+        }
+        let _ = fs::remove_dir(&owner_path);
+    }
+    Ok(removed)
 }
 
 pub(crate) fn write_generation(
@@ -580,6 +662,8 @@ mod tests {
                 desired_revision_id: revision_id.to_string(),
                 harness_name: None,
                 materialized_revision_id: None,
+                retain_on_delete: false,
+                retained_after_delete: false,
             },
             1,
         )
@@ -629,6 +713,36 @@ mod tests {
                 .await
                 .is_err()
         );
+        assert!(!paths.skills.join("alice/review").exists());
+    }
+
+    #[tokio::test]
+    async fn canonical_reconcile_removes_a_stale_locator_after_desired_identity_moves() {
+        let (_home, paths, db, desired, bytes) = fixture().await;
+        materialize_skill_snapshot(&paths, &db, &desired, &bytes)
+            .await
+            .unwrap();
+        assert!(paths.skills.join("alice/review").exists());
+        db.upsert_subscription_desired(
+            SubscriptionRecord {
+                resource_id: desired.resource_id.to_string(),
+                locator: "@alice/code-review".to_owned(),
+                owner: "alice".to_owned(),
+                skill_name: "code-review".to_owned(),
+                resource_generation: 2,
+                release_version: 2,
+                desired_revision_id: desired.revision_id.to_string(),
+                harness_name: None,
+                materialized_revision_id: None,
+                retain_on_delete: false,
+                retained_after_delete: false,
+            },
+            2,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(reconcile_canonical_links(&paths, &db).await.unwrap(), 1);
         assert!(!paths.skills.join("alice/review").exists());
     }
 

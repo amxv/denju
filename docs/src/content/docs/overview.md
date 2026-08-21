@@ -10,7 +10,7 @@ Denju is an agent-native, CLI-only registry and synchronization system for Agent
 
 ## What exists today
 
-The Rust implementation provides deterministic Agent Skills validation and content identity, anonymous `denju setup`, public skill discovery, account-wide direct subscriptions, verified cold installs from S3-compatible storage, optional password/recovery identity claim and login, authenticated private skill import, editable owned workspaces with durable private revisions and multi-device synchronization, revocable devices and scoped automation credentials, durable SQLite-backed local state, Codex and Claude projections, per-user service management, and the PostgreSQL-backed registry foundation used by the CLI.
+The Rust implementation provides deterministic Agent Skills validation and content identity, anonymous `denju setup`, public skill discovery, account-wide direct subscriptions, verified cold installs from S3-compatible storage, optional password/recovery identity claim and login, authenticated private skill import, editable owned workspaces with durable private revisions and multi-device synchronization, stable-ID rename/unpublish/delete/deprecation and explicit history pruning, revocable devices and scoped automation credentials, durable SQLite-backed local state, Codex and Claude projections, per-user service management, and the PostgreSQL-backed registry foundation used by the CLI.
 
 The repository also contains a thin npm installer for the native binary and this documentation site. Product behavior lives in Rust; JavaScript is not a second implementation path.
 

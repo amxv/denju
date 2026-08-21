@@ -1,4 +1,7 @@
+mod help;
 mod identity;
+mod lifecycle;
+mod output;
 mod owned;
 mod public;
 mod release;
@@ -10,49 +13,25 @@ use std::{ffi::OsString, path::PathBuf, process::ExitCode};
 use clap::{ArgAction, Parser, Subcommand};
 use denju_wire::{
     AutomationTokenList, AutomationTokenRevokeResponse, CliEnvelope, CliError, CliErrorCode,
-    DeviceList, DeviceRevokeResponse, IdentityInfo, PublicSkillDetail, PublicSkillSearchResponse,
-    PublishSkillResponse, SkillHistoryResponse,
+    DeleteSkillResponse, DeprecateSkillResponse, DeviceList, DeviceRevokeResponse,
+    HistoryPruneResponse, IdentityInfo, PublicSkillDetail, PublicSkillSearchResponse,
+    PublishSkillResponse, RenameSkillResponse, SkillHistoryResponse, UnpublishSkillResponse,
 };
+use help::HELP;
 use identity::{
     AutomationTokenOutcome, BackupOutcome, ClaimOutcome, DeleteOutcome, LoginOutcome,
     RecoveryOutcome,
+};
+use lifecycle::UsageOutcome;
+use output::{
+    append_deprecation_notice, diff_text, history_text, search_text, short_revision, show_text,
+    sync_text, usage_text,
 };
 use owned::ImportOutcome;
 use public::{SubscribeOutcome, SyncOutcome, UnsubscribeOutcome};
 use release::{DiffOutcome, ExportOutcome, RestoreOutcome};
 use serde::Serialize;
 use setup::{DoctorOutcome, Guidance, RuntimeError, SetupOutcome};
-
-const HELP: &str = "Denju — agent-native Agent Skills registry and synchronization\n\
-\n\
-Usage: denju [OPTIONS] [COMMAND]\n\
-\n\
-Commands:\n\
-  setup   Set up this machine without creating an account\n\
-  claim   Claim a Denju identity for this installation\n\
-  login   Log this installation into an existing identity\n\
-  identity  Show, recover, back up, or delete identity state\n\
-  devices List or revoke authenticated devices\n\
-  tokens  List, create, or revoke scoped automation credentials\n\
-  search  Search public Agent Skills\n\
-  show    Show one public skill\n\
-  import  Transfer a local skill into your private Denju workspace\n\
-  publish Publish the current private workspace as a new immutable release\n\
-  history Show private-save and immutable release history\n\
-  diff    Compare two revisions\n\
-  restore Restore an older revision as a new private revision\n\
-  export  Export an accessible revision as an unmanaged directory\n\
-  subscribe   Subscribe to a public skill and materialize it\n\
-  unsubscribe Remove a direct skill subscription\n\
-  sync    Reconcile subscriptions and harness projections\n\
-  doctor  Check and repair the local Denju installation\n\
-\n\
-Options:\n\
-      --json     Emit one versioned JSON result on stdout\n\
-  -V, --version  Print the Denju build version\n\
-  -h, --help     Print help\n\
-\n\
-Run denju with no command for the next useful action.";
 
 #[derive(Debug, Parser)]
 #[command(
@@ -113,8 +92,30 @@ enum Command {
         #[arg(long = "tag")]
         tags: Vec<String>,
     },
-    History {
+    Rename {
         locator: String,
+        new_name: String,
+    },
+    Unpublish {
+        locator: String,
+    },
+    Delete {
+        locator: String,
+        #[arg(long, action = ArgAction::SetTrue)]
+        yes: bool,
+    },
+    Deprecate {
+        locator: String,
+        #[arg(long)]
+        replacement: Option<String>,
+        #[arg(long, action = ArgAction::SetTrue)]
+        undo: bool,
+    },
+    Usage,
+    History {
+        locator: Option<String>,
+        #[command(subcommand)]
+        command: Option<HistoryCommand>,
     },
     Diff {
         locator: String,
@@ -133,6 +134,8 @@ enum Command {
         locator: String,
         #[arg(long = "version", value_name = "N")]
         release_version: Option<u64>,
+        #[arg(long, action = ArgAction::SetTrue)]
+        retain_on_delete: bool,
     },
     Unsubscribe {
         locator: String,
@@ -150,6 +153,15 @@ enum IdentityCommand {
         username: String,
     },
     Delete {
+        #[arg(long, action = ArgAction::SetTrue)]
+        yes: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum HistoryCommand {
+    Prune {
+        locator: String,
         #[arg(long, action = ArgAction::SetTrue)]
         yes: bool,
     },
@@ -249,9 +261,33 @@ enum ResultPayload {
         #[serde(flatten)]
         outcome: PublishSkillResponse,
     },
+    Rename {
+        #[serde(flatten)]
+        outcome: RenameSkillResponse,
+    },
+    Unpublish {
+        #[serde(flatten)]
+        outcome: UnpublishSkillResponse,
+    },
+    Delete {
+        #[serde(flatten)]
+        outcome: DeleteSkillResponse,
+    },
+    Deprecate {
+        #[serde(flatten)]
+        outcome: DeprecateSkillResponse,
+    },
+    Usage {
+        #[serde(flatten)]
+        outcome: UsageOutcome,
+    },
     History {
         #[serde(flatten)]
         outcome: SkillHistoryResponse,
+    },
+    HistoryPrune {
+        #[serde(flatten)]
+        outcome: HistoryPruneResponse,
     },
     Diff {
         #[serde(flatten)]
@@ -482,7 +518,59 @@ async fn run(args: impl IntoIterator<Item = OsString>) -> ExitCode {
                 payload: ResultPayload::Publish { outcome },
                 exit: ExitCode::SUCCESS,
             }),
-        Some(Command::History { locator }) => release::history(&locator).await.map(|outcome| {
+        Some(Command::Rename { locator, new_name }) => lifecycle::rename(&locator, &new_name)
+            .await
+            .map(|outcome| CommandOutput {
+                text: format!("Renamed {} to {}", outcome.old_locator, outcome.locator),
+                payload: ResultPayload::Rename { outcome },
+                exit: ExitCode::SUCCESS,
+            }),
+        Some(Command::Unpublish { locator }) => {
+            lifecycle::unpublish(&locator)
+                .await
+                .map(|outcome| CommandOutput {
+                    text: format!("Unpublished {}", outcome.locator),
+                    payload: ResultPayload::Unpublish { outcome },
+                    exit: ExitCode::SUCCESS,
+                })
+        }
+        Some(Command::Delete { locator, yes }) => lifecycle::delete(&locator, cli.json, yes)
+            .await
+            .map(|outcome| CommandOutput {
+                text: format!("Deleted {}", outcome.locator),
+                payload: ResultPayload::Delete { outcome },
+                exit: ExitCode::SUCCESS,
+            }),
+        Some(Command::Deprecate {
+            locator,
+            replacement,
+            undo,
+        }) => lifecycle::deprecate(&locator, replacement.as_deref(), undo)
+            .await
+            .map(|outcome| CommandOutput {
+                text: if outcome.deprecated {
+                    outcome
+                        .replacement
+                        .as_ref()
+                        .map(|replacement| {
+                            format!("Deprecated {}; use {replacement}", outcome.locator)
+                        })
+                        .unwrap_or_else(|| format!("Deprecated {}", outcome.locator))
+                } else {
+                    format!("Undeprecated {}", outcome.locator)
+                },
+                payload: ResultPayload::Deprecate { outcome },
+                exit: ExitCode::SUCCESS,
+            }),
+        Some(Command::Usage) => lifecycle::usage().await.map(|outcome| CommandOutput {
+            text: usage_text(&outcome),
+            payload: ResultPayload::Usage { outcome },
+            exit: ExitCode::SUCCESS,
+        }),
+        Some(Command::History {
+            locator: Some(locator),
+            command: None,
+        }) => release::history(&locator).await.map(|outcome| {
             let text = history_text(&outcome);
             CommandOutput {
                 text,
@@ -490,6 +578,23 @@ async fn run(args: impl IntoIterator<Item = OsString>) -> ExitCode {
                 exit: ExitCode::SUCCESS,
             }
         }),
+        Some(Command::History {
+            locator: None,
+            command: Some(HistoryCommand::Prune { locator, yes }),
+        }) => lifecycle::prune_history(&locator, cli.json, yes)
+            .await
+            .map(|outcome| CommandOutput {
+                text: format!(
+                    "Pruned {} private revisions from {} ({} bytes reclaimed)",
+                    outcome.pruned_revisions, outcome.locator, outcome.reclaimed_bytes
+                ),
+                payload: ResultPayload::HistoryPrune { outcome },
+                exit: ExitCode::SUCCESS,
+            }),
+        Some(Command::History { .. }) => Err(RuntimeError::new(
+            CliErrorCode::InvalidArguments,
+            "use `denju history @owner/skill` or `denju history prune @owner/skill`",
+        )),
         Some(Command::Diff {
             locator,
             revision_a,
@@ -532,16 +637,20 @@ async fn run(args: impl IntoIterator<Item = OsString>) -> ExitCode {
         Some(Command::Subscribe {
             locator,
             release_version,
-        }) => public::subscribe(&locator, release_version)
+            retain_on_delete,
+        }) => public::subscribe(&locator, release_version, retain_on_delete)
             .await
             .map(|outcome| CommandOutput {
-                text: format!(
-                    "Subscribed {}{} as {}",
-                    outcome.skill.locator,
-                    release_version
-                        .map(|value| format!(" at v{value}"))
-                        .unwrap_or_default(),
-                    outcome.harness_name
+                text: append_deprecation_notice(
+                    format!(
+                        "Subscribed {}{} as {}",
+                        outcome.skill.locator,
+                        release_version
+                            .map(|value| format!(" at v{value}"))
+                            .unwrap_or_default(),
+                        outcome.harness_name
+                    ),
+                    outcome.skill.deprecation.as_ref(),
                 ),
                 payload: ResultPayload::Subscribe { outcome },
                 exit: ExitCode::SUCCESS,
@@ -736,79 +845,6 @@ fn doctor_text(outcome: &DoctorOutcome) -> String {
     lines.extend(outcome.issues.iter().map(|item| format!("Issue: {item}")));
     lines.push(format!("Registry: {}", outcome.registry));
     lines.join("\n")
-}
-
-fn search_text(outcome: &PublicSkillSearchResponse) -> String {
-    if outcome.items.is_empty() {
-        return "No public skills found.".to_owned();
-    }
-    outcome
-        .items
-        .iter()
-        .map(|skill| format!("{}  {}", skill.locator, skill.description))
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-fn show_text(outcome: &PublicSkillDetail) -> String {
-    format!(
-        "{}\n{}\nRelease: v{} ({})",
-        outcome.skill.locator,
-        outcome.skill.description,
-        outcome.skill.version,
-        outcome.skill.revision_id
-    )
-}
-
-fn history_text(outcome: &SkillHistoryResponse) -> String {
-    if outcome.revisions.is_empty() {
-        return format!("{} has no visible revisions.", outcome.locator);
-    }
-    outcome
-        .revisions
-        .iter()
-        .map(|revision| {
-            let releases = if revision.released_versions.is_empty() {
-                "private".to_owned()
-            } else {
-                revision
-                    .released_versions
-                    .iter()
-                    .map(|version| format!("v{version}"))
-                    .collect::<Vec<_>>()
-                    .join(",")
-            };
-            format!("{}  {releases}", short_revision(&revision.revision_id))
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-fn diff_text(outcome: &DiffOutcome) -> String {
-    if outcome.changes.is_empty() {
-        return format!(
-            "No changes between {} and {}.",
-            short_revision(&outcome.from_revision),
-            short_revision(&outcome.to_revision)
-        );
-    }
-    outcome
-        .changes
-        .iter()
-        .map(|change| format!("{}  {}", change.change, change.path))
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-fn short_revision(revision: &str) -> &str {
-    revision.get(..12).unwrap_or(revision)
-}
-
-fn sync_text(outcome: &SyncOutcome) -> String {
-    format!(
-        "Synced {} skills ({} materialized, {} removed).",
-        outcome.desired, outcome.materialized, outcome.removed
-    )
 }
 
 fn quote_command_arg(value: &str) -> String {

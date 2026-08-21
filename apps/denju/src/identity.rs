@@ -9,8 +9,9 @@ use std::{
 use denju_client::{ClientError, RegistryClient};
 use denju_core::OperationId;
 use denju_local::{
-    CredentialBackend, CredentialManager, IdentityRecord, InstallCredential, InstallationRecord,
-    LocalDatabase, LocalPaths, SessionCredential,
+    AccountDeleteJournal, AccountDeleteJournalPayload, CredentialBackend, CredentialManager,
+    IdentityRecord, InstallCredential, InstallationRecord, JournalState, LocalDatabase, LocalPaths,
+    SessionCredential,
 };
 use denju_wire::{
     AccountDeleteRequest, ApiErrorCode, AutomationTokenCreateRequest,
@@ -349,44 +350,167 @@ pub async fn revoke_automation_token(
 }
 
 pub async fn delete_account(json: bool, yes: bool) -> Result<DeleteOutcome, RuntimeError> {
-    require_interactive(
-        json,
-        "account deletion requires confirmation and hidden password input",
-    )?;
-    if !yes && !confirm("Delete this Denju account? [y/N] ")? {
-        return Err(RuntimeError::new(
-            CliErrorCode::ConfirmationRequired,
-            "account deletion was not confirmed",
-        ));
+    if json {
+        require_interactive(
+            true,
+            "account deletion requires confirmation and hidden password input",
+        )?;
     }
-    let context = session_context().await?;
-    let password = prompt_password("Password: ")?;
-    let operation_id = new_operation_id()?;
-    let request_hash =
-        identity_mutation_request_hash(&operation_id, IdentityMutationDomain::AccountDelete, &())
-            .map_err(internal_error)?;
-    let response = context
-        .client
-        .delete_account(&AccountDeleteRequest {
-            operation_id,
-            password,
-            request_hash: request_hash.to_string(),
-        })
+    let paths = LocalPaths::discover().map_err(local_error)?;
+    if !paths.state_db.is_file() {
+        return Err(
+            RuntimeError::new(CliErrorCode::SetupRequired, "Denju is not set up")
+                .recovery("denju setup"),
+        );
+    }
+    let db = LocalDatabase::open(&paths.state_db)
         .await
-        .map_err(client_error)?;
-    let removed_local_skills = public::clear_local_managed_state().await?;
-    CredentialManager::delete_session(&context.paths, context.session_backend)
-        .map_err(credential_error)?;
-    let install_backend = CredentialBackend::from_str(&context.installation.credential_backend)
-        .map_err(credential_error)?;
-    CredentialManager::delete_installation(&context.paths, install_backend)
-        .map_err(credential_error)?;
-    context.db.clear_identity().await.map_err(local_error)?;
-    context.db.clear_installation().await.map_err(local_error)?;
+        .map_err(local_error)?;
+    let journal = if let Some(journal) = db.account_delete_journal().await.map_err(local_error)? {
+        journal
+    } else {
+        require_interactive(
+            json,
+            "account deletion requires confirmation and hidden password input",
+        )?;
+        if !yes && !confirm("Delete this Denju account? [y/N] ")? {
+            return Err(RuntimeError::new(
+                CliErrorCode::ConfirmationRequired,
+                "account deletion was not confirmed",
+            ));
+        }
+        let context = session_context().await?;
+        let operation_id = OperationId::from_uuid(Uuid::now_v7()).map_err(internal_error)?;
+        let payload = AccountDeleteJournalPayload {
+            username: context.identity.username.clone(),
+            session_backend: context.session_backend.as_str().to_owned(),
+            installation_backend: context.installation.credential_backend.clone(),
+            removed_local_skills: context
+                .db
+                .managed_skills()
+                .await
+                .map_err(local_error)?
+                .len(),
+        };
+        context
+            .db
+            .create_account_delete_journal(operation_id, payload.clone(), now_unix_ms())
+            .await
+            .map_err(local_error)?;
+        AccountDeleteJournal {
+            operation_id,
+            state: JournalState::Planned,
+            payload,
+        }
+    };
+    resume_account_delete(paths, db, journal, json).await
+}
+
+async fn resume_account_delete(
+    paths: LocalPaths,
+    db: LocalDatabase,
+    mut journal: AccountDeleteJournal,
+    json: bool,
+) -> Result<DeleteOutcome, RuntimeError> {
+    if journal.state == JournalState::Planned {
+        require_interactive(
+            json,
+            "account deletion recovery requires hidden password input",
+        )?;
+        let context = session_context().await?;
+        if context.identity.username != journal.payload.username {
+            return Err(RuntimeError::new(
+                CliErrorCode::LocalState,
+                "account deletion journal does not match the active identity",
+            )
+            .recovery("denju doctor"));
+        }
+        let password = prompt_password("Password: ")?;
+        let operation_id = journal.operation_id.to_string();
+        let request_hash = identity_mutation_request_hash(
+            &operation_id,
+            IdentityMutationDomain::AccountDelete,
+            &(),
+        )
+        .map_err(internal_error)?;
+        let response = context
+            .client
+            .delete_account(&AccountDeleteRequest {
+                operation_id,
+                password,
+                request_hash: request_hash.to_string(),
+            })
+            .await
+            .map_err(client_error)?;
+        if response.username != journal.payload.username {
+            return Err(RuntimeError::new(
+                CliErrorCode::Internal,
+                "registry account deletion response changed identity",
+            ));
+        }
+        db.advance_account_delete_journal(
+            journal.operation_id,
+            JournalState::Planned,
+            JournalState::Staged,
+            journal.payload.clone(),
+            now_unix_ms(),
+        )
+        .await
+        .map_err(local_error)?;
+        journal.state = JournalState::Staged;
+    }
+
+    if journal.state == JournalState::Staged {
+        public::clear_local_managed_state().await?;
+        db.advance_account_delete_journal(
+            journal.operation_id,
+            JournalState::Staged,
+            JournalState::Verified,
+            journal.payload.clone(),
+            now_unix_ms(),
+        )
+        .await
+        .map_err(local_error)?;
+        journal.state = JournalState::Verified;
+    }
+
+    if journal.state == JournalState::Verified {
+        let session_backend = CredentialBackend::from_str(&journal.payload.session_backend)
+            .map_err(credential_error)?;
+        let installation_backend =
+            CredentialBackend::from_str(&journal.payload.installation_backend)
+                .map_err(credential_error)?;
+        CredentialManager::delete_session(&paths, session_backend).map_err(credential_error)?;
+        CredentialManager::delete_installation(&paths, installation_backend)
+            .map_err(credential_error)?;
+        db.clear_identity().await.map_err(local_error)?;
+        db.clear_installation().await.map_err(local_error)?;
+        db.advance_account_delete_journal(
+            journal.operation_id,
+            JournalState::Verified,
+            JournalState::Switched,
+            journal.payload.clone(),
+            now_unix_ms(),
+        )
+        .await
+        .map_err(local_error)?;
+        journal.state = JournalState::Switched;
+    }
+
+    if journal.state != JournalState::Switched {
+        return Err(RuntimeError::new(
+            CliErrorCode::LocalState,
+            "account deletion journal is in an unexpected state",
+        )
+        .recovery("denju doctor"));
+    }
+    db.finish_account_delete_journal(journal.operation_id)
+        .await
+        .map_err(local_error)?;
     Ok(DeleteOutcome {
         state: "deleted",
-        username: response.username,
-        removed_local_skills,
+        username: journal.payload.username,
+        removed_local_skills: journal.payload.removed_local_skills,
     })
 }
 

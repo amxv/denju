@@ -382,6 +382,30 @@ impl LocalDatabase {
         .await
     }
 
+    pub async fn adopt_registry_rename_baseline(
+        &self,
+        resource_id: String,
+        generation: i64,
+        revision_id: String,
+        root_tree_id: String,
+        working_generation_path: String,
+        now_unix_ms: i64,
+    ) -> Result<(), LocalDbError> {
+        self.call(move |connection| {
+            let changed = connection.execute(
+                "UPDATE workspace_state SET base_generation=?1,base_revision_id=?2,local_head_revision_id=?2, \
+                 valid_root_tree_id=?3,working_generation_path=?4,status='clean',error_message=NULL,pending_rename=NULL,updated_at_unix_ms=?5 \
+                 WHERE resource_id=?6",
+                params![generation, revision_id, root_tree_id, working_generation_path, now_unix_ms, resource_id],
+            )?;
+            if changed != 1 {
+                return Err(rusqlite::Error::QueryReturnedNoRows.into());
+            }
+            Ok(())
+        })
+        .await
+    }
+
     pub async fn clear_workspace_file_index(
         &self,
         resource_id: String,
@@ -571,6 +595,55 @@ impl LocalDatabase {
                 })
             })?;
             rows.collect::<Result<Vec<_>, _>>().map_err(LocalDbError::from)
+        })
+        .await
+    }
+
+    pub async fn advance_owned_metadata_generation(
+        &self,
+        resource_id: String,
+        expected_generation: i64,
+        new_generation: i64,
+        now_unix_ms: i64,
+    ) -> Result<(), LocalDbError> {
+        let delta = new_generation
+            .checked_sub(expected_generation)
+            .ok_or_else(|| {
+                LocalDbError::Corrupt("metadata generation moved backwards".to_owned())
+            })?;
+        if delta <= 0 {
+            return Err(LocalDbError::Corrupt(
+                "metadata generation did not advance".to_owned(),
+            ));
+        }
+        self.call(move |connection| {
+            let tx = connection.transaction()?;
+            let owned = tx.execute(
+                "UPDATE owned_skills SET resource_generation=?1,updated_at_unix_ms=?2 \
+                 WHERE resource_id=?3 AND resource_generation=?4",
+                params![new_generation, now_unix_ms, resource_id, expected_generation],
+            )?;
+            if owned != 1 {
+                return Err(rusqlite::Error::QueryReturnedNoRows.into());
+            }
+            let workspace = tx.execute(
+                "UPDATE workspace_state SET base_generation=?1, \
+                 status=CASE WHEN status='quota' THEN 'queued' ELSE status END, \
+                 error_message=CASE WHEN status='quota' THEN NULL ELSE error_message END, \
+                 updated_at_unix_ms=?2 WHERE resource_id=?3 AND base_generation=?4 \
+                 AND status IN ('clean','queued','quota')",
+                params![new_generation, now_unix_ms, resource_id, expected_generation],
+            )?;
+            if workspace != 1 {
+                return Err(rusqlite::Error::QueryReturnedNoRows.into());
+            }
+            tx.execute(
+                "UPDATE local_revisions SET expected_generation=expected_generation+?1,updated_at_unix_ms=?2 \
+                 WHERE resource_id=?3 AND state='queued'",
+                params![delta, now_unix_ms, resource_id],
+            )?;
+            tx.commit()?;
+            Ok(())
         })
         .await
     }

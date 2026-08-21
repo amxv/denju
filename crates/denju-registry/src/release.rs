@@ -12,7 +12,7 @@ use denju_core::{
 use denju_wire::{
     ApiError, ApiErrorCode, DirtyResource, PrivateRevisionResponse, PublicSkill,
     PublicSkillManifest, PublishSkillRequest, PublishSkillResponse, RequestHash,
-    RestoreSkillRequest, SkillHistoryResponse, SkillRelease, SkillRevisionDetail,
+    RestoreSkillRequest, SkillDeprecation, SkillHistoryResponse, SkillRelease, SkillRevisionDetail,
     SkillRevisionSummary, SnapshotDownload, SyncHint, SyncReconcileRequest, SyncReconcileResponse,
     publish_skill_request_hash, restore_skill_request_hash,
 };
@@ -25,6 +25,8 @@ use crate::{
     Registry, RegistryWake,
     ingest::{decode_32, manifest_blobs},
     internal_api_error,
+    realtime::wake_as_sync_hint,
+    release_validation::validate_release_metadata,
 };
 
 #[derive(Debug, FromRow)]
@@ -33,6 +35,7 @@ struct ReleaseWorkspaceRow {
     owner: String,
     name: String,
     description: String,
+    visibility: String,
     generation: i64,
     latest_release_version: Option<i64>,
     revision_id: Vec<u8>,
@@ -40,6 +43,23 @@ struct ReleaseWorkspaceRow {
     snapshot_key: String,
     snapshot_sha256: Vec<u8>,
     snapshot_size: i64,
+    deprecated: bool,
+    replacement_id: Option<Uuid>,
+    replacement_owner: Option<String>,
+    replacement_name: Option<String>,
+}
+
+impl ReleaseWorkspaceRow {
+    fn deprecation(&self) -> Option<SkillDeprecation> {
+        self.deprecated.then(|| SkillDeprecation {
+            replacement_resource_id: self.replacement_id.map(|id| id.to_string()),
+            replacement_locator: self
+                .replacement_owner
+                .clone()
+                .zip(self.replacement_name.clone())
+                .map(|(owner, name)| format!("@{owner}/{name}")),
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -166,11 +186,15 @@ impl Registry {
         }
 
         let current = sqlx::query_as::<_, ReleaseWorkspaceRow>(
-            "SELECT r.owner_namespace_id,n.slug AS owner,r.slug AS name,r.description,r.generation, \
-                    r.latest_release_version,w.revision_id,w.manifest_json,w.snapshot_key,w.snapshot_sha256,w.snapshot_size \
+            "SELECT r.owner_namespace_id,n.slug AS owner,r.slug AS name,r.description,r.visibility,r.generation, \
+                    r.latest_release_version,w.revision_id,w.manifest_json,w.snapshot_key,w.snapshot_sha256,w.snapshot_size, \
+                    r.deprecated_at IS NOT NULL AS deprecated,replacement.id AS replacement_id, \
+                    replacement_owner.slug AS replacement_owner,replacement.slug AS replacement_name \
              FROM resources r JOIN namespaces n ON n.id=r.owner_namespace_id \
              JOIN skill_private_workspaces w ON w.resource_id=r.id \
-             WHERE r.id=$1 AND r.kind='skill' FOR UPDATE",
+             LEFT JOIN resources replacement ON replacement.id=r.deprecation_replacement_resource_id AND replacement.deleted_at IS NULL \
+             LEFT JOIN namespaces replacement_owner ON replacement_owner.id=replacement.owner_namespace_id \
+             WHERE r.id=$1 AND r.kind='skill' AND r.deleted_at IS NULL FOR UPDATE OF r,w",
         )
         .bind(resource_id.as_uuid())
         .fetch_optional(&mut *tx)
@@ -204,11 +228,86 @@ impl Registry {
             .fetch_one(&mut *tx)
             .await
             .map_err(internal_api_error)?;
-            if latest_revision == current.revision_id {
+            if latest_revision == current.revision_id && current.visibility == "public" {
                 return Err(ApiError::new(
                     ApiErrorCode::InvalidRequest,
                     "the private workspace has no unpublished changes",
                 ));
+            }
+            if latest_revision == current.revision_id {
+                let next_generation = current.generation.checked_add(1).ok_or_else(|| {
+                    ApiError::new(ApiErrorCode::Internal, "resource generation overflow")
+                })?;
+                sqlx::query("UPDATE resources SET visibility='public',generation=$1 WHERE id=$2")
+                    .bind(next_generation)
+                    .bind(resource_id.as_uuid())
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(internal_api_error)?;
+                sqlx::query(
+                    "UPDATE skill_private_workspaces SET generation=$1 WHERE resource_id=$2",
+                )
+                .bind(next_generation)
+                .bind(resource_id.as_uuid())
+                .execute(&mut *tx)
+                .await
+                .map_err(internal_api_error)?;
+                let release_row = sqlx::query(
+                    "SELECT sr.message,COALESCE(array_agg(srt.tag ORDER BY srt.tag) FILTER (WHERE srt.tag IS NOT NULL),'{}'::text[]) \
+                     FROM skill_releases sr LEFT JOIN skill_release_tags srt \
+                     ON srt.resource_id=sr.resource_id AND srt.version=sr.version \
+                     WHERE sr.resource_id=$1 AND sr.version=$2 GROUP BY sr.message",
+                )
+                .bind(resource_id.as_uuid())
+                .bind(latest)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(internal_api_error)?;
+                let generation = u64::try_from(next_generation).map_err(|_| {
+                    ApiError::new(ApiErrorCode::Internal, "resource generation is invalid")
+                })?;
+                let release_version = u64::try_from(latest).map_err(|_| {
+                    ApiError::new(ApiErrorCode::Internal, "release version is invalid")
+                })?;
+                let revision = decode_32(&current.revision_id, "stored revision ID")?;
+                let deprecation = current.deprecation();
+                let outcome = PublishSkillResponse {
+                    skill: PublicSkill {
+                        resource_id: resource_id.to_string(),
+                        locator: format!("@{}/{}", current.owner, current.name),
+                        owner: current.owner,
+                        name: current.name,
+                        description: current.description,
+                        generation,
+                        version: release_version,
+                        revision_id: hex::encode(revision),
+                        deprecation,
+                    },
+                    release: SkillRelease {
+                        version: release_version,
+                        revision_id: hex::encode(revision),
+                        message: release_row.get(0),
+                        tags: release_row.get(1),
+                    },
+                };
+                sqlx::query(
+                    "INSERT INTO skill_release_operations (user_id,operation_id,request_hash,resource_id,outcome_json) \
+                     VALUES ($1,$2,$3,$4,$5)",
+                )
+                .bind(authority.user_id)
+                .bind(operation_id.as_uuid())
+                .bind(supplied_hash.as_bytes().as_slice())
+                .bind(resource_id.as_uuid())
+                .bind(serde_json::to_value(&outcome).map_err(|error| {
+                    ApiError::new(ApiErrorCode::Internal, error.to_string())
+                })?)
+                .execute(&mut *tx)
+                .await
+                .map_err(internal_api_error)?;
+                enqueue_resource_wake(&mut tx, resource_id.as_uuid(), generation).await?;
+                tx.commit().await.map_err(internal_api_error)?;
+                let _ = self.drain_outbox(64).await;
+                return Ok(outcome);
             }
         }
         let version = current
@@ -270,6 +369,7 @@ impl Registry {
             .map_err(|_| ApiError::new(ApiErrorCode::Internal, "resource generation is invalid"))?;
         let release_version = u64::try_from(version)
             .map_err(|_| ApiError::new(ApiErrorCode::Internal, "release version is invalid"))?;
+        let deprecation = current.deprecation();
         let outcome = PublishSkillResponse {
             skill: PublicSkill {
                 resource_id: resource_id.to_string(),
@@ -280,6 +380,7 @@ impl Registry {
                 generation,
                 version: release_version,
                 revision_id: hex::encode(revision),
+                deprecation,
             },
             release: SkillRelease {
                 version: release_version,
@@ -316,24 +417,23 @@ impl Registry {
     ) -> Result<SkillHistoryResponse, ApiError> {
         let parsed = denju_core::ResourceLocator::from_str(locator)
             .map_err(|error| ApiError::new(ApiErrorCode::InvalidRequest, error.to_string()))?;
+        let resolved = self.resolve_active_skill_locator(&parsed).await?;
         let row = sqlx::query(
-            "SELECT r.id,r.owner_namespace_id,r.visibility,r.generation,r.latest_release_version,w.revision_id \
-             FROM resources r JOIN namespaces n ON n.id=r.owner_namespace_id \
-             JOIN skill_private_workspaces w ON w.resource_id=r.id \
-             WHERE r.kind='skill' AND n.slug=$1 AND r.slug=$2",
+            "SELECT r.visibility,r.generation,r.latest_release_version,w.revision_id \
+             FROM resources r JOIN skill_private_workspaces w ON w.resource_id=r.id \
+             WHERE r.id=$1 AND r.kind='skill' AND r.deleted_at IS NULL",
         )
-        .bind(parsed.owner())
-        .bind(parsed.name())
+        .bind(resolved.resource_id)
         .fetch_optional(&self.pool)
         .await
         .map_err(internal_api_error)?
         .ok_or_else(|| ApiError::new(ApiErrorCode::NotFound, "skill not found"))?;
-        let resource_id: Uuid = row.get(0);
-        let owner_namespace: Uuid = row.get(1);
-        let visibility: String = row.get(2);
-        let generation: i64 = row.get(3);
-        let latest_release: Option<i64> = row.get(4);
-        let private_head: Vec<u8> = row.get(5);
+        let resource_id = resolved.resource_id;
+        let owner_namespace = resolved.owner_namespace_id;
+        let visibility: String = row.get(0);
+        let generation: i64 = row.get(1);
+        let latest_release: Option<i64> = row.get(2);
+        let private_head: Vec<u8> = row.get(3);
         let owner = match bearer {
             Some(token) => self
                 .user_authority(token, "skills:read")
@@ -390,7 +490,7 @@ impl Registry {
         let _ = latest_release;
         Ok(SkillHistoryResponse {
             resource_id: resource_id.to_string(),
-            locator: locator.to_owned(),
+            locator: format!("@{}/{}", resolved.owner, resolved.name),
             generation: u64::try_from(generation).map_err(|_| {
                 ApiError::new(ApiErrorCode::Internal, "stored generation is invalid")
             })?,
@@ -408,25 +508,24 @@ impl Registry {
     ) -> Result<SkillRevisionDetail, ApiError> {
         let parsed = denju_core::ResourceLocator::from_str(locator)
             .map_err(|error| ApiError::new(ApiErrorCode::InvalidRequest, error.to_string()))?;
+        let resolved = self.resolve_active_skill_locator(&parsed).await?;
         let revision = RevisionId::from_str(revision_id)
             .map_err(|error| ApiError::new(ApiErrorCode::InvalidRequest, error.to_string()))?;
         let row = sqlx::query(
-            "SELECT r.id,r.owner_namespace_id,r.visibility,rrs.manifest_json,rrs.snapshot_key,rrs.snapshot_sha256,rrs.snapshot_size, \
-                    EXISTS(SELECT 1 FROM skill_releases sr WHERE sr.resource_id=r.id AND sr.revision_id=$3) AS released \
-             FROM resources r JOIN namespaces n ON n.id=r.owner_namespace_id \
-             JOIN resource_revision_snapshots rrs ON rrs.resource_id=r.id AND rrs.revision_id=$3 \
-             WHERE r.kind='skill' AND n.slug=$1 AND r.slug=$2",
+            "SELECT r.visibility,rrs.manifest_json,rrs.snapshot_key,rrs.snapshot_sha256,rrs.snapshot_size, \
+                    EXISTS(SELECT 1 FROM skill_releases sr WHERE sr.resource_id=r.id AND sr.revision_id=$2) AS released \
+             FROM resources r JOIN resource_revision_snapshots rrs ON rrs.resource_id=r.id AND rrs.revision_id=$2 \
+             WHERE r.id=$1 AND r.kind='skill' AND r.deleted_at IS NULL",
         )
-        .bind(parsed.owner())
-        .bind(parsed.name())
+        .bind(resolved.resource_id)
         .bind(revision.as_bytes().as_slice())
         .fetch_optional(&self.pool)
         .await
         .map_err(internal_api_error)?
         .ok_or_else(|| ApiError::new(ApiErrorCode::NotFound, "revision not found"))?;
-        let resource_id: Uuid = row.get(0);
-        let owner_namespace: Uuid = row.get(1);
-        let visibility: String = row.get(2);
+        let resource_id = resolved.resource_id;
+        let owner_namespace = resolved.owner_namespace_id;
+        let visibility: String = row.get(0);
         let owner = match bearer {
             Some(token) => self
                 .user_authority(token, "skills:read")
@@ -435,15 +534,15 @@ impl Registry {
                 .is_some_and(|authority| authority.namespace_id == owner_namespace),
             None => false,
         };
-        let released: bool = row.get(7);
+        let released: bool = row.get(5);
         if !(owner || (visibility == "public" && released)) {
             return Err(ApiError::new(ApiErrorCode::NotFound, "revision not found"));
         }
-        let manifest: PublicSkillManifest = serde_json::from_value(row.get(3))
+        let manifest: PublicSkillManifest = serde_json::from_value(row.get(1))
             .map_err(|error| ApiError::new(ApiErrorCode::Internal, error.to_string()))?;
-        let key: String = row.get(4);
-        let sha = decode_32(&row.get::<Vec<u8>, _>(5), "stored snapshot SHA-256")?;
-        let size: i64 = row.get(6);
+        let key: String = row.get(2);
+        let sha = decode_32(&row.get::<Vec<u8>, _>(3), "stored snapshot SHA-256")?;
+        let size: i64 = row.get(4);
         let url = self
             .objects
             .presign_get(&key)
@@ -451,7 +550,7 @@ impl Registry {
             .map_err(|error| ApiError::new(ApiErrorCode::Unavailable, error.to_string()))?;
         Ok(SkillRevisionDetail {
             resource_id: resource_id.to_string(),
-            locator: locator.to_owned(),
+            locator: format!("@{}/{}", resolved.owner, resolved.name),
             revision_id: revision_id.to_owned(),
             parent_revision_ids: revision_parents(&self.pool, revision_id).await?,
             manifest,
@@ -567,7 +666,7 @@ impl Registry {
         let mut tx = self.pool.begin().await.map_err(internal_api_error)?;
         let current = sqlx::query_as::<_, (Uuid, i64, Vec<u8>)>(
             "SELECT r.owner_namespace_id,r.generation,w.revision_id FROM resources r \
-             JOIN skill_private_workspaces w ON w.resource_id=r.id WHERE r.id=$1 AND r.kind='skill' FOR UPDATE",
+             JOIN skill_private_workspaces w ON w.resource_id=r.id WHERE r.id=$1 AND r.kind='skill' AND r.deleted_at IS NULL FOR UPDATE",
         )
         .bind(resource_id.as_uuid())
         .fetch_optional(&mut *tx)
@@ -731,22 +830,25 @@ impl Registry {
     pub async fn watched_resource_ids(&self, bearer: &str) -> Result<BTreeSet<Uuid>, ApiError> {
         let subject = self.subscription_subject(bearer).await?;
         let rows = match subject {
-            crate::identity::SubscriptionSubject::Installation(id) => {
+            crate::identity_support::SubscriptionSubject::Installation(id) => sqlx::query_scalar::<
+                _,
+                Uuid,
+            >(
+                "SELECT s.resource_id FROM installation_subscriptions s WHERE s.installation_id=$1",
+            )
+            .bind(id)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(internal_api_error)?,
+            crate::identity_support::SubscriptionSubject::User(id) => {
                 sqlx::query_scalar::<_, Uuid>(
-                    "SELECT resource_id FROM installation_subscriptions WHERE installation_id=$1",
+                    "SELECT s.resource_id FROM account_subscriptions s WHERE s.user_id=$1",
                 )
                 .bind(id)
                 .fetch_all(&self.pool)
                 .await
                 .map_err(internal_api_error)?
             }
-            crate::identity::SubscriptionSubject::User(id) => sqlx::query_scalar::<_, Uuid>(
-                "SELECT resource_id FROM account_subscriptions WHERE user_id=$1",
-            )
-            .bind(id)
-            .fetch_all(&self.pool)
-            .await
-            .map_err(internal_api_error)?,
         };
         Ok(rows.into_iter().collect())
     }
@@ -843,21 +945,6 @@ impl Registry {
     }
 }
 
-fn wake_as_sync_hint(wake: &RegistryWake) -> SyncHint {
-    match wake {
-        RegistryWake::Resource {
-            resource_id,
-            generation,
-        } => SyncHint::Dirty {
-            resources: vec![DirtyResource {
-                resource_id: resource_id.to_string(),
-                generation: *generation,
-            }],
-        },
-        RegistryWake::ResyncAll => SyncHint::ResyncAll,
-    }
-}
-
 async fn revision_parents(pool: &sqlx::PgPool, revision_id: &str) -> Result<Vec<String>, ApiError> {
     let revision = RevisionId::from_str(revision_id)
         .map_err(|error| ApiError::new(ApiErrorCode::Internal, error.to_string()))?;
@@ -873,37 +960,7 @@ async fn revision_parents(pool: &sqlx::PgPool, revision_id: &str) -> Result<Vec<
         .collect()
 }
 
-fn validate_release_metadata(message: Option<&str>, tags: &[String]) -> Result<(), ApiError> {
-    if message.is_some_and(|value| value.len() > 4096) {
-        return Err(ApiError::new(
-            ApiErrorCode::InvalidRequest,
-            "release message exceeds 4096 bytes",
-        ));
-    }
-    let mut unique = BTreeSet::new();
-    for tag in tags {
-        if tag.is_empty()
-            || tag.len() > 64
-            || !tag
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
-        {
-            return Err(ApiError::new(
-                ApiErrorCode::InvalidRequest,
-                "release tags must be 1-64 ASCII letters, digits, '.', '_' or '-'",
-            ));
-        }
-        if !unique.insert(tag) {
-            return Err(ApiError::new(
-                ApiErrorCode::InvalidRequest,
-                "release tags must be unique",
-            ));
-        }
-    }
-    Ok(())
-}
-
-async fn enqueue_resource_wake(
+pub(crate) async fn enqueue_resource_wake(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     resource_id: Uuid,
     generation: u64,

@@ -121,7 +121,7 @@ impl Registry {
             ));
         }
         if sqlx::query_scalar::<_, i64>(
-            "SELECT count(*) FROM resources WHERE owner_namespace_id=$1 AND kind='skill' AND slug=$2",
+            "SELECT count(*) FROM resources WHERE owner_namespace_id=$1 AND kind='skill' AND slug=$2 AND deleted_at IS NULL",
         )
         .bind(authority.namespace_id)
         .bind(&request.name)
@@ -417,7 +417,7 @@ impl Registry {
             return decode_import_outcome(locked.outcome_json);
         }
         if sqlx::query_scalar::<_, i64>(
-            "SELECT count(*) FROM resources WHERE owner_namespace_id=$1 AND kind='skill' AND slug=$2",
+            "SELECT count(*) FROM resources WHERE owner_namespace_id=$1 AND kind='skill' AND slug=$2 AND deleted_at IS NULL",
         )
         .bind(authority.namespace_id)
         .bind(&operation.slug)
@@ -433,6 +433,14 @@ impl Registry {
         }
 
         enforce_namespace_quota(self, &mut tx, authority.namespace_id, &expected_blobs).await?;
+        sqlx::query(
+            "DELETE FROM resource_redirects WHERE namespace_id=$1 AND kind='skill' AND old_slug=$2",
+        )
+        .bind(authority.namespace_id)
+        .bind(&operation.slug)
+        .execute(&mut *tx)
+        .await
+        .map_err(internal_api_error)?;
         persist_canonical_blobs(&mut tx, &expected_blobs).await?;
         persist_trees(&mut tx, &trees).await?;
         sqlx::query(
@@ -454,8 +462,16 @@ impl Registry {
             .bind(blob.as_bytes().as_slice())
             .execute(&mut *tx)
             .await
-            .map_err(internal_api_error)?;
+                .map_err(internal_api_error)?;
         }
+        sqlx::query(
+            "DELETE FROM resource_redirects WHERE namespace_id=$1 AND kind='skill' AND old_slug=$2",
+        )
+        .bind(authority.namespace_id)
+        .bind(&operation.slug)
+        .execute(&mut *tx)
+        .await
+        .map_err(internal_api_error)?;
         sqlx::query(
             "INSERT INTO resources \
              (id,owner_namespace_id,slug,kind,visibility,description,generation,latest_release_version) \
@@ -560,7 +576,7 @@ impl Registry {
              FROM resources r \
              JOIN namespaces n ON n.id=r.owner_namespace_id \
              JOIN skill_private_workspaces w ON w.resource_id=r.id \
-             WHERE r.owner_namespace_id=$1 AND r.kind='skill' \
+             WHERE r.owner_namespace_id=$1 AND r.kind='skill' AND r.deleted_at IS NULL \
              ORDER BY r.slug,r.id",
         )
         .bind(authority.namespace_id)

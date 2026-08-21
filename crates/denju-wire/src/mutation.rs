@@ -19,6 +19,11 @@ const PRIVATE_REVISION_DOMAIN: &[u8] = b"denju:http:v1:private-revision\0";
 const PRIVATE_SKILL_IMPORT_DOMAIN: &[u8] = b"denju:http:v1:private-skill-import\0";
 const PUBLISH_SKILL_DOMAIN: &[u8] = b"denju:http:v1:publish-skill\0";
 const RESTORE_SKILL_DOMAIN: &[u8] = b"denju:http:v1:restore-skill\0";
+const RENAME_SKILL_DOMAIN: &[u8] = b"denju:http:v1:rename-skill\0";
+const UNPUBLISH_SKILL_DOMAIN: &[u8] = b"denju:http:v1:unpublish-skill\0";
+const DELETE_SKILL_DOMAIN: &[u8] = b"denju:http:v1:delete-skill\0";
+const DEPRECATE_SKILL_DOMAIN: &[u8] = b"denju:http:v1:deprecate-skill\0";
+const HISTORY_PRUNE_DOMAIN: &[u8] = b"denju:http:v1:history-prune\0";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct RequestHash([u8; 32]);
@@ -143,6 +148,7 @@ struct SubscriptionHashInput<'a> {
     resource_id: &'a str,
     expected_generation: u64,
     release_version: Option<u64>,
+    retain_on_delete: bool,
 }
 
 pub fn subscription_request_hash(
@@ -151,12 +157,14 @@ pub fn subscription_request_hash(
     resource_id: &str,
     expected_generation: u64,
     release_version: Option<u64>,
+    retain_on_delete: bool,
 ) -> Result<RequestHash, RequestHashError> {
     let payload = SubscriptionHashInput {
         operation_id,
         resource_id,
         expected_generation,
         release_version,
+        retain_on_delete,
     };
     let canonical = serde_json_canonicalizer::to_vec(&payload)
         .map_err(|error| RequestHashError::Canonicalization(error.to_string()))?;
@@ -165,6 +173,130 @@ pub fn subscription_request_hash(
         SubscriptionMutationKind::Subscribe => SUBSCRIBE_DOMAIN,
         SubscriptionMutationKind::Unsubscribe => UNSUBSCRIBE_DOMAIN,
     });
+    hasher.update(canonical);
+    Ok(RequestHash::from_bytes(hasher.finalize().into()))
+}
+
+pub fn rename_skill_request_hash(
+    operation_id: &str,
+    resource_id: &str,
+    expected_generation: u64,
+    new_name: &str,
+    prepared_revision_operation_id: Option<&str>,
+) -> Result<RequestHash, RequestHashError> {
+    #[derive(Serialize)]
+    struct Input<'a> {
+        operation_id: &'a str,
+        resource_id: &'a str,
+        expected_generation: u64,
+        new_name: &'a str,
+        prepared_revision_operation_id: Option<&'a str>,
+    }
+    hash_payload(
+        RENAME_SKILL_DOMAIN,
+        &Input {
+            operation_id,
+            resource_id,
+            expected_generation,
+            new_name,
+            prepared_revision_operation_id,
+        },
+    )
+}
+
+pub fn unpublish_skill_request_hash(
+    operation_id: &str,
+    resource_id: &str,
+    expected_generation: u64,
+) -> Result<RequestHash, RequestHashError> {
+    lifecycle_resource_hash(
+        UNPUBLISH_SKILL_DOMAIN,
+        operation_id,
+        resource_id,
+        expected_generation,
+    )
+}
+
+pub fn delete_skill_request_hash(
+    operation_id: &str,
+    resource_id: &str,
+    expected_generation: u64,
+) -> Result<RequestHash, RequestHashError> {
+    lifecycle_resource_hash(
+        DELETE_SKILL_DOMAIN,
+        operation_id,
+        resource_id,
+        expected_generation,
+    )
+}
+
+pub fn history_prune_request_hash(
+    operation_id: &str,
+    resource_id: &str,
+    expected_generation: u64,
+) -> Result<RequestHash, RequestHashError> {
+    lifecycle_resource_hash(
+        HISTORY_PRUNE_DOMAIN,
+        operation_id,
+        resource_id,
+        expected_generation,
+    )
+}
+
+pub fn deprecate_skill_request_hash(
+    operation_id: &str,
+    resource_id: &str,
+    expected_generation: u64,
+    deprecated: bool,
+    replacement_resource_id: Option<&str>,
+) -> Result<RequestHash, RequestHashError> {
+    #[derive(Serialize)]
+    struct Input<'a> {
+        operation_id: &'a str,
+        resource_id: &'a str,
+        expected_generation: u64,
+        deprecated: bool,
+        replacement_resource_id: Option<&'a str>,
+    }
+    hash_payload(
+        DEPRECATE_SKILL_DOMAIN,
+        &Input {
+            operation_id,
+            resource_id,
+            expected_generation,
+            deprecated,
+            replacement_resource_id,
+        },
+    )
+}
+
+fn lifecycle_resource_hash(
+    domain: &[u8],
+    operation_id: &str,
+    resource_id: &str,
+    expected_generation: u64,
+) -> Result<RequestHash, RequestHashError> {
+    #[derive(Serialize)]
+    struct Input<'a> {
+        operation_id: &'a str,
+        resource_id: &'a str,
+        expected_generation: u64,
+    }
+    hash_payload(
+        domain,
+        &Input {
+            operation_id,
+            resource_id,
+            expected_generation,
+        },
+    )
+}
+
+fn hash_payload<T: Serialize>(domain: &[u8], payload: &T) -> Result<RequestHash, RequestHashError> {
+    let canonical = serde_json_canonicalizer::to_vec(payload)
+        .map_err(|error| RequestHashError::Canonicalization(error.to_string()))?;
+    let mut hasher = Sha256::new();
+    hasher.update(domain);
     hasher.update(canonical);
     Ok(RequestHash::from_bytes(hasher.finalize().into()))
 }
@@ -309,6 +441,7 @@ mod tests {
             "01890f47-6a1d-7ad0-8f43-9a4d8c29f002",
             7,
             None,
+            false,
         )
         .unwrap();
         let unsubscribe = subscription_request_hash(
@@ -317,6 +450,7 @@ mod tests {
             "01890f47-6a1d-7ad0-8f43-9a4d8c29f002",
             7,
             None,
+            false,
         )
         .unwrap();
         assert_ne!(subscribe, unsubscribe);
@@ -330,6 +464,7 @@ mod tests {
             "01890f47-6a1d-7ad0-8f43-9a4d8c29f002",
             7,
             None,
+            false,
         )
         .unwrap();
         let pinned = subscription_request_hash(
@@ -338,9 +473,71 @@ mod tests {
             "01890f47-6a1d-7ad0-8f43-9a4d8c29f002",
             7,
             Some(3),
+            false,
         )
         .unwrap();
         assert_ne!(following_latest, pinned);
+    }
+
+    #[test]
+    fn subscription_delete_retention_is_part_of_the_request_hash() {
+        let ordinary = subscription_request_hash(
+            SubscriptionMutationKind::Subscribe,
+            "01890f47-6a1c-7cc2-98c1-5f6c1ed8a3a1",
+            "01890f47-6a1d-7ad0-8f43-9a4d8c29f002",
+            7,
+            None,
+            false,
+        )
+        .unwrap();
+        let retained = subscription_request_hash(
+            SubscriptionMutationKind::Subscribe,
+            "01890f47-6a1c-7cc2-98c1-5f6c1ed8a3a1",
+            "01890f47-6a1d-7ad0-8f43-9a4d8c29f002",
+            7,
+            None,
+            true,
+        )
+        .unwrap();
+        assert_ne!(ordinary, retained);
+    }
+
+    #[test]
+    fn lifecycle_hashes_bind_action_and_mutable_fields() {
+        let operation = "01890f47-6a1c-7cc2-98c1-5f6c1ed8a3a1";
+        let resource = "01890f47-6a1d-7ad0-8f43-9a4d8c29f002";
+        let unpublish = unpublish_skill_request_hash(operation, resource, 7).unwrap();
+        let delete = delete_skill_request_hash(operation, resource, 7).unwrap();
+        let prune = history_prune_request_hash(operation, resource, 7).unwrap();
+        assert_ne!(unpublish, delete);
+        assert_ne!(delete, prune);
+
+        let renamed = rename_skill_request_hash(operation, resource, 7, "renamed", None).unwrap();
+        let renamed_again =
+            rename_skill_request_hash(operation, resource, 7, "other", None).unwrap();
+        let prepared = rename_skill_request_hash(
+            operation,
+            resource,
+            7,
+            "renamed",
+            Some("01890f47-6a1c-7cc2-98c1-5f6c1ed8a3ff"),
+        )
+        .unwrap();
+        assert_ne!(renamed, renamed_again);
+        assert_ne!(renamed, prepared);
+
+        let deprecated = deprecate_skill_request_hash(operation, resource, 7, true, None).unwrap();
+        let replacement = deprecate_skill_request_hash(
+            operation,
+            resource,
+            7,
+            true,
+            Some("01890f47-6a1e-72ce-88bf-ef23fc661004"),
+        )
+        .unwrap();
+        let restored = deprecate_skill_request_hash(operation, resource, 7, false, None).unwrap();
+        assert_ne!(deprecated, replacement);
+        assert_ne!(deprecated, restored);
     }
 
     #[test]

@@ -24,21 +24,26 @@ use denju_wire::{
     AccountDeleteRequest, AccountDeleteResponse, ApiError, ApiErrorCode,
     AutomationTokenCreateRequest, AutomationTokenCreateResponse, AutomationTokenList,
     AutomationTokenRevokeRequest, AutomationTokenRevokeResponse, ClaimIdentityRequest,
-    CreateInstallationRequest, CreateInstallationResponse, DeviceList, DeviceRevokeRequest,
-    DeviceRevokeResponse, IdentityBackupRequest, IdentityInfo, IdentitySessionResponse,
-    LoginRequest, PrivateRevisionCommitRequest, PrivateRevisionPrepareResponse,
-    PrivateRevisionRequest, PrivateRevisionResponse, PrivateSkillCatalog,
-    PrivateSkillImportCommitRequest, PrivateSkillImportPrepareResponse, PrivateSkillImportRequest,
-    PrivateSkillImportResponse, PublicSkillDetail, PublicSkillSearchResponse, PublishSkillRequest,
-    PublishSkillResponse, RecoveryResetRequest, RegistryCapabilities, RegistryLimits,
-    RestoreSkillRequest, RestoreSkillResponse, SkillHistoryResponse, SkillRevisionDetail,
-    SubscriptionCatalog, SubscriptionMutationKind, SubscriptionMutationRequest,
-    SubscriptionMutationResponse, SyncHint, SyncReconcileRequest, SyncReconcileResponse,
+    CreateInstallationRequest, CreateInstallationResponse, DeleteSkillResponse,
+    DeprecateSkillRequest, DeprecateSkillResponse, DeviceList, DeviceRevokeRequest,
+    DeviceRevokeResponse, HistoryPruneResponse, IdentityBackupRequest, IdentityInfo,
+    IdentitySessionResponse, LoginRequest, PrivateRevisionCommitRequest,
+    PrivateRevisionPrepareResponse, PrivateRevisionRequest, PrivateRevisionResponse,
+    PrivateSkillCatalog, PrivateSkillImportCommitRequest, PrivateSkillImportPrepareResponse,
+    PrivateSkillImportRequest, PrivateSkillImportResponse, PublicSkillDetail,
+    PublicSkillSearchResponse, PublishSkillRequest, PublishSkillResponse, RecoveryResetRequest,
+    RegistryCapabilities, RegistryLimits, RenameSkillRequest, RenameSkillResponse,
+    ResourceLifecycleRequest, RestoreSkillRequest, RestoreSkillResponse, SkillHistoryResponse,
+    SkillRevisionDetail, SubscriptionCatalog, SubscriptionMutationKind,
+    SubscriptionMutationRequest, SubscriptionMutationResponse, SyncHint, SyncReconcileRequest,
+    SyncReconcileResponse, UnpublishSkillResponse, UsageResponse,
 };
 use futures_util::stream;
 use serde::Deserialize;
 use url::Url;
 use walkdir::WalkDir;
+
+mod maintenance;
 
 #[derive(Debug, Parser)]
 #[command(name = "denju-server", version = build_version())]
@@ -53,6 +58,11 @@ enum Command {
     Migrate,
     #[command(hide = true)]
     CheckObjectStore,
+    #[command(hide = true)]
+    Gc {
+        #[arg(long, default_value_t = 256)]
+        limit: u32,
+    },
     #[command(hide = true)]
     SeedPublic {
         #[arg(long)]
@@ -77,6 +87,7 @@ async fn main() -> ExitCode {
         Command::Serve => serve(config).await,
         Command::Migrate => migrate(&config).await,
         Command::CheckObjectStore => check_object_store(&config).await,
+        Command::Gc { limit } => maintenance::gc(&config, limit).await,
         Command::SeedPublic { owner, path } => seed_public(&config, &owner, &path).await,
     };
     match result {
@@ -166,6 +177,12 @@ async fn serve(config: ServerConfig) -> Result<(), String> {
         .route("/v1/skills/history", get(skill_history))
         .route("/v1/skills/revision", get(skill_revision))
         .route("/v1/skills/restore", post(restore_skill))
+        .route("/v1/skills/rename", post(rename_skill))
+        .route("/v1/skills/unpublish", post(unpublish_skill))
+        .route("/v1/skills/delete", post(delete_skill))
+        .route("/v1/skills/deprecate", post(deprecate_skill))
+        .route("/v1/skills/history/prune", post(prune_skill_history))
+        .route("/v1/usage", get(usage))
         .route("/v1/private-skills", get(private_skills))
         .route(
             "/v1/private-skills/imports/prepare",
@@ -431,6 +448,83 @@ async fn restore_skill(
     let bearer = bearer_token(&headers)?;
     registry
         .restore_skill(bearer, &request)
+        .await
+        .map(Json)
+        .map_err(ApiResponseError)
+}
+
+async fn rename_skill(
+    State(registry): State<Arc<Registry>>,
+    headers: HeaderMap,
+    Json(request): Json<RenameSkillRequest>,
+) -> Result<Json<RenameSkillResponse>, ApiResponseError> {
+    let bearer = bearer_token(&headers)?;
+    registry
+        .rename_skill(bearer, &request)
+        .await
+        .map(Json)
+        .map_err(ApiResponseError)
+}
+
+async fn unpublish_skill(
+    State(registry): State<Arc<Registry>>,
+    headers: HeaderMap,
+    Json(request): Json<ResourceLifecycleRequest>,
+) -> Result<Json<UnpublishSkillResponse>, ApiResponseError> {
+    let bearer = bearer_token(&headers)?;
+    registry
+        .unpublish_skill(bearer, &request)
+        .await
+        .map(Json)
+        .map_err(ApiResponseError)
+}
+
+async fn delete_skill(
+    State(registry): State<Arc<Registry>>,
+    headers: HeaderMap,
+    Json(request): Json<ResourceLifecycleRequest>,
+) -> Result<Json<DeleteSkillResponse>, ApiResponseError> {
+    let bearer = bearer_token(&headers)?;
+    registry
+        .delete_skill(bearer, &request)
+        .await
+        .map(Json)
+        .map_err(ApiResponseError)
+}
+
+async fn deprecate_skill(
+    State(registry): State<Arc<Registry>>,
+    headers: HeaderMap,
+    Json(request): Json<DeprecateSkillRequest>,
+) -> Result<Json<DeprecateSkillResponse>, ApiResponseError> {
+    let bearer = bearer_token(&headers)?;
+    registry
+        .deprecate_skill(bearer, &request)
+        .await
+        .map(Json)
+        .map_err(ApiResponseError)
+}
+
+async fn prune_skill_history(
+    State(registry): State<Arc<Registry>>,
+    headers: HeaderMap,
+    Json(request): Json<ResourceLifecycleRequest>,
+) -> Result<Json<HistoryPruneResponse>, ApiResponseError> {
+    let bearer = bearer_token(&headers)?;
+    registry
+        .prune_skill_history(bearer, &request)
+        .await
+        .map(Json)
+        .map_err(ApiResponseError)
+}
+
+async fn usage(
+    State(registry): State<Arc<Registry>>,
+    headers: HeaderMap,
+) -> Result<Json<UsageResponse>, ApiResponseError> {
+    let bearer = bearer_token(&headers)?;
+    registry
+        .usage(bearer)
         .await
         .map(Json)
         .map_err(ApiResponseError)
@@ -737,6 +831,7 @@ struct ServerConfig {
     s3_secret_access_key: String,
     s3_force_path_style: bool,
     limits: RegistryLimits,
+    gc_grace: Duration,
 }
 
 impl ServerConfig {
@@ -781,6 +876,7 @@ impl ServerConfig {
                 )?,
                 max_transfer_bytes: env_u64("DENJU_LIMIT_MAX_TRANSFER_BYTES", 16 * 1024 * 1024)?,
             },
+            gc_grace: Duration::from_secs(env_u64("DENJU_GC_GRACE_SECONDS", 86_400)?),
         })
     }
 
@@ -796,6 +892,7 @@ impl ServerConfig {
             object_store_secret_access_key: self.s3_secret_access_key.clone(),
             object_store_force_path_style: self.s3_force_path_style,
             limits: self.limits.clone(),
+            gc_grace: self.gc_grace,
         }
     }
 }
@@ -898,66 +995,4 @@ fn build_version() -> &'static str {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::collections::BTreeSet;
-    use tokio::sync::broadcast;
-
-    #[tokio::test]
-    async fn sync_hints_coalesce_duplicate_resources_and_filter_unwatched_resources() {
-        let (sender, mut receiver) = broadcast::channel(16);
-        let watched_id = uuid::Uuid::now_v7();
-        let unrelated_id = uuid::Uuid::now_v7();
-        let watched = BTreeSet::from([watched_id]);
-        sender
-            .send(RegistryWake::Resource {
-                resource_id: watched_id,
-                generation: 2,
-            })
-            .unwrap();
-        sender
-            .send(RegistryWake::Resource {
-                resource_id: unrelated_id,
-                generation: 99,
-            })
-            .unwrap();
-        sender
-            .send(RegistryWake::Resource {
-                resource_id: watched_id,
-                generation: 4,
-            })
-            .unwrap();
-
-        let hint = next_sync_hint(&mut receiver, &watched).await.unwrap();
-        assert_eq!(
-            hint,
-            SyncHint::Dirty {
-                resources: vec![denju_wire::DirtyResource {
-                    resource_id: watched_id.to_string(),
-                    generation: 4,
-                }],
-            }
-        );
-    }
-
-    #[tokio::test]
-    async fn sync_hint_overflow_degrades_to_resync_all() {
-        let (sender, mut receiver) = broadcast::channel(128);
-        let watched = (0..65)
-            .map(|_| uuid::Uuid::now_v7())
-            .collect::<BTreeSet<_>>();
-        for resource_id in &watched {
-            sender
-                .send(RegistryWake::Resource {
-                    resource_id: *resource_id,
-                    generation: 1,
-                })
-                .unwrap();
-        }
-
-        assert_eq!(
-            next_sync_hint(&mut receiver, &watched).await,
-            Some(SyncHint::ResyncAll)
-        );
-    }
-}
+mod tests;

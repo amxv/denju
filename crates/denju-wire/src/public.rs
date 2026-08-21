@@ -13,6 +13,8 @@ pub struct PublicSkill {
     pub generation: u64,
     pub version: u64,
     pub revision_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deprecation: Option<SkillDeprecation>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -27,6 +29,16 @@ pub struct PublicSkillDetail {
     #[serde(flatten)]
     pub skill: PublicSkill,
     pub manifest: PublicSkillManifest,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub redirected_from: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkillDeprecation {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub replacement_resource_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub replacement_locator: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -133,6 +145,10 @@ pub struct SubscribedSkill {
     pub manifest: PublicSkillManifest,
     pub snapshot: SnapshotDownload,
     pub following_latest: bool,
+    #[serde(default)]
+    pub retain_on_delete: bool,
+    #[serde(default)]
+    pub retained_after_delete: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -147,6 +163,8 @@ pub struct SubscriptionMutationRequest {
     pub expected_generation: u64,
     #[serde(default)]
     pub release_version: Option<u64>,
+    #[serde(default)]
+    pub retain_on_delete: bool,
     pub request_hash: String,
 }
 
@@ -155,6 +173,7 @@ pub struct SubscriptionMutationResponse {
     pub resource_id: String,
     pub subscribed: bool,
     pub pinned_release_version: Option<u64>,
+    pub retain_on_delete: bool,
 }
 
 #[cfg(test)]

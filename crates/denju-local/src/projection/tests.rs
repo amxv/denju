@@ -38,6 +38,8 @@ async fn insert_materialized(
             desired_revision_id: revision.to_owned(),
             harness_name: None,
             materialized_revision_id: None,
+            retain_on_delete: false,
+            retained_after_delete: false,
         },
         1,
     )
@@ -418,6 +420,8 @@ async fn projection_cleanup_refuses_user_replacement() {
         desired_revision_id: "11".repeat(32),
         harness_name: Some("review".to_owned()),
         materialized_revision_id: Some("11".repeat(32)),
+        retain_on_delete: false,
+        retained_after_delete: false,
     };
     let error = remove_subscription_projection(&paths, &roots, &record).unwrap_err();
     assert!(matches!(error, ProjectionError::RefuseOverwrite(_)));

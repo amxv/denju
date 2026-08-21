@@ -45,8 +45,8 @@ Device sessions and automation tokens are opaque 256-bit bearer credentials. Pos
 
 Revocation is authoritative on the next request. Token listing exposes IDs, scopes, and expiry metadata, never bearer values.
 
-## Delete a resource-free account
+## Delete an account
 
-`denju identity delete` requires explicit confirmation and hidden password input. At the current implementation boundary it deletes a resource-free account, revokes all device/install/automation credentials, clears managed local desired state, and tombstones historical author principals. Later resource/team phases extend deletion constraints before the full account-deletion contract is considered complete.
+`denju identity delete` requires explicit confirmation and hidden password input. It tombstones personally owned skills using the same resource-delete semantics, revokes device/install/automation credentials, clears managed local desired state, preserves historical authorship under a deleted-user principal, and releases the username. Team ownership rules are added when teams exist; until then this is the complete personal-resource deletion boundary.
 
 A deleted username can be claimed again, but the new account receives new internal user, namespace, and author-principal IDs and inherits no subscriptions or attribution.

@@ -12,7 +12,7 @@ use denju_local::{
     BootstrapJournal, BootstrapJournalPayload, CredentialBackend, CredentialManager, HarnessConfig,
     InstallCredential, InstallationRecord, JournalState, LocalDatabase, LocalPaths,
     ResolvedHarnessRoots, ServiceInstallMode, ServiceManager, ServiceStatus, WorkspaceWatcher,
-    detect_unmanaged_skills, ensure_local_layout, prepare_harness_roots,
+    detect_unmanaged_skills, ensure_local_layout, prepare_harness_roots, recover_local_lifecycle,
     remove_old_codex_projection, resolve_harness_roots, verify_native_directory_links,
 };
 use denju_wire::{
@@ -277,6 +277,9 @@ pub async fn doctor() -> Result<DoctorOutcome, RuntimeError> {
             .map_err(local_error)?;
         repaired.push("repaired harness projection roots".to_owned());
     }
+    recover_local_lifecycle(&paths, &db, &roots)
+        .await
+        .map_err(local_error)?;
 
     let service = ServiceManager::status(&paths).map_err(service_error)?;
     if !service.running && service_mode() == ServiceInstallMode::Start {
@@ -314,6 +317,9 @@ pub async fn daemon() -> Result<ExitCode, RuntimeError> {
         )
         .recovery("denju setup"));
     }
+    let recorded = db.harness_config().await.map_err(local_error)?;
+    let roots = resolve_harness_roots(&paths, recorded.as_ref()).map_err(local_error)?;
+    prepare_harness_roots(&roots).map_err(local_error)?;
 
     fs::write(paths.run.join("daemon.pid"), std::process::id().to_string()).map_err(local_error)?;
     let _guard = RunFileGuard(paths.run.join("daemon.pid"));
@@ -322,6 +328,9 @@ pub async fn daemon() -> Result<ExitCode, RuntimeError> {
     let mut polling_ticks = 0_u8;
     loop {
         db.quick_check().await.map_err(local_error)?;
+        recover_local_lifecycle(&paths, &db, &roots)
+            .await
+            .map_err(local_error)?;
         fs::write(paths.run.join("daemon.health"), now_unix_ms().to_string())
             .map_err(local_error)?;
         if daemon_once() {

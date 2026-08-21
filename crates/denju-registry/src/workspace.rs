@@ -114,7 +114,7 @@ impl Registry {
         let current = sqlx::query_as::<_, (Uuid, i64, Vec<u8>)>(
             "SELECT r.owner_namespace_id,r.generation,w.revision_id \
              FROM resources r JOIN skill_private_workspaces w ON w.resource_id=r.id \
-             WHERE r.id=$1 AND r.kind='skill' FOR UPDATE",
+             WHERE r.id=$1 AND r.kind='skill' AND r.deleted_at IS NULL FOR UPDATE",
         )
         .bind(resource_id.as_uuid())
         .fetch_optional(&mut *tx)
@@ -309,7 +309,7 @@ impl Registry {
         }
 
         let resource = sqlx::query_as::<_, (String, Uuid)>(
-            "SELECT slug,owner_namespace_id FROM resources WHERE id=$1 AND kind='skill'",
+            "SELECT slug,owner_namespace_id FROM resources WHERE id=$1 AND kind='skill' AND deleted_at IS NULL",
         )
         .bind(operation.resource_id)
         .fetch_optional(&self.pool)
@@ -386,7 +386,7 @@ impl Registry {
         let current = sqlx::query_as::<_, (Uuid, i64, Vec<u8>)>(
             "SELECT r.owner_namespace_id,r.generation,w.revision_id \
              FROM resources r JOIN skill_private_workspaces w ON w.resource_id=r.id \
-             WHERE r.id=$1 AND r.kind='skill' FOR UPDATE",
+             WHERE r.id=$1 AND r.kind='skill' AND r.deleted_at IS NULL FOR UPDATE",
         )
         .bind(operation.resource_id)
         .fetch_optional(&mut *tx)

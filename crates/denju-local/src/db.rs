@@ -6,166 +6,13 @@ use std::{
 
 use denju_core::OperationId;
 use rusqlite::{Connection, OptionalExtension, params};
-use serde::{Deserialize, Serialize};
-use thiserror::Error;
 use tokio::sync::oneshot;
 
-const MIGRATION_V1: &str = r#"
-CREATE TABLE IF NOT EXISTS installation (
-    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-    registry_origin TEXT NOT NULL,
-    installation_id TEXT NOT NULL,
-    author_principal_id TEXT NOT NULL,
-    credential_backend TEXT NOT NULL,
-    created_at_unix_ms INTEGER NOT NULL
-);
+mod schema;
+mod types;
 
-CREATE TABLE IF NOT EXISTS harness_config (
-    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-    codex_root TEXT NOT NULL,
-    claude_root TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS operation_journal (
-    operation_id TEXT PRIMARY KEY,
-    kind TEXT NOT NULL,
-    state TEXT NOT NULL CHECK (state IN ('planned', 'staged', 'verified', 'switched', 'complete')),
-    payload_json TEXT NOT NULL,
-    created_at_unix_ms INTEGER NOT NULL,
-    updated_at_unix_ms INTEGER NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS service_state (
-    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-    kind TEXT NOT NULL,
-    persistent INTEGER NOT NULL CHECK (persistent IN (0, 1)),
-    running INTEGER NOT NULL CHECK (running IN (0, 1)),
-    detail TEXT
-);
-
-CREATE TABLE IF NOT EXISTS work_leases (
-    resource_key TEXT PRIMARY KEY,
-    holder TEXT NOT NULL,
-    expires_at_unix_ms INTEGER NOT NULL
-);
-
-PRAGMA user_version = 1;
-"#;
-
-const MIGRATION_V2: &str = r#"
-CREATE TABLE IF NOT EXISTS subscriptions (
-    resource_id TEXT PRIMARY KEY,
-    locator TEXT NOT NULL UNIQUE,
-    owner TEXT NOT NULL,
-    skill_name TEXT NOT NULL,
-    resource_generation INTEGER NOT NULL,
-    release_version INTEGER NOT NULL,
-    desired_revision_id TEXT NOT NULL,
-    harness_name TEXT,
-    materialized_revision_id TEXT,
-    updated_at_unix_ms INTEGER NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS subscriptions_skill_name_idx
-    ON subscriptions (skill_name, resource_id);
-
-PRAGMA user_version = 2;
-"#;
-
-const MIGRATION_V3: &str = r#"
-CREATE TABLE IF NOT EXISTS identity_state (
-    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-    user_id TEXT NOT NULL,
-    namespace_id TEXT NOT NULL,
-    username TEXT NOT NULL,
-    session_id TEXT,
-    session_backend TEXT,
-    updated_at_unix_ms INTEGER NOT NULL
-);
-
-PRAGMA user_version = 3;
-"#;
-
-const MIGRATION_V4: &str = r#"
-CREATE TABLE IF NOT EXISTS owned_skills (
-    resource_id TEXT PRIMARY KEY,
-    locator TEXT NOT NULL UNIQUE,
-    owner TEXT NOT NULL,
-    skill_name TEXT NOT NULL,
-    resource_generation INTEGER NOT NULL,
-    desired_revision_id TEXT NOT NULL,
-    harness_name TEXT,
-    materialized_revision_id TEXT,
-    updated_at_unix_ms INTEGER NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS owned_skills_skill_name_idx
-    ON owned_skills (skill_name, resource_id);
-
-PRAGMA user_version = 4;
-"#;
-
-// Phase 6 is deliberately an additive compatibility migration. Keep PRAGMA user_version at 4
-// so the immediately previous Phase-5 binary can still open the database during upgrade
-// rollback; current code feature-detects these additive tables/column instead.
-const PHASE6_ADDITIVE_SCHEMA: &str = r#"
-BEGIN IMMEDIATE;
-ALTER TABLE identity_state ADD COLUMN author_principal_id TEXT;
-
-CREATE TABLE IF NOT EXISTS workspace_state (
-    resource_id TEXT PRIMARY KEY REFERENCES owned_skills(resource_id) ON DELETE CASCADE,
-    base_generation INTEGER NOT NULL CHECK (base_generation > 0),
-    base_revision_id TEXT NOT NULL,
-    local_head_revision_id TEXT NOT NULL,
-    valid_root_tree_id TEXT NOT NULL,
-    working_generation_path TEXT NOT NULL,
-    status TEXT NOT NULL CHECK (status IN ('clean', 'queued', 'paused_validation', 'pending_rename', 'conflict', 'quota')),
-    error_message TEXT,
-    pending_rename TEXT,
-    updated_at_unix_ms INTEGER NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS workspace_file_index (
-    resource_id TEXT NOT NULL REFERENCES owned_skills(resource_id) ON DELETE CASCADE,
-    path TEXT NOT NULL,
-    kind TEXT NOT NULL CHECK (kind IN ('file', 'directory', 'symlink')),
-    size_bytes INTEGER,
-    mtime_ns INTEGER,
-    executable INTEGER CHECK (executable IS NULL OR executable IN (0, 1)),
-    blob_id TEXT,
-    symlink_target TEXT,
-    PRIMARY KEY (resource_id, path),
-    CHECK (
-        (kind = 'file' AND size_bytes IS NOT NULL AND mtime_ns IS NOT NULL AND executable IS NOT NULL AND blob_id IS NOT NULL AND symlink_target IS NULL)
-        OR (kind = 'directory' AND size_bytes IS NULL AND mtime_ns IS NULL AND executable IS NULL AND blob_id IS NULL AND symlink_target IS NULL)
-        OR (kind = 'symlink' AND size_bytes IS NULL AND mtime_ns IS NULL AND executable IS NULL AND blob_id IS NULL AND symlink_target IS NOT NULL)
-    )
-);
-
-CREATE TABLE IF NOT EXISTS local_revisions (
-    operation_id TEXT PRIMARY KEY,
-    resource_id TEXT NOT NULL REFERENCES owned_skills(resource_id) ON DELETE CASCADE,
-    revision_id TEXT NOT NULL UNIQUE,
-    parent_revision_id TEXT NOT NULL,
-    expected_generation INTEGER NOT NULL CHECK (expected_generation > 0),
-    root_tree_id TEXT NOT NULL,
-    manifest_json TEXT NOT NULL,
-    state TEXT NOT NULL CHECK (state IN ('queued', 'synced')),
-    created_at_unix_ms INTEGER NOT NULL,
-    updated_at_unix_ms INTEGER NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS local_revisions_queue_idx
-    ON local_revisions (resource_id, state, expected_generation, created_at_unix_ms);
-
-CREATE TABLE IF NOT EXISTS derived_projection_state (
-    resource_id TEXT PRIMARY KEY REFERENCES owned_skills(resource_id) ON DELETE CASCADE,
-    harness_name TEXT NOT NULL,
-    baseline_root_tree_id TEXT NOT NULL,
-    updated_at_unix_ms INTEGER NOT NULL
-);
-COMMIT;
-"#;
+use schema::*;
+pub use types::*;
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;
 
@@ -449,6 +296,106 @@ impl LocalDatabase {
         .await
     }
 
+    pub async fn account_delete_journal(
+        &self,
+    ) -> Result<Option<AccountDeleteJournal>, LocalDbError> {
+        self.call(|connection| {
+            let row = connection
+                .query_row(
+                    "SELECT operation_id,state,payload_json FROM operation_journal \
+                     WHERE kind='account_delete_local' ORDER BY created_at_unix_ms DESC LIMIT 1",
+                    [],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                        ))
+                    },
+                )
+                .optional()?;
+            row.map(|(operation_id, state, payload)| {
+                Ok(AccountDeleteJournal {
+                    operation_id: operation_id.parse().map_err(|error: denju_core::IdError| {
+                        LocalDbError::Corrupt(error.to_string())
+                    })?,
+                    state: state.parse()?,
+                    payload: serde_json::from_str(&payload)?,
+                })
+            })
+            .transpose()
+        })
+        .await
+    }
+
+    pub async fn create_account_delete_journal(
+        &self,
+        operation_id: OperationId,
+        payload: AccountDeleteJournalPayload,
+        now_unix_ms: i64,
+    ) -> Result<(), LocalDbError> {
+        let payload = serde_json::to_string(&payload)?;
+        self.call(move |connection| {
+            connection.execute(
+                "INSERT INTO operation_journal \
+                 (operation_id,kind,state,payload_json,created_at_unix_ms,updated_at_unix_ms) \
+                 VALUES (?1,'account_delete_local','planned',?2,?3,?3)",
+                params![operation_id.to_string(), payload, now_unix_ms],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
+    pub async fn advance_account_delete_journal(
+        &self,
+        operation_id: OperationId,
+        expected: JournalState,
+        next: JournalState,
+        payload: AccountDeleteJournalPayload,
+        now_unix_ms: i64,
+    ) -> Result<(), LocalDbError> {
+        if expected.next() != Some(next) {
+            return Err(LocalDbError::InvalidJournalTransition { expected, next });
+        }
+        let payload = serde_json::to_string(&payload)?;
+        self.call(move |connection| {
+            let changed = connection.execute(
+                "UPDATE operation_journal SET state=?1,payload_json=?2,updated_at_unix_ms=?3 \
+                 WHERE operation_id=?4 AND kind='account_delete_local' AND state=?5",
+                params![
+                    next.as_str(),
+                    payload,
+                    now_unix_ms,
+                    operation_id.to_string(),
+                    expected.as_str(),
+                ],
+            )?;
+            if changed != 1 {
+                return Err(rusqlite::Error::QueryReturnedNoRows.into());
+            }
+            Ok(())
+        })
+        .await
+    }
+
+    pub async fn finish_account_delete_journal(
+        &self,
+        operation_id: OperationId,
+    ) -> Result<(), LocalDbError> {
+        self.call(move |connection| {
+            let changed = connection.execute(
+                "DELETE FROM operation_journal WHERE operation_id=?1 AND kind='account_delete_local' AND state='switched'",
+                params![operation_id.to_string()],
+            )?;
+            if changed != 1 {
+                return Err(rusqlite::Error::QueryReturnedNoRows.into());
+            }
+            Ok(())
+        })
+        .await
+    }
+
     pub async fn save_service(&self, service: ServiceRecord) -> Result<(), LocalDbError> {
         self.call(move |connection| {
             connection.execute(
@@ -509,7 +456,7 @@ impl LocalDatabase {
         self.call(|connection| {
             let mut statement = connection.prepare(
                 "SELECT resource_id, locator, owner, skill_name, resource_generation, release_version, \
-                        desired_revision_id, harness_name, materialized_revision_id \
+                        desired_revision_id, harness_name, materialized_revision_id, retain_on_delete, retained_after_delete \
                  FROM subscriptions ORDER BY owner, skill_name, resource_id",
             )?;
             let rows = statement.query_map([], |row| {
@@ -523,6 +470,8 @@ impl LocalDatabase {
                     desired_revision_id: row.get(6)?,
                     harness_name: row.get(7)?,
                     materialized_revision_id: row.get(8)?,
+                    retain_on_delete: row.get::<_, i64>(9)? != 0,
+                    retained_after_delete: row.get::<_, i64>(10)? != 0,
                 })
             })?;
             rows.collect::<Result<Vec<_>, _>>().map_err(LocalDbError::from)
@@ -636,7 +585,7 @@ impl LocalDatabase {
             Ok(connection
                 .query_row(
                     "SELECT resource_id, locator, owner, skill_name, resource_generation, release_version, \
-                            desired_revision_id, harness_name, materialized_revision_id \
+                            desired_revision_id, harness_name, materialized_revision_id, retain_on_delete, retained_after_delete \
                      FROM subscriptions WHERE resource_id=?1",
                     params![resource_id],
                     |row| {
@@ -650,6 +599,8 @@ impl LocalDatabase {
                             desired_revision_id: row.get(6)?,
                             harness_name: row.get(7)?,
                             materialized_revision_id: row.get(8)?,
+                            retain_on_delete: row.get::<_, i64>(9)? != 0,
+                            retained_after_delete: row.get::<_, i64>(10)? != 0,
                         })
                     },
                 )
@@ -666,12 +617,13 @@ impl LocalDatabase {
         self.call(move |connection| {
             connection.execute(
                 "INSERT INTO subscriptions \
-                 (resource_id, locator, owner, skill_name, resource_generation, release_version, desired_revision_id, updated_at_unix_ms) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) \
+                 (resource_id, locator, owner, skill_name, resource_generation, release_version, desired_revision_id, retain_on_delete, retained_after_delete, updated_at_unix_ms) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10) \
                  ON CONFLICT(resource_id) DO UPDATE SET \
                    locator=excluded.locator, owner=excluded.owner, skill_name=excluded.skill_name, \
                    resource_generation=excluded.resource_generation, release_version=excluded.release_version, \
-                   desired_revision_id=excluded.desired_revision_id, updated_at_unix_ms=excluded.updated_at_unix_ms",
+                   desired_revision_id=excluded.desired_revision_id, retain_on_delete=excluded.retain_on_delete, \
+                   retained_after_delete=excluded.retained_after_delete, updated_at_unix_ms=excluded.updated_at_unix_ms",
                 params![
                     record.resource_id,
                     record.locator,
@@ -680,6 +632,8 @@ impl LocalDatabase {
                     record.resource_generation,
                     record.release_version,
                     record.desired_revision_id,
+                    i64::from(record.retain_on_delete),
+                    i64::from(record.retained_after_delete),
                     now_unix_ms,
                 ],
             )?;
@@ -1008,19 +962,8 @@ fn open_connection(path: &Path) -> Result<Connection, LocalDbError> {
         "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON;",
     )?;
     let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    if version > 5 {
+    if version > 6 {
         return Err(LocalDbError::UnsupportedSchema(version));
-    }
-    // A few pre-commit Phase-6 development databases may have observed provisional version 5.
-    // Normalize only when the complete additive schema is present; this keeps development
-    // fixtures recoverable without accepting an actually unknown schema.
-    if version == 5 {
-        if !phase6_additive_schema_present(&connection)? {
-            return Err(LocalDbError::Corrupt(
-                "local schema version 5 is missing Phase-6 additive objects".to_owned(),
-            ));
-        }
-        connection.pragma_update(None, "user_version", 4_i64)?;
     }
     if version == 0 {
         connection.execute_batch(MIGRATION_V1)?;
@@ -1038,461 +981,15 @@ fn open_connection(path: &Path) -> Result<Connection, LocalDbError> {
         connection.execute_batch(MIGRATION_V4)?;
     }
     let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    if version == 4 && !phase6_additive_schema_present(&connection)? {
-        connection.execute_batch(PHASE6_ADDITIVE_SCHEMA)?;
+    if version == 4 {
+        connection.execute_batch(MIGRATION_V5)?;
     }
-    if !phase6_additive_schema_present(&connection)? {
-        return Err(LocalDbError::Corrupt(
-            "Phase-6 additive local schema is incomplete".to_owned(),
-        ));
+    let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version == 5 {
+        connection.execute_batch(MIGRATION_V6)?;
     }
     Ok(connection)
 }
 
-fn phase6_additive_schema_present(connection: &Connection) -> Result<bool, LocalDbError> {
-    let author_column = {
-        let mut statement = connection.prepare("PRAGMA table_info(identity_state)")?;
-        let columns = statement.query_map([], |row| row.get::<_, String>(1))?;
-        let mut found = false;
-        for column in columns {
-            if column? == "author_principal_id" {
-                found = true;
-                break;
-            }
-        }
-        found
-    };
-    let required_tables = [
-        "workspace_state",
-        "workspace_file_index",
-        "local_revisions",
-        "derived_projection_state",
-    ];
-    let mut present_tables = 0_usize;
-    for table in required_tables {
-        let exists: bool = connection.query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
-            params![table],
-            |row| row.get(0),
-        )?;
-        present_tables += usize::from(exists);
-    }
-    if !author_column && present_tables == 0 {
-        return Ok(false);
-    }
-    if author_column && present_tables == required_tables.len() {
-        return Ok(true);
-    }
-    Err(LocalDbError::Corrupt(
-        "Phase-6 additive local schema is partially applied".to_owned(),
-    ))
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InstallationRecord {
-    pub registry_origin: String,
-    pub installation_id: String,
-    pub author_principal_id: String,
-    pub credential_backend: String,
-    pub created_at_unix_ms: i64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct IdentityRecord {
-    pub user_id: String,
-    pub namespace_id: String,
-    pub username: String,
-    pub session_id: Option<String>,
-    pub session_backend: Option<String>,
-    pub author_principal_id: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HarnessConfig {
-    pub codex_root: String,
-    pub claude_root: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ServiceRecord {
-    pub kind: String,
-    pub persistent: bool,
-    pub running: bool,
-    pub detail: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SubscriptionRecord {
-    pub resource_id: String,
-    pub locator: String,
-    pub owner: String,
-    pub skill_name: String,
-    pub resource_generation: i64,
-    pub release_version: i64,
-    pub desired_revision_id: String,
-    pub harness_name: Option<String>,
-    pub materialized_revision_id: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OwnedSkillRecord {
-    pub resource_id: String,
-    pub locator: String,
-    pub owner: String,
-    pub skill_name: String,
-    pub resource_generation: i64,
-    pub desired_revision_id: String,
-    pub harness_name: Option<String>,
-    pub materialized_revision_id: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ManagedSkillRecord {
-    pub resource_id: String,
-    pub locator: String,
-    pub owner: String,
-    pub skill_name: String,
-    pub harness_name: Option<String>,
-    pub materialized_revision_id: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ImportJournal {
-    pub operation_id: OperationId,
-    pub state: JournalState,
-    pub payload: ImportJournalPayload,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ImportJournalPayload {
-    pub source_path: String,
-    pub skill_name: String,
-    pub request_hash: String,
-    pub manifest_json: String,
-    pub snapshot_sha256: String,
-    pub snapshot_size_bytes: u64,
-    pub snapshot_path: String,
-    pub resource_id: Option<String>,
-    pub locator: Option<String>,
-    pub revision_id: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MaterializationJournal {
-    pub operation_id: OperationId,
-    pub state: JournalState,
-    pub payload: MaterializationJournalPayload,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MaterializationJournalPayload {
-    pub resource_id: String,
-    pub revision_id: String,
-    pub stage_dir: String,
-    pub generation_dir: String,
-    pub canonical_path: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BootstrapJournal {
-    pub operation_id: OperationId,
-    pub state: JournalState,
-    pub payload: BootstrapJournalPayload,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BootstrapJournalPayload {
-    pub registry_origin: String,
-    pub credential_hash: String,
-    pub credential_backend: Option<String>,
-    pub installation_id: Option<String>,
-    pub author_principal_id: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum JournalState {
-    Planned,
-    Staged,
-    Verified,
-    Switched,
-    Complete,
-}
-
-impl JournalState {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Planned => "planned",
-            Self::Staged => "staged",
-            Self::Verified => "verified",
-            Self::Switched => "switched",
-            Self::Complete => "complete",
-        }
-    }
-
-    pub const fn next(self) -> Option<Self> {
-        match self {
-            Self::Planned => Some(Self::Staged),
-            Self::Staged => Some(Self::Verified),
-            Self::Verified => Some(Self::Switched),
-            Self::Switched => Some(Self::Complete),
-            Self::Complete => None,
-        }
-    }
-}
-
-impl std::str::FromStr for JournalState {
-    type Err = LocalDbError;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        match value {
-            "planned" => Ok(Self::Planned),
-            "staged" => Ok(Self::Staged),
-            "verified" => Ok(Self::Verified),
-            "switched" => Ok(Self::Switched),
-            "complete" => Ok(Self::Complete),
-            other => Err(LocalDbError::Corrupt(format!(
-                "unknown journal state {other}"
-            ))),
-        }
-    }
-}
-
-#[derive(Debug, Error)]
-pub enum LocalDbError {
-    #[error("SQLite error: {0}")]
-    Sqlite(#[from] rusqlite::Error),
-    #[error("local state serialization error: {0}")]
-    Serialization(#[from] serde_json::Error),
-    #[error("failed to start SQLite worker: {0}")]
-    WorkerStart(std::io::Error),
-    #[error("SQLite worker stopped unexpectedly")]
-    WorkerStopped,
-    #[error("local database schema {0} is newer than this Denju binary")]
-    UnsupportedSchema(i64),
-    #[error("corrupt local state: {0}")]
-    Corrupt(String),
-    #[error("invalid journal transition {expected:?} -> {next:?}")]
-    InvalidJournalTransition {
-        expected: JournalState,
-        next: JournalState,
-    },
-    #[error("lease TTL must be positive, got {0}ms")]
-    InvalidLeaseTtl(i64),
-}
-
 #[cfg(test)]
-mod tests {
-    use denju_core::OperationId;
-    use tempfile::tempdir;
-    use uuid::Uuid;
-
-    use super::*;
-
-    #[tokio::test]
-    async fn sqlite_worker_uses_wal_and_persists_journal() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("state.db");
-        let db = LocalDatabase::open(&path).await.unwrap();
-        let operation_id = OperationId::from_uuid(Uuid::now_v7()).unwrap();
-        db.create_bootstrap_journal(
-            operation_id,
-            BootstrapJournalPayload {
-                registry_origin: "http://127.0.0.1:7788".to_owned(),
-                credential_hash: "00".repeat(32),
-                credential_backend: None,
-                installation_id: None,
-                author_principal_id: None,
-            },
-            1,
-        )
-        .await
-        .unwrap();
-        assert_eq!(
-            db.bootstrap_journal().await.unwrap().unwrap().state,
-            JournalState::Planned
-        );
-        db.quick_check().await.unwrap();
-
-        let mode: String = db
-            .call(|connection| {
-                connection
-                    .query_row("PRAGMA journal_mode", [], |row| row.get(0))
-                    .map_err(LocalDbError::from)
-            })
-            .await
-            .unwrap();
-        assert_eq!(mode.to_ascii_lowercase(), "wal");
-    }
-
-    #[tokio::test]
-    async fn phase6_additive_schema_preserves_phase5_rollback_version() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("state.db");
-        let connection = Connection::open(&path).unwrap();
-        connection.execute_batch(MIGRATION_V1).unwrap();
-        connection.execute_batch(MIGRATION_V2).unwrap();
-        connection.execute_batch(MIGRATION_V3).unwrap();
-        connection.execute_batch(MIGRATION_V4).unwrap();
-        assert_eq!(
-            connection
-                .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
-                .unwrap(),
-            4
-        );
-        drop(connection);
-
-        let db = LocalDatabase::open(&path).await.unwrap();
-        let (version, phase6_present): (i64, bool) = db
-            .call(|connection| {
-                Ok((
-                    connection.query_row("PRAGMA user_version", [], |row| row.get(0))?,
-                    phase6_additive_schema_present(connection)?,
-                ))
-            })
-            .await
-            .unwrap();
-        assert_eq!(
-            version, 4,
-            "Phase-5 rollback must still accept the database"
-        );
-        assert!(phase6_present);
-    }
-
-    #[tokio::test]
-    async fn leases_expire_and_are_holder_scoped() {
-        let dir = tempdir().unwrap();
-        let db = LocalDatabase::open(dir.path().join("state.db"))
-            .await
-            .unwrap();
-        assert!(
-            db.claim_lease("skill:a".into(), "cli".into(), 100, 50)
-                .await
-                .unwrap()
-        );
-        assert!(
-            !db.claim_lease("skill:a".into(), "daemon".into(), 120, 50)
-                .await
-                .unwrap()
-        );
-        db.release_lease("skill:a".into(), "daemon".into())
-            .await
-            .unwrap();
-        assert!(
-            !db.claim_lease("skill:a".into(), "daemon".into(), 120, 50)
-                .await
-                .unwrap()
-        );
-        assert!(
-            db.claim_lease("skill:a".into(), "daemon".into(), 151, 50)
-                .await
-                .unwrap()
-        );
-    }
-
-    #[tokio::test]
-    async fn owned_skills_share_projection_state_without_becoming_subscriptions() {
-        let dir = tempdir().unwrap();
-        let db = LocalDatabase::open(dir.path().join("state.db"))
-            .await
-            .unwrap();
-        let owned_id = "01890f47-6a1c-7cc2-98c1-5f6c1ed8a3a1".to_owned();
-        db.upsert_owned_skill_desired(
-            OwnedSkillRecord {
-                resource_id: owned_id.clone(),
-                locator: "@alice/owned".to_owned(),
-                owner: "alice".to_owned(),
-                skill_name: "owned".to_owned(),
-                resource_generation: 1,
-                desired_revision_id: "11".repeat(32),
-                harness_name: None,
-                materialized_revision_id: None,
-            },
-            1,
-        )
-        .await
-        .unwrap();
-        db.upsert_subscription_desired(
-            SubscriptionRecord {
-                resource_id: "01890f47-6a1d-7ad0-8f43-9a4d8c29f002".to_owned(),
-                locator: "@bob/public".to_owned(),
-                owner: "bob".to_owned(),
-                skill_name: "public".to_owned(),
-                resource_generation: 1,
-                release_version: 1,
-                desired_revision_id: "22".repeat(32),
-                harness_name: None,
-                materialized_revision_id: None,
-            },
-            1,
-        )
-        .await
-        .unwrap();
-
-        db.mark_skill_materialized(owned_id.clone(), "11".repeat(32), 2)
-            .await
-            .unwrap();
-        db.set_managed_harness_name(owned_id.clone(), "owned".to_owned(), 3)
-            .await
-            .unwrap();
-
-        assert_eq!(db.subscriptions().await.unwrap().len(), 1);
-        let owned = db.owned_skills().await.unwrap();
-        assert_eq!(owned.len(), 1);
-        assert_eq!(owned[0].resource_id, owned_id);
-        assert_eq!(owned[0].harness_name.as_deref(), Some("owned"));
-        assert_eq!(db.managed_skills().await.unwrap().len(), 2);
-    }
-
-    #[tokio::test]
-    async fn import_journal_resumes_only_until_complete() {
-        let dir = tempdir().unwrap();
-        let db = LocalDatabase::open(dir.path().join("state.db"))
-            .await
-            .unwrap();
-        let operation_id = OperationId::from_uuid(Uuid::now_v7()).unwrap();
-        let source = dir.path().join("source/review").display().to_string();
-        let payload = ImportJournalPayload {
-            source_path: source.clone(),
-            skill_name: "review".to_owned(),
-            request_hash: "11".repeat(32),
-            manifest_json: "{}".to_owned(),
-            snapshot_sha256: "22".repeat(32),
-            snapshot_size_bytes: 42,
-            snapshot_path: dir.path().join("snapshot.tar.zst").display().to_string(),
-            resource_id: None,
-            locator: None,
-            revision_id: None,
-        };
-        db.create_import_journal(operation_id, payload.clone(), 1)
-            .await
-            .unwrap();
-        assert_eq!(
-            db.import_journal_for_source(source.clone())
-                .await
-                .unwrap()
-                .unwrap()
-                .state,
-            JournalState::Planned
-        );
-
-        let mut expected = JournalState::Planned;
-        for (next, now) in [
-            (JournalState::Staged, 2),
-            (JournalState::Verified, 3),
-            (JournalState::Switched, 4),
-            (JournalState::Complete, 5),
-        ] {
-            db.update_import_journal(operation_id, expected, next, payload.clone(), now)
-                .await
-                .unwrap();
-            expected = next;
-        }
-        assert!(
-            db.import_journal_for_source(source)
-                .await
-                .unwrap()
-                .is_none()
-        );
-    }
-}
+mod tests;
