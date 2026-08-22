@@ -35,6 +35,10 @@ enum Command {
         #[arg(long, default_value_t = 256)]
         limit: u32,
     },
+    DrainPacks {
+        #[arg(long, default_value_t = 256)]
+        limit: u32,
+    },
     #[command(hide = true)]
     SeedPublic {
         #[arg(long)]
@@ -60,6 +64,7 @@ async fn main() -> ExitCode {
         Command::Migrate => migrate(&config).await,
         Command::CheckObjectStore => check_object_store(&config).await,
         Command::Gc { limit } => maintenance::gc(&config, limit).await,
+        Command::DrainPacks { limit } => drain_packs(&config, limit).await,
         Command::SeedPublic { owner, path } => seed_public(&config, &owner, &path).await,
     };
     match result {
@@ -69,6 +74,30 @@ async fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+async fn drain_packs(config: &ServerConfig, limit: u32) -> Result<(), String> {
+    let registry = Registry::connect(config.registry_settings())
+        .await
+        .map_err(|error| error.to_string())?;
+    registry
+        .validate_schema()
+        .await
+        .map_err(|error| error.to_string())?;
+    let outcome = registry
+        .drain_pack_release_events(limit)
+        .await
+        .map_err(|error| format!("{:?}: {}", error.code, error.message))?;
+    println!(
+        "processed_pack_revisions={} completed_release_events={} pending_release_event_id={}",
+        outcome.processed_pack_revisions,
+        outcome.completed_release_events,
+        outcome
+            .pending_release_event_id
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "none".to_owned())
+    );
+    Ok(())
 }
 
 async fn check_object_store(config: &ServerConfig) -> Result<(), String> {

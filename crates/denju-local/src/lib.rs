@@ -7,6 +7,7 @@ mod fork_db;
 mod harness;
 mod lifecycle;
 mod materialize;
+mod pack_db;
 mod paths;
 mod projection;
 mod service;
@@ -23,7 +24,9 @@ pub use db::{
     ForkSyncConflictRecord, HarnessConfig, IdentityRecord, ImportJournal, ImportJournalPayload,
     InstallationRecord, JournalState, LocalDatabase, LocalDbError, LocalForkRecord,
     ManagedSkillRecord, MaterializationJournal, MaterializationJournalPayload, OwnedSkillRecord,
-    ServiceRecord, SubscriptionRecord,
+    PackApplyJournal, PackApplyJournalPayload, PackApplySkillState, PackMaterializedSkillRecord,
+    PackSkillSourceRecord, PackSourceConflictRecord, PackSubscriptionRecord, ServiceRecord,
+    SubscriptionRecord,
 };
 pub use harness::{
     HarnessEnvironment, HarnessError, ResolvedHarnessRoots, detect_unmanaged_skills,
@@ -37,7 +40,8 @@ pub use lifecycle::{
 pub use materialize::{
     DesiredSkillMaterialization, MaterializationError, export_skill_snapshot,
     materialize_skill_snapshot, reconcile_canonical_links, recover_materializations,
-    remove_canonical_skill,
+    remove_canonical_skill, restore_skill_generation, stage_skill_generation,
+    switch_staged_skill_generation,
 };
 pub use paths::{
     LocalPathError, LocalPaths, TEST_HOME_ENV, TEST_HOME_MARKER, create_native_directory_link,

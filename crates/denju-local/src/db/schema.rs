@@ -233,3 +233,61 @@ CREATE TABLE fork_sync_conflicts (
 PRAGMA user_version = 9;
 COMMIT;
 "#;
+
+pub(super) const MIGRATION_V10: &str = r#"
+BEGIN IMMEDIATE;
+
+CREATE TABLE pack_subscriptions (
+    pack_resource_id TEXT PRIMARY KEY,
+    locator TEXT NOT NULL,
+    resource_generation INTEGER NOT NULL CHECK (resource_generation >= 0),
+    pack_version INTEGER NOT NULL CHECK (pack_version > 0),
+    degraded INTEGER NOT NULL DEFAULT 0 CHECK (degraded IN (0,1)),
+    updated_at_unix_ms INTEGER NOT NULL
+);
+
+CREATE TABLE pack_skill_sources (
+    pack_resource_id TEXT NOT NULL REFERENCES pack_subscriptions(pack_resource_id) ON DELETE CASCADE,
+    resource_id TEXT NOT NULL,
+    locator TEXT NOT NULL,
+    owner TEXT NOT NULL,
+    skill_name TEXT NOT NULL,
+    resource_generation INTEGER NOT NULL CHECK (resource_generation >= 0),
+    desired_revision_id TEXT NOT NULL,
+    unavailable_reason TEXT,
+    updated_at_unix_ms INTEGER NOT NULL,
+    PRIMARY KEY (pack_resource_id, resource_id)
+);
+
+CREATE INDEX pack_skill_sources_resource_idx ON pack_skill_sources(resource_id, pack_resource_id);
+
+CREATE TABLE pack_materialized_skills (
+    resource_id TEXT PRIMARY KEY,
+    locator TEXT NOT NULL,
+    owner TEXT NOT NULL,
+    skill_name TEXT NOT NULL,
+    resource_generation INTEGER NOT NULL CHECK (resource_generation >= 0),
+    desired_revision_id TEXT NOT NULL,
+    harness_name TEXT,
+    materialized_revision_id TEXT NOT NULL,
+    updated_at_unix_ms INTEGER NOT NULL
+);
+
+CREATE TABLE pack_source_conflicts (
+    resource_id TEXT PRIMARY KEY,
+    source_pack_ids_json TEXT NOT NULL CHECK (json_valid(source_pack_ids_json)),
+    revision_ids_json TEXT NOT NULL CHECK (json_valid(revision_ids_json)),
+    message TEXT NOT NULL,
+    updated_at_unix_ms INTEGER NOT NULL
+);
+
+CREATE TABLE pack_apply_journal (
+    operation_id TEXT PRIMARY KEY,
+    payload_json TEXT NOT NULL CHECK (json_valid(payload_json)),
+    state TEXT NOT NULL CHECK (state IN ('verified','complete')),
+    updated_at_unix_ms INTEGER NOT NULL
+);
+
+PRAGMA user_version = 10;
+COMMIT;
+"#;

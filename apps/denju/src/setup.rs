@@ -133,6 +133,22 @@ pub async fn guidance() -> Guidance {
             .unwrap_or(conflict.resource_id);
         return Guidance::Conflict(locator);
     }
+    if let Ok(conflicts) = db.pack_source_conflicts().await
+        && let Some(conflict) = conflicts.into_iter().next()
+    {
+        let locator = db
+            .pack_subscriptions()
+            .await
+            .ok()
+            .and_then(|packs| {
+                packs
+                    .into_iter()
+                    .find(|pack| conflict.source_pack_ids.contains(&pack.pack_resource_id))
+                    .map(|pack| pack.locator)
+            })
+            .unwrap_or(conflict.resource_id);
+        return Guidance::Conflict(locator);
+    }
     Guidance::Healthy
 }
 

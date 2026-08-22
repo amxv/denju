@@ -132,6 +132,10 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: ProposalCommand,
     },
+    Pack {
+        #[command(subcommand)]
+        command: PackCommand,
+    },
     Status,
     Sync,
     Doctor,
@@ -182,6 +186,23 @@ pub(crate) enum ProposalCommand {
     Accept { proposal_id: String },
     Reject { proposal_id: String },
     Withdraw { proposal_id: String },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum PackCommand {
+    Create {
+        locator: String,
+    },
+    Add {
+        locator: String,
+        #[arg(required = true)]
+        skills: Vec<String>,
+    },
+    Remove {
+        locator: String,
+        #[arg(required = true)]
+        skills: Vec<String>,
+    },
 }
 
 #[derive(Debug, Subcommand)]

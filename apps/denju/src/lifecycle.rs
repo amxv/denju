@@ -522,7 +522,7 @@ fn now_unix_ms() -> i64 {
     .unwrap_or(i64::MAX)
 }
 
-fn confirm_destructive(
+pub(crate) fn confirm_destructive(
     json: bool,
     yes: bool,
     prompt: &str,

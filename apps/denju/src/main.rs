@@ -4,11 +4,14 @@ mod fork_ops;
 mod fork_resolve;
 mod fork_sync;
 mod forks;
+mod guidance;
 mod help;
 mod identity;
 mod lifecycle;
 mod output;
 mod owned;
+mod pack_commands;
+mod pack_sync;
 mod proposals;
 mod public;
 mod release;
@@ -21,16 +24,18 @@ use std::{ffi::OsString, process::ExitCode};
 
 use clap::Parser;
 use commands::{
-    Cli, Command, DevicesCommand, ForkCommand, HistoryCommand, IdentityCommand, ProposalCommand,
-    TokenCommand,
+    Cli, Command, DevicesCommand, ForkCommand, HistoryCommand, IdentityCommand, PackCommand,
+    ProposalCommand, TokenCommand,
 };
 use denju_wire::{
     AutomationTokenList, AutomationTokenRevokeResponse, CliEnvelope, CliError, CliErrorCode,
     DeleteSkillResponse, DeprecateSkillResponse, DeviceList, DeviceRevokeResponse,
-    HistoryPruneResponse, IdentityInfo, PublicSkillDetail, PublicSkillSearchResponse,
+    HistoryPruneResponse, IdentityInfo, PackCreateResponse, PackDetail, PackLifecycleResponse,
+    PackMutationResponse, PackSubscriptionResponse, PublicSkillDetail, PublicSkillSearchResponse,
     PublishSkillResponse, RenameSkillResponse, SkillHistoryResponse, SkillProposal,
     SkillProposalDetail, SkillProposalList, UnpublishSkillResponse,
 };
+use guidance::guidance_output;
 use help::HELP;
 use identity::{
     AutomationTokenOutcome, BackupOutcome, ClaimOutcome, DeleteOutcome, LoginOutcome,
@@ -47,7 +52,7 @@ use owned::ImportOutcome;
 use public::{SubscribeOutcome, SyncOutcome, UnsubscribeOutcome};
 use release::{DiffOutcome, ExportOutcome, RestoreOutcome};
 use serde::Serialize;
-use setup::{DoctorOutcome, Guidance, RuntimeError, SetupOutcome};
+use setup::{DoctorOutcome, RuntimeError, SetupOutcome};
 
 #[derive(Debug, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -116,6 +121,26 @@ enum ResultPayload {
     Show {
         #[serde(flatten)]
         outcome: PublicSkillDetail,
+    },
+    PackShow {
+        #[serde(flatten)]
+        outcome: PackDetail,
+    },
+    PackCreate {
+        #[serde(flatten)]
+        outcome: PackCreateResponse,
+    },
+    PackMutation {
+        #[serde(flatten)]
+        outcome: PackMutationResponse,
+    },
+    PackLifecycle {
+        #[serde(flatten)]
+        outcome: PackLifecycleResponse,
+    },
+    PackSubscription {
+        #[serde(flatten)]
+        outcome: PackSubscriptionResponse,
     },
     Import {
         #[serde(flatten)]
@@ -393,11 +418,27 @@ async fn run(args: impl IntoIterator<Item = OsString>) -> ExitCode {
             })
         }
         Some(Command::Show { locator }) => {
-            public::show(&locator).await.map(|outcome| CommandOutput {
-                text: show_text(&outcome),
-                payload: ResultPayload::Show { outcome },
-                exit: ExitCode::SUCCESS,
-            })
+            if pack_commands::is_pack_locator(&locator) {
+                pack_commands::show(&locator)
+                    .await
+                    .map(|outcome| CommandOutput {
+                        text: format!(
+                            "{} v{} ({} members, {})",
+                            outcome.pack.locator,
+                            outcome.pack.version,
+                            outcome.pack.member_count,
+                            outcome.pack.visibility
+                        ),
+                        payload: ResultPayload::PackShow { outcome },
+                        exit: ExitCode::SUCCESS,
+                    })
+            } else {
+                public::show(&locator).await.map(|outcome| CommandOutput {
+                    text: show_text(&outcome),
+                    payload: ResultPayload::Show { outcome },
+                    exit: ExitCode::SUCCESS,
+                })
+            }
         }
         Some(Command::Import { path }) => owned::import(&path).await.map(|outcome| CommandOutput {
             text: format!("Imported {} as {}", outcome.locator, outcome.harness_name),
@@ -408,39 +449,99 @@ async fn run(args: impl IntoIterator<Item = OsString>) -> ExitCode {
             locator,
             message,
             tags,
-        }) => release::publish(&locator, message, tags)
-            .await
-            .map(|outcome| CommandOutput {
-                text: format!(
-                    "Published {} v{}",
-                    outcome.skill.locator, outcome.release.version
-                ),
-                payload: ResultPayload::Publish { outcome },
-                exit: ExitCode::SUCCESS,
-            }),
-        Some(Command::Rename { locator, new_name }) => lifecycle::rename(&locator, &new_name)
-            .await
-            .map(|outcome| CommandOutput {
-                text: format!("Renamed {} to {}", outcome.old_locator, outcome.locator),
-                payload: ResultPayload::Rename { outcome },
-                exit: ExitCode::SUCCESS,
-            }),
-        Some(Command::Unpublish { locator }) => {
-            lifecycle::unpublish(&locator)
-                .await
-                .map(|outcome| CommandOutput {
-                    text: format!("Unpublished {}", outcome.locator),
-                    payload: ResultPayload::Unpublish { outcome },
-                    exit: ExitCode::SUCCESS,
-                })
+        }) => {
+            if pack_commands::is_pack_locator(&locator) {
+                if message.is_some() || !tags.is_empty() {
+                    Err(RuntimeError::new(
+                        CliErrorCode::InvalidArguments,
+                        "pack publish does not accept skill release messages or tags",
+                    ))
+                } else {
+                    pack_commands::publish(&locator)
+                        .await
+                        .map(|outcome| CommandOutput {
+                            text: format!(
+                                "Published {} v{}",
+                                outcome.pack.locator, outcome.pack.version
+                            ),
+                            payload: ResultPayload::PackMutation { outcome },
+                            exit: ExitCode::SUCCESS,
+                        })
+                }
+            } else {
+                release::publish(&locator, message, tags)
+                    .await
+                    .map(|outcome| CommandOutput {
+                        text: format!(
+                            "Published {} v{}",
+                            outcome.skill.locator, outcome.release.version
+                        ),
+                        payload: ResultPayload::Publish { outcome },
+                        exit: ExitCode::SUCCESS,
+                    })
+            }
         }
-        Some(Command::Delete { locator, yes }) => lifecycle::delete(&locator, cli.json, yes)
-            .await
-            .map(|outcome| CommandOutput {
-                text: format!("Deleted {}", outcome.locator),
-                payload: ResultPayload::Delete { outcome },
-                exit: ExitCode::SUCCESS,
-            }),
+        Some(Command::Rename { locator, new_name }) => {
+            if pack_commands::is_pack_locator(&locator) {
+                pack_commands::rename(&locator, &new_name)
+                    .await
+                    .map(|outcome| CommandOutput {
+                        text: format!(
+                            "Renamed {} to {}",
+                            outcome.old_locator.as_deref().unwrap_or(&locator),
+                            outcome.pack.locator
+                        ),
+                        payload: ResultPayload::PackLifecycle { outcome },
+                        exit: ExitCode::SUCCESS,
+                    })
+            } else {
+                lifecycle::rename(&locator, &new_name)
+                    .await
+                    .map(|outcome| CommandOutput {
+                        text: format!("Renamed {} to {}", outcome.old_locator, outcome.locator),
+                        payload: ResultPayload::Rename { outcome },
+                        exit: ExitCode::SUCCESS,
+                    })
+            }
+        }
+        Some(Command::Unpublish { locator }) => {
+            if pack_commands::is_pack_locator(&locator) {
+                pack_commands::unpublish(&locator)
+                    .await
+                    .map(|outcome| CommandOutput {
+                        text: format!("Unpublished {}", outcome.pack.locator),
+                        payload: ResultPayload::PackLifecycle { outcome },
+                        exit: ExitCode::SUCCESS,
+                    })
+            } else {
+                lifecycle::unpublish(&locator)
+                    .await
+                    .map(|outcome| CommandOutput {
+                        text: format!("Unpublished {}", outcome.locator),
+                        payload: ResultPayload::Unpublish { outcome },
+                        exit: ExitCode::SUCCESS,
+                    })
+            }
+        }
+        Some(Command::Delete { locator, yes }) => {
+            if pack_commands::is_pack_locator(&locator) {
+                pack_commands::delete(&locator, cli.json, yes)
+                    .await
+                    .map(|outcome| CommandOutput {
+                        text: format!("Deleted {}", outcome.pack.locator),
+                        payload: ResultPayload::PackLifecycle { outcome },
+                        exit: ExitCode::SUCCESS,
+                    })
+            } else {
+                lifecycle::delete(&locator, cli.json, yes)
+                    .await
+                    .map(|outcome| CommandOutput {
+                        text: format!("Deleted {}", outcome.locator),
+                        payload: ResultPayload::Delete { outcome },
+                        exit: ExitCode::SUCCESS,
+                    })
+            }
+        }
         Some(Command::Deprecate {
             locator,
             replacement,
@@ -538,32 +639,64 @@ async fn run(args: impl IntoIterator<Item = OsString>) -> ExitCode {
             locator,
             release_version,
             retain_on_delete,
-        }) => public::subscribe(&locator, release_version, retain_on_delete)
-            .await
-            .map(|outcome| CommandOutput {
-                text: append_deprecation_notice(
-                    format!(
-                        "Subscribed {}{} as {}",
-                        outcome.locator,
-                        outcome
-                            .release_version
-                            .map(|value| format!(" at v{value}"))
-                            .unwrap_or_else(|| " to live private saves".to_owned()),
-                        outcome.harness_name
-                    ),
-                    outcome.deprecation.as_ref(),
-                ),
-                payload: ResultPayload::Subscribe { outcome },
-                exit: ExitCode::SUCCESS,
-            }),
+        }) => {
+            if pack_commands::is_pack_locator(&locator) {
+                if release_version.is_some() || retain_on_delete {
+                    Err(RuntimeError::new(
+                        CliErrorCode::InvalidArguments,
+                        "pack subscriptions follow the live pack and do not accept --version or --retain-on-delete",
+                    ))
+                } else {
+                    pack_commands::subscribe(&locator)
+                        .await
+                        .map(|outcome| CommandOutput {
+                            text: format!(
+                                "Subscribed {} at pack v{}",
+                                outcome.locator, outcome.version
+                            ),
+                            payload: ResultPayload::PackSubscription { outcome },
+                            exit: ExitCode::SUCCESS,
+                        })
+                }
+            } else {
+                public::subscribe(&locator, release_version, retain_on_delete)
+                    .await
+                    .map(|outcome| CommandOutput {
+                        text: append_deprecation_notice(
+                            format!(
+                                "Subscribed {}{} as {}",
+                                outcome.locator,
+                                outcome
+                                    .release_version
+                                    .map(|value| format!(" at v{value}"))
+                                    .unwrap_or_else(|| " to live private saves".to_owned()),
+                                outcome.harness_name
+                            ),
+                            outcome.deprecation.as_ref(),
+                        ),
+                        payload: ResultPayload::Subscribe { outcome },
+                        exit: ExitCode::SUCCESS,
+                    })
+            }
+        }
         Some(Command::Unsubscribe { locator }) => {
-            public::unsubscribe(&locator)
-                .await
-                .map(|outcome| CommandOutput {
-                    text: format!("Unsubscribed {}", outcome.locator),
-                    payload: ResultPayload::Unsubscribe { outcome },
-                    exit: ExitCode::SUCCESS,
-                })
+            if pack_commands::is_pack_locator(&locator) {
+                pack_commands::unsubscribe(&locator)
+                    .await
+                    .map(|outcome| CommandOutput {
+                        text: format!("Unsubscribed {}", outcome.locator),
+                        payload: ResultPayload::PackSubscription { outcome },
+                        exit: ExitCode::SUCCESS,
+                    })
+            } else {
+                public::unsubscribe(&locator)
+                    .await
+                    .map(|outcome| CommandOutput {
+                        text: format!("Unsubscribed {}", outcome.locator),
+                        payload: ResultPayload::Unsubscribe { outcome },
+                        exit: ExitCode::SUCCESS,
+                    })
+            }
         }
         Some(Command::Share { locator, recipient }) => {
             sharing::mutate(&locator, &recipient, denju_wire::ShareMutationKind::Share)
@@ -698,6 +831,39 @@ async fn run(args: impl IntoIterator<Item = OsString>) -> ExitCode {
                 payload: ResultPayload::Proposal { outcome },
                 exit: ExitCode::SUCCESS,
             }),
+        Some(Command::Pack {
+            command: PackCommand::Create { locator },
+        }) => pack_commands::create(&locator)
+            .await
+            .map(|outcome| CommandOutput {
+                text: format!("Created {} v{}", outcome.pack.locator, outcome.pack.version),
+                payload: ResultPayload::PackCreate { outcome },
+                exit: ExitCode::SUCCESS,
+            }),
+        Some(Command::Pack {
+            command: PackCommand::Add { locator, skills },
+        }) => pack_commands::mutate(&locator, &skills, denju_wire::PackMutationKind::Add)
+            .await
+            .map(|outcome| CommandOutput {
+                text: format!(
+                    "Updated {} to v{}",
+                    outcome.pack.locator, outcome.pack.version
+                ),
+                payload: ResultPayload::PackMutation { outcome },
+                exit: ExitCode::SUCCESS,
+            }),
+        Some(Command::Pack {
+            command: PackCommand::Remove { locator, skills },
+        }) => pack_commands::mutate(&locator, &skills, denju_wire::PackMutationKind::Remove)
+            .await
+            .map(|outcome| CommandOutput {
+                text: format!(
+                    "Updated {} to v{}",
+                    outcome.pack.locator, outcome.pack.version
+                ),
+                payload: ResultPayload::PackMutation { outcome },
+                exit: ExitCode::SUCCESS,
+            }),
         Some(Command::Status) => workspace::status().await.map(|outcome| CommandOutput {
             text: status_text(&outcome),
             payload: ResultPayload::Status { outcome },
@@ -734,62 +900,6 @@ async fn daemon(json: bool) -> ExitCode {
     match setup::daemon().await {
         Ok(exit) => exit,
         Err(error) => present_runtime_error(error, json),
-    }
-}
-
-fn guidance_output(guidance: Guidance) -> CommandOutput {
-    match guidance {
-        Guidance::SetupRequired => CommandOutput {
-            payload: ResultPayload::Guidance {
-                state: "setup_required",
-                next_command: Some("denju setup".to_owned()),
-            },
-            text: "Denju is ready to set up.\nNext: denju setup".to_owned(),
-            exit: ExitCode::SUCCESS,
-        },
-        Guidance::RepairRequired => CommandOutput {
-            payload: ResultPayload::Guidance {
-                state: "repair_required",
-                next_command: Some("denju doctor".to_owned()),
-            },
-            text: "Denju needs repair.\nNext: denju doctor".to_owned(),
-            exit: ExitCode::SUCCESS,
-        },
-        Guidance::ClaimAvailable => CommandOutput {
-            payload: ResultPayload::Guidance {
-                state: "identity_available",
-                next_command: Some("denju claim @username".to_owned()),
-            },
-            text: "Denju is healthy.\nNext: denju claim @username".to_owned(),
-            exit: ExitCode::SUCCESS,
-        },
-        Guidance::LoginRequired(username) => {
-            let next = format!("denju login {username}");
-            CommandOutput {
-                payload: ResultPayload::Guidance {
-                    state: "login_required",
-                    next_command: Some(next.clone()),
-                },
-                text: format!("Denju is healthy, but {username} is logged out.\nNext: {next}"),
-                exit: ExitCode::SUCCESS,
-            }
-        }
-        Guidance::Conflict(locator) => CommandOutput {
-            payload: ResultPayload::Guidance {
-                state: "conflict",
-                next_command: Some("denju status".to_owned()),
-            },
-            text: format!("{locator} needs conflict resolution.\nNext: denju status"),
-            exit: ExitCode::SUCCESS,
-        },
-        Guidance::Healthy => CommandOutput {
-            payload: ResultPayload::Guidance {
-                state: "healthy",
-                next_command: None,
-            },
-            text: "Denju is healthy.".to_owned(),
-            exit: ExitCode::SUCCESS,
-        },
     }
 }
 

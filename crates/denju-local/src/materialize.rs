@@ -57,7 +57,7 @@ pub async fn materialize_skill_snapshot(
 /// Lifecycle rename uses this after registry authority commits but before it records the local
 /// rename journal. If the process dies before the journal write, the only residue is an
 /// unreferenced generation directory; the old canonical/projection paths are still untouched.
-pub(crate) fn stage_skill_generation(
+pub fn stage_skill_generation(
     paths: &LocalPaths,
     desired: &DesiredSkillMaterialization,
     snapshot: &[u8],
@@ -86,6 +86,56 @@ pub(crate) fn stage_skill_generation(
         Err(error) => return Err(MaterializationError::Io(error)),
     }
     Ok(generation_dir)
+}
+
+/// Expose an already verified generation at the canonical managed-skill path.
+///
+/// This is intentionally separate from staging so higher-level transactional operations such as
+/// pack application can verify every member before changing any visible pointer.
+pub fn switch_staged_skill_generation(
+    paths: &LocalPaths,
+    desired: &DesiredSkillMaterialization,
+    generation_dir: &Path,
+    operation_id: OperationId,
+) -> Result<(), MaterializationError> {
+    let expected = paths
+        .generations
+        .join(desired.resource_id.to_string())
+        .join(desired.revision_id.to_string());
+    if generation_dir != expected || !generation_dir.is_dir() {
+        return Err(MaterializationError::Corrupt(format!(
+            "unexpected staged generation path {}",
+            generation_dir.display()
+        )));
+    }
+    verify_generation(generation_dir, &desired.skill_name, &desired.manifest)?;
+    let canonical_path = paths.skills.join(&desired.owner).join(&desired.skill_name);
+    atomic_switch_directory_link(generation_dir, &canonical_path, operation_id)?;
+    Ok(())
+}
+
+/// Restore a previously materialized revision during parent-operation rollback.
+pub fn restore_skill_generation(
+    paths: &LocalPaths,
+    resource_id: &str,
+    owner: &str,
+    skill_name: &str,
+    revision_id: Option<&str>,
+    operation_id: OperationId,
+) -> Result<(), MaterializationError> {
+    let canonical_path = paths.skills.join(owner).join(skill_name);
+    let Some(revision_id) = revision_id else {
+        return remove_canonical_skill(paths, owner, skill_name);
+    };
+    let generation = paths.generations.join(resource_id).join(revision_id);
+    if !generation.is_dir() {
+        return Err(MaterializationError::Corrupt(format!(
+            "rollback generation is missing: {}",
+            generation.display()
+        )));
+    }
+    atomic_switch_directory_link(&generation, &canonical_path, operation_id)?;
+    Ok(())
 }
 
 pub fn export_skill_snapshot(

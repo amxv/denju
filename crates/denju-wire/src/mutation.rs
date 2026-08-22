@@ -4,6 +4,14 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
+mod pack_hash;
+
+pub use pack_hash::{
+    pack_create_request_hash, pack_delete_request_hash, pack_mutation_request_hash,
+    pack_publish_request_hash, pack_rename_request_hash, pack_subscription_request_hash,
+    pack_unpublish_request_hash,
+};
+
 const CREATE_INSTALLATION_DOMAIN: &[u8] = b"denju:http:v1:create-installation\0";
 const CLAIM_IDENTITY_DOMAIN: &[u8] = b"denju:http:v1:claim-identity\0";
 const LOGIN_DOMAIN: &[u8] = b"denju:http:v1:login\0";
@@ -30,6 +38,15 @@ const PROPOSAL_CREATE_DOMAIN: &[u8] = b"denju:http:v1:proposal-create\0";
 const PROPOSAL_ACCEPT_DOMAIN: &[u8] = b"denju:http:v1:proposal-accept\0";
 const PROPOSAL_REJECT_DOMAIN: &[u8] = b"denju:http:v1:proposal-reject\0";
 const PROPOSAL_WITHDRAW_DOMAIN: &[u8] = b"denju:http:v1:proposal-withdraw\0";
+const PACK_CREATE_DOMAIN: &[u8] = b"denju:http:v1:pack-create\0";
+const PACK_ADD_DOMAIN: &[u8] = b"denju:http:v1:pack-add\0";
+const PACK_REMOVE_DOMAIN: &[u8] = b"denju:http:v1:pack-remove\0";
+const PACK_PUBLISH_DOMAIN: &[u8] = b"denju:http:v1:pack-publish\0";
+const PACK_RENAME_DOMAIN: &[u8] = b"denju:http:v1:pack-rename\0";
+const PACK_UNPUBLISH_DOMAIN: &[u8] = b"denju:http:v1:pack-unpublish\0";
+const PACK_DELETE_DOMAIN: &[u8] = b"denju:http:v1:pack-delete\0";
+const PACK_SUBSCRIBE_DOMAIN: &[u8] = b"denju:http:v1:pack-subscribe\0";
+const PACK_UNSUBSCRIBE_DOMAIN: &[u8] = b"denju:http:v1:pack-unsubscribe\0";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct RequestHash([u8; 32]);
@@ -144,6 +161,18 @@ impl IdentityMutationDomain {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SubscriptionMutationKind {
+    Subscribe,
+    Unsubscribe,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PackMutationKind {
+    Add,
+    Remove,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PackSubscriptionMutationKind {
     Subscribe,
     Unsubscribe,
 }

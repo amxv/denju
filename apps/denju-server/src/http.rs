@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, convert::Infallible, sync::Arc, time::Duration}
 use axum::{
     Json, Router,
     extract::{Query, State},
-    http::{HeaderMap, StatusCode, header::AUTHORIZATION},
+    http::{HeaderMap, StatusCode},
     response::sse::{Event, KeepAlive, Sse},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -16,7 +16,11 @@ use denju_wire::{
     CreateInstallationRequest, CreateInstallationResponse, DeleteSkillResponse,
     DeprecateSkillRequest, DeprecateSkillResponse, DeviceList, DeviceRevokeRequest,
     DeviceRevokeResponse, HistoryPruneResponse, IdentityBackupRequest, IdentityInfo,
-    IdentitySessionResponse, LoginRequest, PrivateRevisionCommitRequest,
+    IdentitySessionResponse, LoginRequest, PackCreateRequest, PackCreateResponse, PackDetail,
+    PackDrainRequest, PackDrainResponse, PackLifecycleRequest, PackLifecycleResponse,
+    PackMutationKind, PackMutationRequest, PackMutationResponse, PackPublishRequest,
+    PackRenameRequest, PackSubscriptionCatalog, PackSubscriptionMutationKind,
+    PackSubscriptionRequest, PackSubscriptionResponse, PrivateRevisionCommitRequest,
     PrivateRevisionCommitResponse, PrivateRevisionPrepareResponse, PrivateRevisionRequest,
     PrivateSkillCatalog, PrivateSkillImportCommitRequest, PrivateSkillImportPrepareResponse,
     PrivateSkillImportRequest, PrivateSkillImportResponse, ProposalAcceptRequest,
@@ -31,6 +35,10 @@ use denju_wire::{
 };
 use futures_util::stream;
 use serde::Deserialize;
+
+mod auth;
+
+use auth::{bearer_token, optional_bearer_token, recovery_bearer_token};
 
 pub(super) fn router(registry: Arc<Registry>) -> Router {
     Router::new()
@@ -93,6 +101,19 @@ pub(super) fn router(registry: Arc<Registry>) -> Router {
         .route("/v1/proposals/accept", post(accept_proposal))
         .route("/v1/proposals/reject", post(reject_proposal))
         .route("/v1/proposals/withdraw", post(withdraw_proposal))
+        .route("/v1/packs", get(show_pack).post(create_pack))
+        .route("/v1/packs/add", post(add_pack_members))
+        .route("/v1/packs/remove", post(remove_pack_members))
+        .route("/v1/packs/publish", post(publish_pack))
+        .route("/v1/packs/rename", post(rename_pack))
+        .route("/v1/packs/unpublish", post(unpublish_pack))
+        .route("/v1/packs/delete", post(delete_pack))
+        .route(
+            "/v1/pack-subscriptions",
+            get(pack_subscriptions).post(subscribe_pack),
+        )
+        .route("/v1/pack-subscriptions/remove", post(unsubscribe_pack))
+        .route("/v1/internal/packs/drain", post(drain_packs))
         .route("/v1/sync/reconcile", post(sync_reconcile))
         .route("/v1/events", get(events))
         .with_state(registry)
@@ -640,6 +661,160 @@ async fn withdraw_proposal(
         .map_err(ApiResponseError)
 }
 
+async fn create_pack(
+    State(registry): State<Arc<Registry>>,
+    headers: HeaderMap,
+    Json(request): Json<PackCreateRequest>,
+) -> Result<Json<PackCreateResponse>, ApiResponseError> {
+    let bearer = bearer_token(&headers)?;
+    registry
+        .create_pack(bearer, &request)
+        .await
+        .map(Json)
+        .map_err(ApiResponseError)
+}
+
+async fn show_pack(
+    State(registry): State<Arc<Registry>>,
+    headers: HeaderMap,
+    Query(query): Query<ShowQuery>,
+) -> Result<Json<PackDetail>, ApiResponseError> {
+    registry
+        .pack_detail(optional_bearer_token(&headers), &query.locator)
+        .await
+        .map(Json)
+        .map_err(ApiResponseError)
+}
+
+async fn add_pack_members(
+    State(registry): State<Arc<Registry>>,
+    headers: HeaderMap,
+    Json(request): Json<PackMutationRequest>,
+) -> Result<Json<PackMutationResponse>, ApiResponseError> {
+    let bearer = bearer_token(&headers)?;
+    registry
+        .mutate_pack(bearer, PackMutationKind::Add, &request)
+        .await
+        .map(Json)
+        .map_err(ApiResponseError)
+}
+
+async fn remove_pack_members(
+    State(registry): State<Arc<Registry>>,
+    headers: HeaderMap,
+    Json(request): Json<PackMutationRequest>,
+) -> Result<Json<PackMutationResponse>, ApiResponseError> {
+    let bearer = bearer_token(&headers)?;
+    registry
+        .mutate_pack(bearer, PackMutationKind::Remove, &request)
+        .await
+        .map(Json)
+        .map_err(ApiResponseError)
+}
+
+async fn publish_pack(
+    State(registry): State<Arc<Registry>>,
+    headers: HeaderMap,
+    Json(request): Json<PackPublishRequest>,
+) -> Result<Json<PackMutationResponse>, ApiResponseError> {
+    let bearer = bearer_token(&headers)?;
+    registry
+        .publish_pack(bearer, &request)
+        .await
+        .map(Json)
+        .map_err(ApiResponseError)
+}
+
+async fn rename_pack(
+    State(registry): State<Arc<Registry>>,
+    headers: HeaderMap,
+    Json(request): Json<PackRenameRequest>,
+) -> Result<Json<PackLifecycleResponse>, ApiResponseError> {
+    let bearer = bearer_token(&headers)?;
+    registry
+        .rename_pack(bearer, &request)
+        .await
+        .map(Json)
+        .map_err(ApiResponseError)
+}
+
+async fn unpublish_pack(
+    State(registry): State<Arc<Registry>>,
+    headers: HeaderMap,
+    Json(request): Json<PackLifecycleRequest>,
+) -> Result<Json<PackLifecycleResponse>, ApiResponseError> {
+    let bearer = bearer_token(&headers)?;
+    registry
+        .unpublish_pack(bearer, &request)
+        .await
+        .map(Json)
+        .map_err(ApiResponseError)
+}
+
+async fn delete_pack(
+    State(registry): State<Arc<Registry>>,
+    headers: HeaderMap,
+    Json(request): Json<PackLifecycleRequest>,
+) -> Result<Json<PackLifecycleResponse>, ApiResponseError> {
+    let bearer = bearer_token(&headers)?;
+    registry
+        .delete_pack(bearer, &request)
+        .await
+        .map(Json)
+        .map_err(ApiResponseError)
+}
+
+async fn subscribe_pack(
+    State(registry): State<Arc<Registry>>,
+    headers: HeaderMap,
+    Json(request): Json<PackSubscriptionRequest>,
+) -> Result<Json<PackSubscriptionResponse>, ApiResponseError> {
+    let bearer = bearer_token(&headers)?;
+    registry
+        .mutate_pack_subscription(bearer, PackSubscriptionMutationKind::Subscribe, &request)
+        .await
+        .map(Json)
+        .map_err(ApiResponseError)
+}
+
+async fn unsubscribe_pack(
+    State(registry): State<Arc<Registry>>,
+    headers: HeaderMap,
+    Json(request): Json<PackSubscriptionRequest>,
+) -> Result<Json<PackSubscriptionResponse>, ApiResponseError> {
+    let bearer = bearer_token(&headers)?;
+    registry
+        .mutate_pack_subscription(bearer, PackSubscriptionMutationKind::Unsubscribe, &request)
+        .await
+        .map(Json)
+        .map_err(ApiResponseError)
+}
+
+async fn pack_subscriptions(
+    State(registry): State<Arc<Registry>>,
+    headers: HeaderMap,
+) -> Result<Json<PackSubscriptionCatalog>, ApiResponseError> {
+    let bearer = bearer_token(&headers)?;
+    registry
+        .pack_subscription_catalog(bearer)
+        .await
+        .map(Json)
+        .map_err(ApiResponseError)
+}
+
+async fn drain_packs(
+    State(registry): State<Arc<Registry>>,
+    headers: HeaderMap,
+    Json(request): Json<PackDrainRequest>,
+) -> Result<Json<PackDrainResponse>, ApiResponseError> {
+    recovery_bearer_token(&headers)?;
+    registry
+        .drain_pack_release_events(request.limit)
+        .await
+        .map(Json)
+        .map_err(ApiResponseError)
+}
+
 async fn sync_reconcile(
     State(registry): State<Arc<Registry>>,
     headers: HeaderMap,
@@ -752,28 +927,6 @@ pub(crate) async fn next_sync_hint(
                 .collect(),
         })
     }
-}
-
-fn bearer_token(headers: &HeaderMap) -> Result<&str, ApiResponseError> {
-    headers
-        .get(AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "))
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| {
-            ApiResponseError(ApiError::new(
-                ApiErrorCode::Unauthorized,
-                "installation credential required",
-            ))
-        })
-}
-
-fn optional_bearer_token(headers: &HeaderMap) -> Option<&str> {
-    headers
-        .get(AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "))
-        .filter(|value| !value.is_empty())
 }
 
 async fn health_live() -> StatusCode {

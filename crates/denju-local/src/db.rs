@@ -22,6 +22,20 @@ pub struct LocalDatabase {
 }
 
 impl LocalDatabase {
+    pub async fn remove_subscription_record(
+        &self,
+        resource_id: String,
+    ) -> Result<(), LocalDbError> {
+        self.call(move |connection| {
+            connection.execute(
+                "DELETE FROM subscriptions WHERE resource_id=?1",
+                params![resource_id],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
     pub async fn open(path: impl AsRef<Path>) -> Result<Self, LocalDbError> {
         let path = path.as_ref().to_owned();
         let (sender, receiver) = mpsc::channel::<Job>();
@@ -726,7 +740,7 @@ fn open_connection(path: &Path) -> Result<Connection, LocalDbError> {
         "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON;",
     )?;
     let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    if version > 9 {
+    if version > 10 {
         return Err(LocalDbError::UnsupportedSchema(version));
     }
     if version == 0 {
@@ -763,6 +777,10 @@ fn open_connection(path: &Path) -> Result<Connection, LocalDbError> {
     let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
     if version == 8 {
         connection.execute_batch(MIGRATION_V9)?;
+    }
+    let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version == 9 {
+        connection.execute_batch(MIGRATION_V10)?;
     }
     Ok(connection)
 }

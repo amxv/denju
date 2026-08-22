@@ -110,6 +110,9 @@ impl LocalDatabase {
                  UNION ALL \
                  SELECT resource_id, locator, owner, skill_name, harness_name, materialized_revision_id \
                  FROM owned_skills \
+                 UNION ALL \
+                 SELECT resource_id, locator, owner, skill_name, harness_name, materialized_revision_id \
+                 FROM pack_materialized_skills \
                  ORDER BY owner, skill_name, resource_id",
             )?;
             let rows = statement.query_map([], |row| {
@@ -262,7 +265,11 @@ impl LocalDatabase {
                 "UPDATE owned_skills SET materialized_revision_id=?1, updated_at_unix_ms=?2 WHERE resource_id=?3",
                 params![revision_id, now_unix_ms, resource_id],
             )?;
-            if subscription_changed + owned_changed != 1 {
+            let pack_changed = connection.execute(
+                "UPDATE pack_materialized_skills SET materialized_revision_id=?1, updated_at_unix_ms=?2 WHERE resource_id=?3",
+                params![revision_id, now_unix_ms, resource_id],
+            )?;
+            if subscription_changed + owned_changed + pack_changed != 1 {
                 return Err(rusqlite::Error::QueryReturnedNoRows.into());
             }
             Ok(())
@@ -285,7 +292,11 @@ impl LocalDatabase {
                 "UPDATE owned_skills SET harness_name=?1, updated_at_unix_ms=?2 WHERE resource_id=?3",
                 params![harness_name, now_unix_ms, resource_id],
             )?;
-            if subscription_changed + owned_changed != 1 {
+            let pack_changed = connection.execute(
+                "UPDATE pack_materialized_skills SET harness_name=?1, updated_at_unix_ms=?2 WHERE resource_id=?3",
+                params![harness_name, now_unix_ms, resource_id],
+            )?;
+            if subscription_changed + owned_changed + pack_changed != 1 {
                 return Err(rusqlite::Error::QueryReturnedNoRows.into());
             }
             Ok(())

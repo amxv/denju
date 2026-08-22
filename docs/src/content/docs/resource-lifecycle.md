@@ -1,7 +1,7 @@
 ---
 title: Resource lifecycle
 description: Rename, publish, unpublish, deprecate, delete, retain, prune, and inspect storage for owned skills.
-order: 8
+order: 9
 category: Start
 summary: Stable resource IDs keep lifecycle mutations precise even when locators change or are reused.
 ---

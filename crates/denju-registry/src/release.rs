@@ -62,7 +62,7 @@ impl ReleaseWorkspaceRow {
 }
 
 pub(crate) use crate::outbox::enqueue_resource_wake;
-use crate::outbox::enqueue_resource_wake_with_event;
+use crate::outbox::enqueue_skill_release_wake;
 
 impl Registry {
     /// Lazily starts the disposable cross-instance wake bridge. Correctness never depends on
@@ -181,6 +181,7 @@ impl Registry {
             return Ok(outcome);
         }
 
+        crate::pack_drain::lock_skill_resource(&mut tx, resource_id.as_uuid()).await?;
         let current = sqlx::query_as::<_, ReleaseWorkspaceRow>(
             "SELECT r.owner_namespace_id,n.slug AS owner,r.slug AS name,r.description,r.visibility,r.generation, \
                     r.latest_release_version,w.revision_id,w.manifest_json,w.snapshot_key,w.snapshot_sha256,w.snapshot_size, \
@@ -303,6 +304,7 @@ impl Registry {
                 .map_err(internal_api_error)?;
                 enqueue_resource_wake(&mut tx, resource_id.as_uuid(), generation).await?;
                 tx.commit().await.map_err(internal_api_error)?;
+                let _ = self.drain_pack_release_events(16).await;
                 let _ = self.drain_outbox(64).await;
                 return Ok(outcome);
             }
@@ -399,17 +401,19 @@ impl Registry {
         .execute(&mut *tx)
         .await
         .map_err(internal_api_error)?;
-        enqueue_resource_wake_with_event(
+        enqueue_skill_release_wake(
             &mut tx,
             resource_id.as_uuid(),
             generation,
-            "skill_release_published",
+            release_version,
+            &outcome.release.revision_id,
         )
         .await?;
         tx.commit().await.map_err(internal_api_error)?;
 
         // Common-case wake delivery is bounded and request-adjacent. The authoritative
         // outbox remains committed if this attempt is interrupted.
+        let _ = self.drain_pack_release_events(16).await;
         let _ = self.drain_outbox(64).await;
         Ok(outcome)
     }

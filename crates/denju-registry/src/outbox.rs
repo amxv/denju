@@ -12,6 +12,14 @@ struct ResourceWakePayload {
     generation: u64,
 }
 
+#[derive(Debug, Serialize)]
+struct SkillReleaseWakePayload<'a> {
+    resource_id: String,
+    generation: u64,
+    release_version: u64,
+    revision_id: &'a str,
+}
+
 impl Registry {
     pub async fn drain_outbox(&self, limit: u32) -> Result<usize, ApiError> {
         let limit = i64::from(limit.clamp(1, 256));
@@ -84,6 +92,40 @@ pub(crate) async fn enqueue_resource_wake_with_event(
         generation,
     })
     .map_err(|error| ApiError::new(ApiErrorCode::Internal, error.to_string()))?;
+    enqueue_wake_payload(tx, resource_id, generation, authority_event_kind, payload).await
+}
+
+pub(crate) async fn enqueue_skill_release_wake(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    resource_id: Uuid,
+    generation: u64,
+    release_version: u64,
+    revision_id: &str,
+) -> Result<(), ApiError> {
+    let payload = serde_json::to_value(SkillReleaseWakePayload {
+        resource_id: resource_id.to_string(),
+        generation,
+        release_version,
+        revision_id,
+    })
+    .map_err(|error| ApiError::new(ApiErrorCode::Internal, error.to_string()))?;
+    enqueue_wake_payload(
+        tx,
+        resource_id,
+        generation,
+        "skill_release_published",
+        payload,
+    )
+    .await
+}
+
+async fn enqueue_wake_payload(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    resource_id: Uuid,
+    generation: u64,
+    authority_event_kind: &str,
+    payload: Value,
+) -> Result<(), ApiError> {
     let event_id = sqlx::query_scalar::<_, i64>(
         "INSERT INTO authority_events (event_kind,resource_id,resource_generation,payload_json) \
          VALUES ($1,$2,$3,$4) RETURNING id",

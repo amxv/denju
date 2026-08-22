@@ -293,6 +293,7 @@ async fn sync_with_context(
     recover_local_lifecycle(&context.paths, &context.db, &context.roots)
         .await
         .map_err(local_error)?;
+    crate::pack_sync::recover_incomplete_apply(&context).await?;
     let existing = context.db.subscriptions().await.map_err(local_error)?;
     let mut known = Vec::with_capacity(existing.len());
     for record in &existing {
@@ -337,7 +338,7 @@ async fn sync_with_context(
         .iter()
         .map(String::as_str)
         .collect::<BTreeSet<_>>();
-    let mut removed = 0;
+    let mut removed: usize = 0;
     for record in &existing {
         if !removed_ids.contains(record.resource_id.as_str()) {
             continue;
@@ -519,6 +520,53 @@ async fn sync_with_context(
         }
     }
 
+    let pack_state = crate::pack_sync::refresh_catalog(&context).await?;
+    let pack_apply = crate::pack_sync::apply_pack_only_state(&context, &pack_state).await?;
+    materialized = materialized.saturating_add(pack_apply.materialized);
+    removed = removed.saturating_add(pack_apply.removed);
+    let pack_desired = context
+        .db
+        .pack_materialized_skills()
+        .await
+        .map_err(local_error)?
+        .len();
+    for conflict in context
+        .db
+        .pack_source_conflicts()
+        .await
+        .map_err(local_error)?
+    {
+        blockers.push(
+            RuntimeError::new(
+                CliErrorCode::LocalState,
+                format!(
+                    "{} (pack sources: {}; revisions: {})",
+                    conflict.message,
+                    conflict.source_pack_ids.join(", "),
+                    conflict.revision_ids.join(", ")
+                ),
+            )
+            .recovery("denju status"),
+        );
+    }
+    let mut unavailable = BTreeSet::new();
+    for source in context.db.pack_skill_sources().await.map_err(local_error)? {
+        if let Some(reason) = source.unavailable_reason
+            && unavailable.insert((source.pack_resource_id.clone(), source.resource_id.clone()))
+        {
+            blockers.push(
+                RuntimeError::new(
+                    CliErrorCode::NotFound,
+                    format!(
+                        "pack {} cannot currently satisfy {}: {reason}",
+                        source.pack_resource_id, source.locator
+                    ),
+                )
+                .recovery("denju show <pack-locator>"),
+            );
+        }
+    }
+
     reconcile_canonical_links(&context.paths, &context.db)
         .await
         .map_err(local_error)?;
@@ -543,7 +591,8 @@ async fn sync_with_context(
                             .any(|local| local.resource_id == remote.resource_id)
                     })
                     .count()
-                + owned_desired,
+                + owned_desired
+                + pack_desired,
             materialized,
             removed,
             projections,

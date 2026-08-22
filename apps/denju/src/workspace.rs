@@ -32,6 +32,7 @@ pub(crate) struct StatusOutcome {
     pub(crate) state: &'static str,
     pub(crate) resources: Vec<ResourceStatus>,
     pub(crate) forks: Vec<ForkStatus>,
+    pub(crate) packs: Vec<PackStatus>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -40,6 +41,16 @@ pub(crate) struct ForkStatus {
     pub(crate) locator: String,
     pub(crate) state: &'static str,
     pub(crate) message: String,
+    pub(crate) next_commands: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct PackStatus {
+    pub(crate) pack_resource_id: String,
+    pub(crate) locator: String,
+    pub(crate) state: &'static str,
+    pub(crate) message: String,
+    pub(crate) affected_resources: Vec<String>,
     pub(crate) next_commands: Vec<String>,
 }
 
@@ -174,14 +185,84 @@ pub(crate) async fn status() -> Result<StatusOutcome, RuntimeError> {
             }
         }
     }
+    let pack_locators = db
+        .pack_subscriptions()
+        .await
+        .map_err(local_error)?
+        .into_iter()
+        .map(|pack| (pack.pack_resource_id, pack.locator))
+        .collect::<BTreeMap<_, _>>();
+    let pack_sources = db.pack_skill_sources().await.map_err(local_error)?;
+    let mut packs = Vec::new();
+    for conflict in db.pack_source_conflicts().await.map_err(local_error)? {
+        let source_locators = conflict
+            .source_pack_ids
+            .iter()
+            .filter_map(|pack_id| pack_locators.get(pack_id).cloned())
+            .collect::<Vec<_>>();
+        let locator = source_locators
+            .first()
+            .cloned()
+            .unwrap_or_else(|| conflict.resource_id.clone());
+        let next_commands = source_locators
+            .iter()
+            .map(|locator| format!("denju unsubscribe {locator}"))
+            .collect::<Vec<_>>();
+        packs.push(PackStatus {
+            pack_resource_id: conflict.source_pack_ids.join(","),
+            locator,
+            state: "source_conflict",
+            message: format!(
+                "{}; sources: {}; revisions: {}",
+                conflict.message,
+                source_locators.join(", "),
+                conflict.revision_ids.join(", ")
+            ),
+            affected_resources: vec![conflict.resource_id],
+            next_commands,
+        });
+    }
+    let mut unavailable_by_pack = BTreeMap::<String, Vec<(String, String)>>::new();
+    for source in pack_sources {
+        if let Some(reason) = source.unavailable_reason {
+            unavailable_by_pack
+                .entry(source.pack_resource_id)
+                .or_default()
+                .push((source.locator, reason));
+        }
+    }
+    for (pack_resource_id, unavailable) in unavailable_by_pack {
+        let locator = pack_locators
+            .get(&pack_resource_id)
+            .cloned()
+            .unwrap_or_else(|| pack_resource_id.clone());
+        let affected_resources = unavailable
+            .iter()
+            .map(|(locator, _)| locator.clone())
+            .collect::<Vec<_>>();
+        let detail = unavailable
+            .iter()
+            .map(|(locator, reason)| format!("{locator} ({reason})"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        packs.push(PackStatus {
+            pack_resource_id,
+            locator: locator.clone(),
+            state: "degraded",
+            message: format!("unavailable members: {detail}"),
+            affected_resources,
+            next_commands: vec![format!("denju show {locator}")],
+        });
+    }
     Ok(StatusOutcome {
-        state: if resources.is_empty() && forks.is_empty() {
+        state: if resources.is_empty() && forks.is_empty() && packs.is_empty() {
             "healthy"
         } else {
             "attention_required"
         },
         resources,
         forks,
+        packs,
     })
 }
 

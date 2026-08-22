@@ -9,19 +9,22 @@ use denju_wire::{
     AutomationTokenRevokeResponse, ClaimIdentityRequest, CreateInstallationRequest,
     CreateInstallationResponse, DeleteSkillResponse, DeprecateSkillRequest, DeprecateSkillResponse,
     DeviceList, DeviceRevokeRequest, DeviceRevokeResponse, HistoryPruneResponse,
-    IdentityBackupRequest, IdentityInfo, IdentitySessionResponse, LoginRequest,
-    PrivateRevisionCommitRequest, PrivateRevisionCommitResponse, PrivateRevisionPrepareResponse,
-    PrivateRevisionRequest, PrivateSkillCatalog, PrivateSkillImportCommitRequest,
-    PrivateSkillImportPrepareResponse, PrivateSkillImportRequest, PrivateSkillImportResponse,
-    ProposalAcceptRequest, ProposalCloseRequest, ProposalCreateRequest, PublicSkillDetail,
-    PublicSkillSearchResponse, PublishSkillRequest, PublishSkillResponse, RecoveryResetRequest,
-    RegistryCapabilities, RenameSkillRequest, RenameSkillResponse, ResourceLifecycleRequest,
-    RestoreSkillRequest, RestoreSkillResponse, ShareMutationKind, ShareSkillRequest,
-    ShareSkillResponse, SkillHistoryResponse, SkillProposal, SkillProposalDetail,
-    SkillProposalList, SkillRevisionDetail, SnapshotDownload, StagedBlobUpload,
-    SubscriptionCatalog, SubscriptionMutationRequest, SubscriptionMutationResponse,
-    SubscriptionTarget, SyncHint, SyncReconcileRequest, SyncReconcileResponse,
-    UnpublishSkillResponse, UsageResponse,
+    IdentityBackupRequest, IdentityInfo, IdentitySessionResponse, LoginRequest, PackCreateRequest,
+    PackCreateResponse, PackDetail, PackLifecycleRequest, PackLifecycleResponse, PackMutationKind,
+    PackMutationRequest, PackMutationResponse, PackPublishRequest, PackRenameRequest,
+    PackSubscriptionCatalog, PackSubscriptionMutationKind, PackSubscriptionRequest,
+    PackSubscriptionResponse, PrivateRevisionCommitRequest, PrivateRevisionCommitResponse,
+    PrivateRevisionPrepareResponse, PrivateRevisionRequest, PrivateSkillCatalog,
+    PrivateSkillImportCommitRequest, PrivateSkillImportPrepareResponse, PrivateSkillImportRequest,
+    PrivateSkillImportResponse, ProposalAcceptRequest, ProposalCloseRequest, ProposalCreateRequest,
+    PublicSkillDetail, PublicSkillSearchResponse, PublishSkillRequest, PublishSkillResponse,
+    RecoveryResetRequest, RegistryCapabilities, RenameSkillRequest, RenameSkillResponse,
+    ResourceLifecycleRequest, RestoreSkillRequest, RestoreSkillResponse, ShareMutationKind,
+    ShareSkillRequest, ShareSkillResponse, SkillHistoryResponse, SkillProposal,
+    SkillProposalDetail, SkillProposalList, SkillRevisionDetail, SnapshotDownload,
+    StagedBlobUpload, SubscriptionCatalog, SubscriptionMutationRequest,
+    SubscriptionMutationResponse, SubscriptionTarget, SyncHint, SyncReconcileRequest,
+    SyncReconcileResponse, UnpublishSkillResponse, UsageResponse,
 };
 use futures_util::StreamExt;
 use reqwest::{Client, RequestBuilder, StatusCode};
@@ -397,6 +400,88 @@ impl RegistryClient {
     ) -> Result<SkillProposal, ClientError> {
         self.authenticated_post_json("v1/proposals/withdraw", request)
             .await
+    }
+
+    pub async fn create_pack(
+        &self,
+        request: &PackCreateRequest,
+    ) -> Result<PackCreateResponse, ClientError> {
+        self.authenticated_post_json("v1/packs", request).await
+    }
+
+    pub async fn pack_detail(&self, locator: &str) -> Result<PackDetail, ClientError> {
+        let builder = self
+            .http
+            .get(self.endpoint("v1/packs")?)
+            .query(&[("locator", locator)]);
+        let response = if self.bearer.is_some() {
+            self.with_auth(builder)?
+        } else {
+            builder
+        }
+        .send()
+        .await?;
+        decode_response(response).await
+    }
+
+    pub async fn mutate_pack(
+        &self,
+        kind: PackMutationKind,
+        request: &PackMutationRequest,
+    ) -> Result<PackMutationResponse, ClientError> {
+        let path = match kind {
+            PackMutationKind::Add => "v1/packs/add",
+            PackMutationKind::Remove => "v1/packs/remove",
+        };
+        self.authenticated_post_json(path, request).await
+    }
+
+    pub async fn publish_pack(
+        &self,
+        request: &PackPublishRequest,
+    ) -> Result<PackMutationResponse, ClientError> {
+        self.authenticated_post_json("v1/packs/publish", request)
+            .await
+    }
+
+    pub async fn rename_pack(
+        &self,
+        request: &PackRenameRequest,
+    ) -> Result<PackLifecycleResponse, ClientError> {
+        self.authenticated_post_json("v1/packs/rename", request)
+            .await
+    }
+
+    pub async fn unpublish_pack(
+        &self,
+        request: &PackLifecycleRequest,
+    ) -> Result<PackLifecycleResponse, ClientError> {
+        self.authenticated_post_json("v1/packs/unpublish", request)
+            .await
+    }
+
+    pub async fn delete_pack(
+        &self,
+        request: &PackLifecycleRequest,
+    ) -> Result<PackLifecycleResponse, ClientError> {
+        self.authenticated_post_json("v1/packs/delete", request)
+            .await
+    }
+
+    pub async fn mutate_pack_subscription(
+        &self,
+        kind: PackSubscriptionMutationKind,
+        request: &PackSubscriptionRequest,
+    ) -> Result<PackSubscriptionResponse, ClientError> {
+        let path = match kind {
+            PackSubscriptionMutationKind::Subscribe => "v1/pack-subscriptions",
+            PackSubscriptionMutationKind::Unsubscribe => "v1/pack-subscriptions/remove",
+        };
+        self.authenticated_post_json(path, request).await
+    }
+
+    pub async fn pack_subscriptions(&self) -> Result<PackSubscriptionCatalog, ClientError> {
+        self.authenticated_get_json("v1/pack-subscriptions").await
     }
 
     pub async fn reconcile_subscriptions(

@@ -205,7 +205,7 @@ pub(crate) fn setup_text(outcome: &SetupOutcome) -> String {
 }
 
 pub(crate) fn status_text(outcome: &StatusOutcome) -> String {
-    if outcome.resources.is_empty() && outcome.forks.is_empty() {
+    if outcome.resources.is_empty() && outcome.forks.is_empty() && outcome.packs.is_empty() {
         return "Denju is healthy.".to_owned();
     }
     let mut lines = Vec::new();
@@ -234,6 +234,13 @@ pub(crate) fn status_text(outcome: &StatusOutcome) -> String {
         lines.push(format!("{}: {}", fork.locator, fork.state));
         lines.push(format!("  {}", fork.message));
         for command in &fork.next_commands {
+            lines.push(format!("  Next: {command}"));
+        }
+    }
+    for pack in &outcome.packs {
+        lines.push(format!("{}: {}", pack.locator, pack.state));
+        lines.push(format!("  {}", pack.message));
+        for command in &pack.next_commands {
             lines.push(format!("  Next: {command}"));
         }
     }

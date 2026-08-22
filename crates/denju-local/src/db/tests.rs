@@ -53,7 +53,131 @@ async fn local_schema_converges_directly_to_current_version() {
         })
         .await
         .unwrap();
-    assert_eq!(version, 9);
+    assert_eq!(version, 10);
+}
+
+#[tokio::test]
+async fn pack_catalog_and_apply_journal_commit_as_one_local_state_change() {
+    let dir = tempdir().unwrap();
+    let db = LocalDatabase::open(dir.path().join("state.db"))
+        .await
+        .unwrap();
+    let pack_id = "01890f47-6a1c-7cc2-98c1-5f6c1ed8a3a1".to_owned();
+    let skill_id = "01890f47-6a1d-7ad0-8f43-9a4d8c29f002".to_owned();
+    let revision = "11".repeat(32);
+    db.replace_pack_catalog(
+        vec![PackSubscriptionRecord {
+            pack_resource_id: pack_id.clone(),
+            locator: "@alice/packs/core".to_owned(),
+            resource_generation: 2,
+            pack_version: 3,
+            degraded: false,
+        }],
+        vec![PackSkillSourceRecord {
+            pack_resource_id: pack_id.clone(),
+            resource_id: skill_id.clone(),
+            locator: "@bob/review".to_owned(),
+            owner: "bob".to_owned(),
+            skill_name: "review".to_owned(),
+            resource_generation: 7,
+            desired_revision_id: revision.clone(),
+            unavailable_reason: None,
+        }],
+        1,
+    )
+    .await
+    .unwrap();
+    assert_eq!(db.pack_subscriptions().await.unwrap().len(), 1);
+    assert_eq!(db.pack_skill_sources().await.unwrap().len(), 1);
+
+    let operation_id = OperationId::from_uuid(Uuid::now_v7()).unwrap();
+    let payload = PackApplyJournalPayload {
+        old_skills: Vec::new(),
+        new_skills: vec![PackApplySkillState {
+            resource_id: skill_id.clone(),
+            owner: "bob".to_owned(),
+            skill_name: "review".to_owned(),
+            revision_id: Some(revision.clone()),
+        }],
+    };
+    db.create_pack_apply_journal(operation_id, payload.clone(), 2)
+        .await
+        .unwrap();
+    let journals = db.incomplete_pack_apply_journals().await.unwrap();
+    assert_eq!(journals.len(), 1);
+    assert_eq!(journals[0].payload, payload);
+
+    let materialized = PackMaterializedSkillRecord {
+        resource_id: skill_id.clone(),
+        locator: "@bob/review".to_owned(),
+        owner: "bob".to_owned(),
+        skill_name: "review".to_owned(),
+        resource_generation: 7,
+        desired_revision_id: revision.clone(),
+        harness_name: Some("review".to_owned()),
+        materialized_revision_id: revision.clone(),
+    };
+    let conflict = PackSourceConflictRecord {
+        resource_id: "01890f47-6a1e-72ce-88bf-ef23fc661004".to_owned(),
+        source_pack_ids: vec![pack_id],
+        revision_ids: vec!["22".repeat(32), "33".repeat(32)],
+        message: "conflicting pack requirements".to_owned(),
+    };
+    db.commit_pack_apply(
+        operation_id,
+        vec![materialized.clone()],
+        vec![conflict.clone()],
+        3,
+    )
+    .await
+    .unwrap();
+    assert!(
+        db.incomplete_pack_apply_journals()
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        db.pack_materialized_skills().await.unwrap(),
+        vec![materialized]
+    );
+    assert_eq!(db.pack_source_conflicts().await.unwrap(), vec![conflict]);
+    assert_eq!(db.managed_skills().await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn invalid_pack_catalog_replacement_rolls_back_the_previous_catalog() {
+    let dir = tempdir().unwrap();
+    let db = LocalDatabase::open(dir.path().join("state.db"))
+        .await
+        .unwrap();
+    let pack = PackSubscriptionRecord {
+        pack_resource_id: "01890f47-6a1c-7cc2-98c1-5f6c1ed8a3a1".to_owned(),
+        locator: "@alice/packs/core".to_owned(),
+        resource_generation: 1,
+        pack_version: 1,
+        degraded: false,
+    };
+    db.replace_pack_catalog(vec![pack.clone()], Vec::new(), 1)
+        .await
+        .unwrap();
+
+    let invalid = PackSkillSourceRecord {
+        pack_resource_id: "01890f47-ffff-7cc2-98c1-5f6c1ed8a3a1".to_owned(),
+        resource_id: "01890f47-6a1d-7ad0-8f43-9a4d8c29f002".to_owned(),
+        locator: "@bob/review".to_owned(),
+        owner: "bob".to_owned(),
+        skill_name: "review".to_owned(),
+        resource_generation: 1,
+        desired_revision_id: "11".repeat(32),
+        unavailable_reason: None,
+    };
+    assert!(
+        db.replace_pack_catalog(Vec::new(), vec![invalid], 2)
+            .await
+            .is_err()
+    );
+    assert_eq!(db.pack_subscriptions().await.unwrap(), vec![pack]);
 }
 
 #[tokio::test]

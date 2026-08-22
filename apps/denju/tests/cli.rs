@@ -224,9 +224,43 @@ fn proposal_cli_shapes_parse_without_ambiguity() {
 }
 
 #[test]
+fn pack_cli_shapes_parse_without_ambiguity() {
+    for args in [
+        vec!["--json", "pack", "create", "@alice/packs/core"],
+        vec![
+            "--json",
+            "pack",
+            "add",
+            "@alice/packs/core",
+            "@bob/review",
+            "@carol/test@v3",
+        ],
+        vec![
+            "--json",
+            "pack",
+            "remove",
+            "@alice/packs/core",
+            "@bob/review",
+        ],
+        vec!["--json", "show", "@alice/packs/core"],
+        vec!["--json", "publish", "@alice/packs/core"],
+        vec!["--json", "subscribe", "@alice/packs/core"],
+        vec!["--json", "unsubscribe", "@alice/packs/core"],
+    ] {
+        let output = denju(&args);
+        assert_eq!(output.status.code(), Some(1), "args: {args:?}");
+        assert!(stderr(&output).is_empty(), "args: {args:?}");
+        let value: Value = serde_json::from_str(stdout(&output).trim()).expect("valid JSON error");
+        assert_eq!(value["ok"], false, "args: {args:?}");
+        assert_eq!(value["error"]["code"], "setup_required", "args: {args:?}");
+    }
+}
+
+#[test]
 fn destructive_lifecycle_json_requires_prior_confirmation() {
     for args in [
         vec!["--json", "delete", "@alice/review"],
+        vec!["--json", "delete", "@alice/packs/core"],
         vec!["--json", "history", "prune", "@alice/review"],
     ] {
         let output = denju(&args);

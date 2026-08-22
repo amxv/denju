@@ -94,6 +94,68 @@ pub struct ManagedSkillRecord {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PackSubscriptionRecord {
+    pub pack_resource_id: String,
+    pub locator: String,
+    pub resource_generation: i64,
+    pub pack_version: i64,
+    pub degraded: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PackSkillSourceRecord {
+    pub pack_resource_id: String,
+    pub resource_id: String,
+    pub locator: String,
+    pub owner: String,
+    pub skill_name: String,
+    pub resource_generation: i64,
+    pub desired_revision_id: String,
+    pub unavailable_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PackMaterializedSkillRecord {
+    pub resource_id: String,
+    pub locator: String,
+    pub owner: String,
+    pub skill_name: String,
+    pub resource_generation: i64,
+    pub desired_revision_id: String,
+    pub harness_name: Option<String>,
+    pub materialized_revision_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PackSourceConflictRecord {
+    pub resource_id: String,
+    pub source_pack_ids: Vec<String>,
+    pub revision_ids: Vec<String>,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PackApplySkillState {
+    pub resource_id: String,
+    pub owner: String,
+    pub skill_name: String,
+    pub revision_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PackApplyJournalPayload {
+    pub old_skills: Vec<PackApplySkillState>,
+    pub new_skills: Vec<PackApplySkillState>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PackApplyJournal {
+    pub operation_id: OperationId,
+    pub payload: PackApplyJournalPayload,
+    pub complete: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImportJournal {
     pub operation_id: OperationId,
     pub state: JournalState,
