@@ -81,7 +81,7 @@ impl LocalDatabase {
     pub async fn owned_skills(&self) -> Result<Vec<OwnedSkillRecord>, LocalDbError> {
         self.call(|connection| {
             let mut statement = connection.prepare(
-                "SELECT resource_id, locator, owner, skill_name, resource_generation, desired_revision_id, \
+                "SELECT resource_id, locator, owner, skill_name, resource_generation,workspace_generation,desired_revision_id, \
                         harness_name, materialized_revision_id \
                  FROM owned_skills ORDER BY owner, skill_name, resource_id",
             )?;
@@ -92,9 +92,10 @@ impl LocalDatabase {
                     owner: row.get(2)?,
                     skill_name: row.get(3)?,
                     resource_generation: row.get(4)?,
-                    desired_revision_id: row.get(5)?,
-                    harness_name: row.get(6)?,
-                    materialized_revision_id: row.get(7)?,
+                    workspace_generation: row.get(5)?,
+                    desired_revision_id: row.get(6)?,
+                    harness_name: row.get(7)?,
+                    materialized_revision_id: row.get(8)?,
                 })
             })?;
             rows.collect::<Result<Vec<_>, _>>().map_err(LocalDbError::from)
@@ -147,11 +148,11 @@ impl LocalDatabase {
         self.call(move |connection| {
             connection.execute(
                 "INSERT INTO owned_skills \
-                 (resource_id, locator, owner, skill_name, resource_generation, desired_revision_id, updated_at_unix_ms) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
+                 (resource_id, locator, owner, skill_name, resource_generation,workspace_generation,desired_revision_id, updated_at_unix_ms) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) \
                  ON CONFLICT(resource_id) DO UPDATE SET \
                    locator=excluded.locator, owner=excluded.owner, skill_name=excluded.skill_name, \
-                   resource_generation=excluded.resource_generation, desired_revision_id=excluded.desired_revision_id, \
+                   resource_generation=excluded.resource_generation,workspace_generation=excluded.workspace_generation, desired_revision_id=excluded.desired_revision_id, \
                    updated_at_unix_ms=excluded.updated_at_unix_ms",
                 params![
                     record.resource_id,
@@ -159,6 +160,7 @@ impl LocalDatabase {
                     record.owner,
                     record.skill_name,
                     record.resource_generation,
+                    record.workspace_generation,
                     record.desired_revision_id,
                     now_unix_ms,
                 ],

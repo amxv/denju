@@ -618,6 +618,12 @@ async fn sync_owned_skill(
             "owned resource generation exceeds local storage",
         )
     })?;
+    let workspace_generation = i64::try_from(remote.workspace_generation).map_err(|_| {
+        RuntimeError::new(
+            CliErrorCode::LocalState,
+            "owned workspace generation exceeds local storage",
+        )
+    })?;
     if remote.conflicts.len() > 1 {
         return Err(RuntimeError::new(
             CliErrorCode::LocalState,
@@ -705,7 +711,8 @@ async fn sync_owned_skill(
                 owner: remote.owner.clone(),
                 name: remote.name.clone(),
                 locator: remote.locator.clone(),
-                generation: resource_generation,
+                resource_generation,
+                workspace_generation,
                 revision_id: remote.revision_id.clone(),
                 root_tree_id: manifest.root_tree().to_string(),
             },
@@ -727,6 +734,7 @@ async fn sync_owned_skill(
                 owner: remote.owner.clone(),
                 skill_name: remote.name.clone(),
                 resource_generation,
+                workspace_generation,
                 desired_revision_id: remote.revision_id.clone(),
                 harness_name: None,
                 materialized_revision_id: None,
@@ -767,7 +775,7 @@ async fn sync_owned_skill(
             .db
             .ensure_workspace_baseline(
                 remote.resource_id.clone(),
-                resource_generation,
+                workspace_generation,
                 remote.revision_id.clone(),
                 root_tree.clone(),
                 working_generation.display().to_string(),
@@ -783,7 +791,7 @@ async fn sync_owned_skill(
             .db
             .advance_clean_workspace_baseline(
                 remote.resource_id.clone(),
-                resource_generation,
+                workspace_generation,
                 remote.revision_id.clone(),
                 root_tree,
                 working_generation.display().to_string(),
@@ -832,7 +840,7 @@ async fn sync_owned_skill(
         .db
         .ensure_workspace_baseline(
             remote.resource_id.clone(),
-            resource_generation,
+            workspace_generation,
             remote.revision_id.clone(),
             desired.manifest.root_tree().to_string(),
             generation.display().to_string(),
@@ -844,7 +852,7 @@ async fn sync_owned_skill(
         .db
         .advance_clean_workspace_baseline(
             remote.resource_id.clone(),
-            resource_generation,
+            workspace_generation,
             remote.revision_id.clone(),
             desired.manifest.root_tree().to_string(),
             generation.display().to_string(),

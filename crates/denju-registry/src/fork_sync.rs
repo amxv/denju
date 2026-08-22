@@ -4,7 +4,7 @@ use denju_core::RevisionId;
 use denju_wire::{ApiError, ApiErrorCode, ForkSyncIntent};
 use uuid::Uuid;
 
-use crate::{ingest_storage::decode_32, internal_api_error};
+use crate::{access::user_can_fork_revision, ingest_storage::decode_32, internal_api_error};
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ValidatedForkSync {
@@ -55,23 +55,15 @@ pub(crate) async fn validate_fork_sync(
         ));
     }
 
-    let upstream = sqlx::query_as::<_, (Uuid, String, bool, bool, bool)>(
-        "SELECT r.owner_namespace_id,r.visibility, \
-                EXISTS(SELECT 1 FROM private_skill_shares s WHERE s.resource_id=r.id AND s.recipient_user_id=$2), \
-                EXISTS(SELECT 1 FROM resource_revision_snapshots x WHERE x.resource_id=r.id AND x.revision_id=$3), \
-                EXISTS(SELECT 1 FROM skill_releases rel WHERE rel.resource_id=r.id AND rel.revision_id=$3) \
-         FROM resources r WHERE r.id=$1 AND r.kind='skill' AND r.deleted_at IS NULL",
+    if !user_can_fork_revision(
+        tx,
+        user_id,
+        namespace_id,
+        fork.0,
+        sync.upstream_revision.as_bytes(),
     )
-    .bind(fork.0)
-    .bind(user_id)
-    .bind(sync.upstream_revision.as_bytes().as_slice())
-    .fetch_optional(&mut **tx)
-    .await
-    .map_err(internal_api_error)?
-    .ok_or_else(|| ApiError::new(ApiErrorCode::NotFound, "fork upstream is unavailable"))?;
-    let can_read = upstream.3
-        && (upstream.0 == namespace_id || upstream.2 || (upstream.1 == "public" && upstream.4));
-    if !can_read {
+    .await?
+    {
         return Err(ApiError::new(
             ApiErrorCode::NotFound,
             "fork upstream revision is unavailable",

@@ -93,8 +93,23 @@ pub async fn rename(locator: &str, new_name: &str) -> Result<RenameSkillResponse
             "stored resource generation is invalid",
         )
     })?;
+    let workspace_generation = u64::try_from(old.workspace_generation).map_err(|_| {
+        RuntimeError::new(
+            CliErrorCode::LocalState,
+            "stored workspace generation is invalid",
+        )
+    })?;
     let prepared_revision_operation_id = if preserve_working {
-        Some(prepare_pending_rename_content(&context, &old, new_name, &entries, generation).await?)
+        Some(
+            prepare_pending_rename_content(
+                &context,
+                &old,
+                new_name,
+                &entries,
+                workspace_generation,
+            )
+            .await?,
+        )
     } else {
         None
     };
@@ -175,7 +190,10 @@ pub async fn rename(locator: &str, new_name: &str) -> Result<RenameSkillResponse
             owner: remote.owner,
             name: remote.name,
             locator: remote.locator,
-            generation: i64::try_from(remote.generation).map_err(|_| {
+            resource_generation: i64::try_from(remote.generation).map_err(|_| {
+                RuntimeError::new(CliErrorCode::LocalState, "registry generation is too large")
+            })?,
+            workspace_generation: i64::try_from(remote.workspace_generation).map_err(|_| {
                 RuntimeError::new(CliErrorCode::LocalState, "registry generation is too large")
             })?,
             revision_id: remote.revision_id,

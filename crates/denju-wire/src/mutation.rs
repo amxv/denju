@@ -5,11 +5,17 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 mod pack_hash;
+mod team_hash;
 
 pub use pack_hash::{
     pack_create_request_hash, pack_delete_request_hash, pack_mutation_request_hash,
     pack_publish_request_hash, pack_rename_request_hash, pack_subscription_request_hash,
     pack_unpublish_request_hash,
+};
+pub use team_hash::{
+    invite_code_hash, resource_transfer_request_hash, team_create_request_hash,
+    team_invite_request_hash, team_invite_revoke_request_hash, team_join_request_hash,
+    team_member_remove_request_hash, team_member_role_request_hash, team_settings_request_hash,
 };
 
 const CREATE_INSTALLATION_DOMAIN: &[u8] = b"denju:http:v1:create-installation\0";
@@ -340,6 +346,7 @@ pub fn publish_skill_request_hash(
     operation_id: &str,
     resource_id: &str,
     expected_generation: u64,
+    public: bool,
     message: Option<&str>,
     tags: &[String],
 ) -> Result<RequestHash, RequestHashError> {
@@ -348,6 +355,7 @@ pub fn publish_skill_request_hash(
         operation_id: &'a str,
         resource_id: &'a str,
         expected_generation: u64,
+        public: bool,
         message: Option<&'a str>,
         tags: &'a [String],
     }
@@ -355,6 +363,7 @@ pub fn publish_skill_request_hash(
         operation_id,
         resource_id,
         expected_generation,
+        public,
         message,
         tags,
     })
@@ -419,6 +428,7 @@ pub fn private_revision_request_hash(
 pub struct PrivateSkillImportRequestHashInput<'a, T> {
     pub operation_id: &'a str,
     pub expected_generation: u64,
+    pub owner: &'a str,
     pub name: &'a str,
     pub manifest: &'a T,
     pub snapshot_sha256: &'a str,
@@ -693,6 +703,15 @@ mod tests {
     }
 
     #[test]
+    fn publish_visibility_is_part_of_the_request_hash() {
+        let operation = "01890f47-6a1c-7cc2-98c1-5f6c1ed8a3a1";
+        let resource = "01890f47-6a1d-7ad0-8f43-9a4d8c29f002";
+        let private = publish_skill_request_hash(operation, resource, 7, false, None, &[]).unwrap();
+        let public = publish_skill_request_hash(operation, resource, 7, true, None, &[]).unwrap();
+        assert_ne!(private, public);
+    }
+
+    #[test]
     fn lifecycle_hashes_bind_action_and_mutable_fields() {
         let operation = "01890f47-6a1c-7cc2-98c1-5f6c1ed8a3a1";
         let resource = "01890f47-6a1d-7ad0-8f43-9a4d8c29f002";
@@ -759,6 +778,7 @@ mod tests {
         let left = private_skill_import_request_hash(&PrivateSkillImportRequestHashInput {
             operation_id: operation,
             expected_generation: 0,
+            owner: "alice",
             name: "review",
             manifest: &manifest,
             snapshot_sha256: &snapshot,
@@ -770,6 +790,7 @@ mod tests {
         let right = private_skill_import_request_hash(&PrivateSkillImportRequestHashInput {
             operation_id: operation,
             expected_generation: 0,
+            owner: "alice",
             name: "review",
             manifest: &manifest,
             snapshot_sha256: &snapshot,
@@ -796,6 +817,7 @@ mod tests {
         let base = private_skill_import_request_hash(&PrivateSkillImportRequestHashInput {
             operation_id: operation,
             expected_generation: 0,
+            owner: "alice",
             name: "review-renamed",
             manifest: &manifest,
             snapshot_sha256: &snapshot,
@@ -807,6 +829,7 @@ mod tests {
         let other_author = private_skill_import_request_hash(&PrivateSkillImportRequestHashInput {
             operation_id: operation,
             expected_generation: 0,
+            owner: "alice",
             name: "review-renamed",
             manifest: &manifest,
             snapshot_sha256: &snapshot,
@@ -821,6 +844,7 @@ mod tests {
             private_skill_import_request_hash(&PrivateSkillImportRequestHashInput {
                 operation_id: operation,
                 expected_generation: 0,
+                owner: "alice",
                 name: "review-renamed",
                 manifest: &manifest,
                 snapshot_sha256: &snapshot,

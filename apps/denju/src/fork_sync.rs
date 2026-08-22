@@ -185,7 +185,7 @@ pub(crate) async fn sync(locator: &str) -> Result<ForkSyncOutcome, RuntimeError>
         private_revision_request_hash(&denju_wire::PrivateRevisionRequestHashInput {
             operation_id: &operation_id,
             resource_id: &remote.resource_id,
-            expected_generation: remote.generation,
+            expected_generation: remote.workspace_generation,
             expected_head_revision_id: &remote.revision_id,
             parent_revision_ids: &parents,
             manifest: &manifest,
@@ -197,7 +197,7 @@ pub(crate) async fn sync(locator: &str) -> Result<ForkSyncOutcome, RuntimeError>
     let request = PrivateRevisionRequest {
         operation_id: operation_id.clone(),
         resource_id: remote.resource_id.clone(),
-        expected_generation: remote.generation,
+        expected_generation: remote.workspace_generation,
         expected_head_revision_id: remote.revision_id.clone(),
         parent_revision_ids: parents,
         manifest: manifest.clone(),

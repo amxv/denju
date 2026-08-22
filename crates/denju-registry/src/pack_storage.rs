@@ -204,6 +204,7 @@ pub(crate) async fn resolve_all_members(
     user_id: Uuid,
     namespace_id: Uuid,
     public_audience: bool,
+    team_audience: bool,
     pack_id: Uuid,
 ) -> Result<Vec<ResolvedPackMember>, ApiError> {
     let rows = sqlx::query_as::<_, (Uuid, Option<i64>)>(
@@ -223,6 +224,7 @@ pub(crate) async fn resolve_all_members(
                 user_id,
                 namespace_id,
                 public_audience,
+                team_audience,
                 skill_id,
                 u64_version(pinned)?,
             )
@@ -237,13 +239,18 @@ pub(crate) async fn resolve_member(
     user_id: Uuid,
     namespace_id: Uuid,
     public_audience: bool,
+    team_audience: bool,
     skill_id: Uuid,
     pinned_release_version: Option<u64>,
 ) -> Result<ResolvedPackMember, ApiError> {
     let row = sqlx::query(
         "SELECT r.owner_namespace_id,r.visibility,r.deleted_at IS NOT NULL,r.latest_release_version, \
-         EXISTS(SELECT 1 FROM private_skill_shares s WHERE s.resource_id=r.id AND s.recipient_user_id=$2) \
-         FROM resources r WHERE r.id=$1 AND r.kind='skill'",
+         EXISTS(SELECT 1 FROM private_skill_shares s WHERE s.resource_id=r.id AND s.recipient_user_id=$2), \
+         n.kind, \
+         EXISTS(SELECT 1 FROM team_memberships tm WHERE tm.team_namespace_id=r.owner_namespace_id AND tm.user_id=$2), \
+         EXISTS(SELECT 1 FROM skill_private_workspaces w WHERE w.resource_id=r.id AND w.workspace_user_id=$2) \
+         FROM resources r LEFT JOIN namespaces n ON n.id=r.owner_namespace_id \
+         WHERE r.id=$1 AND r.kind='skill'",
     )
     .bind(skill_id)
     .bind(user_id)
@@ -256,13 +263,27 @@ pub(crate) async fn resolve_member(
     let deleted: bool = row.get(2);
     let latest_release: Option<i64> = row.get(3);
     let shared: bool = row.get(4);
+    let owner_kind: Option<String> = row.get(5);
+    let team_member: bool = row.get(6);
+    let own_workspace: bool = row.get(7);
     if deleted || (public_audience && visibility != "public") {
         return Err(ApiError::new(
             ApiErrorCode::InvalidRequest,
             "pack member is not readable by the pack's full audience",
         ));
     }
-    let readable = visibility == "public" || owner_namespace == Some(namespace_id) || shared;
+    let same_namespace = owner_namespace == Some(namespace_id);
+    let readable = if public_audience {
+        visibility == "public"
+    } else if team_audience {
+        visibility == "public" || (owner_kind.as_deref() == Some("team") && same_namespace)
+    } else {
+        visibility == "public"
+            || (owner_kind.as_deref() == Some("user") && (same_namespace || shared))
+            || (owner_kind.as_deref() == Some("team")
+                && ((latest_release.is_some() && (team_member || shared))
+                    || (team_member && own_workspace)))
+    };
     if !readable {
         return Err(ApiError::new(
             ApiErrorCode::NotFound,
@@ -305,19 +326,36 @@ pub(crate) async fn resolve_member(
             resolved_revision_id: revision,
         });
     }
-    if public_audience {
+    if public_audience || team_audience {
         return Err(ApiError::new(
             ApiErrorCode::InvalidRequest,
-            "public pack members must have a published release",
+            if public_audience {
+                "public pack members must have a published release"
+            } else {
+                "team pack members must have a team-visible published release"
+            },
         ));
     }
-    let revision = sqlx::query_scalar::<_, Vec<u8>>(
-        "SELECT revision_id FROM skill_private_workspaces WHERE resource_id=$1",
-    )
-    .bind(skill_id)
-    .fetch_optional(&mut **tx)
-    .await
-    .map_err(internal_api_error)?
+    let revision = if owner_kind.as_deref() == Some("team") {
+        sqlx::query_scalar::<_, Vec<u8>>(
+            "SELECT revision_id FROM skill_private_workspaces WHERE resource_id=$1 AND workspace_user_id=$2",
+        )
+        .bind(skill_id)
+        .bind(user_id)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(internal_api_error)?
+    } else {
+        sqlx::query_scalar::<_, Vec<u8>>(
+            "SELECT w.revision_id FROM resources r JOIN users u ON u.namespace_id=r.owner_namespace_id \
+             JOIN skill_private_workspaces w ON w.resource_id=r.id AND w.workspace_user_id=u.id \
+             WHERE r.id=$1",
+        )
+        .bind(skill_id)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(internal_api_error)?
+    }
     .ok_or_else(|| ApiError::new(ApiErrorCode::NotFound, "pack member workspace not found"))?;
     Ok(ResolvedPackMember {
         skill_resource_id: skill_id,

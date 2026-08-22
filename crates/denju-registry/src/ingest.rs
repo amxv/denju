@@ -15,7 +15,10 @@ use serde_json::Value;
 use sqlx::FromRow;
 use uuid::Uuid;
 
-use crate::{Registry, internal_api_error};
+use crate::{
+    Registry, access::user_can_fork_revision, internal_api_error,
+    team_access::authorize_namespace_publish,
+};
 
 const GENERATION_ONE: u64 = 1;
 
@@ -94,8 +97,9 @@ impl Registry {
         let revision_id = revision.id();
 
         let mut tx = self.pool.begin().await.map_err(internal_api_error)?;
+        let target = authorize_namespace_publish(&mut tx, &authority, &request.owner).await?;
         sqlx::query_scalar::<_, Uuid>("SELECT id FROM namespaces WHERE id=$1 FOR UPDATE")
-            .bind(authority.namespace_id)
+            .bind(target.namespace_id)
             .fetch_one(&mut *tx)
             .await
             .map_err(internal_api_error)?;
@@ -115,7 +119,7 @@ impl Registry {
             let uploads = self.presign_staging_rows(uploads).await?;
             return Ok(PrivateSkillImportPrepareResponse {
                 resource_id: existing.resource_id.to_string(),
-                locator: format!("@{}/{}", authority.namespace_slug, existing.slug),
+                locator: format!("@{}/{}", target.namespace_slug, existing.slug),
                 revision_id: hex::encode(revision),
                 generation: GENERATION_ONE,
                 committed: existing.state == "committed",
@@ -124,6 +128,12 @@ impl Registry {
         }
 
         if let Some(fork) = validated.fork.as_ref() {
+            if target.is_team {
+                return Err(ApiError::new(
+                    ApiErrorCode::InvalidRequest,
+                    "fork resources are personal; transfer an existing personal resource into a team instead",
+                ));
+            }
             validate_fork_source(
                 &mut tx,
                 authority.user_id,
@@ -158,7 +168,7 @@ impl Registry {
         if sqlx::query_scalar::<_, i64>(
             "SELECT count(*) FROM resources WHERE owner_namespace_id=$1 AND kind='skill' AND slug=$2 AND deleted_at IS NULL",
         )
-        .bind(authority.namespace_id)
+        .bind(target.namespace_id)
         .bind(&request.name)
         .fetch_one(&mut *tx)
         .await
@@ -167,14 +177,14 @@ impl Registry {
         {
             return Err(ApiError::new(
                 ApiErrorCode::GenerationConflict,
-                format!("@{}/{} already exists", authority.namespace_slug, request.name),
+                format!("@{}/{} already exists", target.namespace_slug, request.name),
             ));
         }
         if sqlx::query_scalar::<_, i64>(
             "SELECT count(*) FROM private_import_operations \
              WHERE namespace_id=$1 AND slug=$2 AND state='prepared'",
         )
-        .bind(authority.namespace_id)
+        .bind(target.namespace_id)
         .bind(&request.name)
         .fetch_one(&mut *tx)
         .await
@@ -185,7 +195,7 @@ impl Registry {
                 ApiErrorCode::OperationConflict,
                 format!(
                     "another import is already preparing @{}/{}",
-                    authority.namespace_slug, request.name
+                    target.namespace_slug, request.name
                 ),
             ));
         }
@@ -204,7 +214,7 @@ impl Registry {
         .bind(authority.user_id)
         .bind(validated.operation_id.as_uuid())
         .bind(validated.request_hash.as_bytes().as_slice())
-        .bind(authority.namespace_id)
+        .bind(target.namespace_id)
         .bind(resource_id)
         .bind(&request.name)
         .bind(i64::try_from(request.expected_generation).unwrap_or(i64::MAX))
@@ -243,7 +253,7 @@ impl Registry {
             let already_proven = sqlx::query_scalar::<_, bool>(
                 "SELECT EXISTS(SELECT 1 FROM namespace_blob_reachability WHERE namespace_id=$1 AND blob_id=$2)",
             )
-            .bind(authority.namespace_id)
+            .bind(target.namespace_id)
             .bind(blob.as_bytes().as_slice())
             .fetch_one(&mut *tx)
             .await
@@ -282,7 +292,7 @@ impl Registry {
         let uploads = self.presign_staging_rows(staging).await?;
         Ok(PrivateSkillImportPrepareResponse {
             resource_id: resource_id.to_string(),
-            locator: format!("@{}/{}", authority.namespace_slug, request.name),
+            locator: format!("@{}/{}", target.namespace_slug, request.name),
             revision_id: revision_id.to_string(),
             generation: GENERATION_ONE,
             committed: false,
@@ -310,12 +320,25 @@ impl Registry {
         if operation.state == "committed" {
             return decode_import_outcome(operation.outcome_json);
         }
-        if operation.namespace_id != authority.namespace_id {
+        let target_slug =
+            sqlx::query_scalar::<_, String>("SELECT slug FROM namespaces WHERE id=$1")
+                .bind(operation.namespace_id)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(internal_api_error)?
+                .ok_or_else(|| {
+                    ApiError::new(ApiErrorCode::NotFound, "import namespace is unavailable")
+                })?;
+        let mut authority_tx = self.pool.begin().await.map_err(internal_api_error)?;
+        let target =
+            authorize_namespace_publish(&mut authority_tx, &authority, &target_slug).await?;
+        if target.namespace_id != operation.namespace_id {
             return Err(ApiError::new(
                 ApiErrorCode::Unauthorized,
                 "import namespace is unavailable",
             ));
         }
+        authority_tx.commit().await.map_err(internal_api_error)?;
         if operation.expected_generation != 0 {
             return Err(ApiError::new(
                 ApiErrorCode::Internal,
@@ -369,7 +392,7 @@ impl Registry {
                      JOIN canonical_blobs cb ON cb.blob_id=nbr.blob_id \
                      WHERE nbr.namespace_id=$1 AND nbr.blob_id=$2",
                 )
-                .bind(authority.namespace_id)
+                .bind(operation.namespace_id)
                 .bind(blob.as_bytes().as_slice())
                 .fetch_optional(&self.pool)
                 .await
@@ -456,8 +479,15 @@ impl Registry {
         let revision_id = decode_32(&operation.revision_id, "stored revision ID")?;
 
         let mut tx = self.pool.begin().await.map_err(internal_api_error)?;
+        let target = authorize_namespace_publish(&mut tx, &authority, &target_slug).await?;
+        if target.namespace_id != operation.namespace_id {
+            return Err(ApiError::new(
+                ApiErrorCode::Unauthorized,
+                "import namespace is unavailable",
+            ));
+        }
         sqlx::query_scalar::<_, Uuid>("SELECT id FROM namespaces WHERE id=$1 FOR UPDATE")
-            .bind(authority.namespace_id)
+            .bind(operation.namespace_id)
             .fetch_one(&mut *tx)
             .await
             .map_err(internal_api_error)?;
@@ -496,8 +526,8 @@ impl Registry {
             });
         let outcome = PrivateSkillImportResponse {
             resource_id: operation.resource_id.to_string(),
-            locator: format!("@{}/{}", authority.namespace_slug, operation.slug),
-            owner: authority.namespace_slug.clone(),
+            locator: format!("@{}/{}", target.namespace_slug, operation.slug),
+            owner: target.namespace_slug.clone(),
             name: operation.slug.clone(),
             description: description.clone(),
             generation: GENERATION_ONE,
@@ -508,7 +538,7 @@ impl Registry {
         if sqlx::query_scalar::<_, i64>(
             "SELECT count(*) FROM resources WHERE owner_namespace_id=$1 AND kind='skill' AND slug=$2 AND deleted_at IS NULL",
         )
-        .bind(authority.namespace_id)
+        .bind(operation.namespace_id)
         .bind(&operation.slug)
         .fetch_one(&mut *tx)
         .await
@@ -521,11 +551,11 @@ impl Registry {
             ));
         }
 
-        enforce_namespace_quota(self, &mut tx, authority.namespace_id, &expected_blobs).await?;
+        enforce_namespace_quota(self, &mut tx, operation.namespace_id, &expected_blobs).await?;
         sqlx::query(
             "DELETE FROM resource_redirects WHERE namespace_id=$1 AND kind='skill' AND old_slug=$2",
         )
-        .bind(authority.namespace_id)
+        .bind(operation.namespace_id)
         .bind(&operation.slug)
         .execute(&mut *tx)
         .await
@@ -567,7 +597,7 @@ impl Registry {
         sqlx::query(
             "DELETE FROM resource_redirects WHERE namespace_id=$1 AND kind='skill' AND old_slug=$2",
         )
-        .bind(authority.namespace_id)
+        .bind(operation.namespace_id)
         .bind(&operation.slug)
         .execute(&mut *tx)
         .await
@@ -578,7 +608,7 @@ impl Registry {
              VALUES ($1,$2,$3,'skill','private',$4,1,NULL)",
         )
         .bind(operation.resource_id)
-        .bind(authority.namespace_id)
+        .bind(operation.namespace_id)
         .bind(&operation.slug)
         .bind(&description)
         .execute(&mut *tx)
@@ -614,10 +644,12 @@ impl Registry {
         }
         sqlx::query(
             "INSERT INTO skill_private_workspaces \
-             (resource_id,revision_id,generation,manifest_json,snapshot_key,snapshot_sha256,snapshot_size) \
-             VALUES ($1,$2,1,$3,$4,$5,$6)",
+             (resource_id,workspace_user_id,description,revision_id,generation,manifest_json,snapshot_key,snapshot_sha256,snapshot_size) \
+             VALUES ($1,$2,$3,$4,1,$5,$6,$7,$8)",
         )
         .bind(operation.resource_id)
+        .bind(authority.user_id)
+        .bind(&description)
         .bind(revision_id.as_slice())
         .bind(serde_json::to_value(&manifest_wire).map_err(|error| {
             ApiError::new(ApiErrorCode::Internal, error.to_string())
@@ -667,7 +699,7 @@ impl Registry {
                  VALUES ($1,$2,1) \
                  ON CONFLICT(namespace_id,blob_id) DO UPDATE SET reference_count=namespace_blob_reachability.reference_count+1",
             )
-            .bind(authority.namespace_id)
+            .bind(operation.namespace_id)
             .bind(blob.as_bytes().as_slice())
             .execute(&mut *tx)
             .await
@@ -707,6 +739,7 @@ impl Registry {
             private_skill_import_request_hash(&denju_wire::PrivateSkillImportRequestHashInput {
                 operation_id: &request.operation_id,
                 expected_generation: request.expected_generation,
+                owner: &request.owner,
                 name: &request.name,
                 manifest: &request.manifest,
                 snapshot_sha256: &request.snapshot_sha256,
@@ -875,33 +908,30 @@ async fn validate_fork_source(
     namespace_id: Uuid,
     fork: ValidatedFork,
 ) -> Result<(String, String), ApiError> {
-    let row = sqlx::query_as::<_, (Uuid, String, String, String, bool, bool, bool)>(
-        "SELECT r.owner_namespace_id,n.slug,r.slug,r.visibility, \
-                EXISTS(SELECT 1 FROM private_skill_shares s WHERE s.resource_id=r.id AND s.recipient_user_id=$3), \
-                EXISTS(SELECT 1 FROM resource_revision_snapshots rs WHERE rs.resource_id=r.id AND rs.revision_id=$2), \
-                EXISTS(SELECT 1 FROM skill_releases sr WHERE sr.resource_id=r.id AND sr.revision_id=$2) \
-         FROM resources r JOIN namespaces n ON n.id=r.owner_namespace_id \
+    let row = sqlx::query_as::<_, (String, String)>(
+        "SELECT n.slug,r.slug FROM resources r JOIN namespaces n ON n.id=r.owner_namespace_id \
          WHERE r.id=$1 AND r.kind='skill' AND r.deleted_at IS NULL FOR SHARE OF r",
     )
     .bind(fork.upstream_resource_id)
-    .bind(fork.upstream_revision_id.as_bytes().as_slice())
-    .bind(user_id)
     .fetch_optional(&mut **tx)
     .await
     .map_err(internal_api_error)?
     .ok_or_else(|| ApiError::new(ApiErrorCode::NotFound, "fork upstream is unavailable"))?;
-    let owner = row.0 == namespace_id;
-    let shared = row.4;
-    let revision_exists = row.5;
-    let released = row.6;
-    let readable = revision_exists && (owner || shared || (row.3 == "public" && released));
-    if !readable {
+    if !user_can_fork_revision(
+        tx,
+        user_id,
+        namespace_id,
+        fork.upstream_resource_id,
+        fork.upstream_revision_id.as_bytes(),
+    )
+    .await?
+    {
         return Err(ApiError::new(
             ApiErrorCode::NotFound,
             "fork upstream revision is unavailable",
         ));
     }
-    Ok((row.1, row.2))
+    Ok(row)
 }
 
 async fn fetch_import_operation_pool(

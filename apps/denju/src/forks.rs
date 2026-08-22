@@ -114,6 +114,7 @@ async fn create_local_fork(
             owner: owner.clone(),
             skill_name: desired_name.to_owned(),
             resource_generation: 1,
+            workspace_generation: 1,
             desired_revision_id: revision.id().to_string(),
             harness_name: None,
             materialized_revision_id: None,

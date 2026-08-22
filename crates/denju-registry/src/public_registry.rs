@@ -5,77 +5,16 @@ use denju_wire::{
     ApiError, ApiErrorCode, PublicSkill, PublicSkillDetail, PublicSkillSearchResponse, RequestHash,
     SkillDeprecation, SkillForkProvenance, SnapshotDownload, SubscribedSkill, SubscriptionCatalog,
     SubscriptionContent, SubscriptionMutationKind, SubscriptionMutationRequest,
-    SubscriptionMutationResponse, SubscriptionTarget, subscription_request_hash,
+    SubscriptionMutationResponse, subscription_request_hash,
 };
 use uuid::Uuid;
 
-use crate::{Registry, RegistryWake, identity_support::SubscriptionSubject, internal_api_error};
+use crate::{
+    Registry, RegistryWake, identity_support::SubscriptionSubject, internal_api_error,
+    team_access::user_is_team_member,
+};
 
 impl Registry {
-    pub async fn subscription_target(
-        &self,
-        bearer: &str,
-        locator: &str,
-    ) -> Result<SubscriptionTarget, ApiError> {
-        let subject = self.subscription_subject(bearer).await?;
-        let parsed = ResourceLocator::from_str(locator)
-            .map_err(|error| ApiError::new(ApiErrorCode::InvalidRequest, error.to_string()))?;
-        let resolved = self.resolve_active_skill_locator(&parsed).await?;
-        let row = sqlx::query_as::<_, (String, i64, bool, Option<Uuid>, Option<String>, Option<String>)>(
-            "SELECT r.visibility,r.generation,r.deprecated_at IS NOT NULL,replacement.id, \
-                    replacement_owner.slug,replacement.slug \
-             FROM resources r \
-             LEFT JOIN resources replacement ON replacement.id=r.deprecation_replacement_resource_id AND replacement.deleted_at IS NULL \
-             LEFT JOIN namespaces replacement_owner ON replacement_owner.id=replacement.owner_namespace_id \
-             WHERE r.id=$1 AND r.kind='skill' AND r.deleted_at IS NULL",
-        )
-        .bind(resolved.resource_id)
-        .fetch_one(&self.pool)
-        .await
-        .map_err(internal_api_error)?;
-        let shared = match subject {
-            SubscriptionSubject::Installation(_) => false,
-            SubscriptionSubject::User(user_id) => sqlx::query_scalar::<_, bool>(
-                "SELECT EXISTS(SELECT 1 FROM private_skill_shares WHERE recipient_user_id=$1 AND resource_id=$2)",
-            )
-            .bind(user_id)
-            .bind(resolved.resource_id)
-            .fetch_one(&self.pool)
-            .await
-            .map_err(internal_api_error)?,
-        };
-        if row.0 != "public" && !shared {
-            return Err(ApiError::new(
-                ApiErrorCode::NotFound,
-                "skill is not subscribable",
-            ));
-        }
-        let deprecation = row.2.then(|| SkillDeprecation {
-            replacement_resource_id: row.3.map(|id| id.to_string()),
-            replacement_locator: row
-                .4
-                .zip(row.5)
-                .map(|(owner, name)| format!("@{owner}/{name}")),
-        });
-        Ok(SubscriptionTarget {
-            resource_id: resolved.resource_id.to_string(),
-            locator: format!("@{}/{}", resolved.owner, resolved.name),
-            owner: resolved.owner,
-            name: resolved.name,
-            description: sqlx::query_scalar::<_, String>(
-                "SELECT description FROM resources WHERE id=$1",
-            )
-            .bind(resolved.resource_id)
-            .fetch_one(&self.pool)
-            .await
-            .map_err(internal_api_error)?,
-            generation: u64::try_from(row.1)
-                .map_err(|_| ApiError::new(ApiErrorCode::Internal, "generation is invalid"))?,
-            live_private: shared,
-            deprecation,
-        })
-    }
-
     pub async fn search_public_skills(
         &self,
         bearer: Option<&str>,
@@ -91,23 +30,33 @@ impl Registry {
                 let cursor = SearchCursor::decode(cursor)?;
                 sqlx::query_as::<_, PublicSkillSearchRow>(
                     "SELECT r.id,n.slug AS owner,r.slug AS name,r.description,r.generation, \
-                            CASE WHEN r.visibility='public' THEN sr.version ELSE NULL END AS version, \
-                            CASE WHEN r.visibility='public' THEN sr.revision_id ELSE w.revision_id END AS revision_id, \
+                            CASE WHEN r.visibility='public' OR (n.kind='team' AND team_w.resource_id IS NULL) THEN sr.version ELSE NULL END AS version, \
+                            CASE WHEN r.visibility='public' THEN sr.revision_id \
+                                 WHEN n.kind='team' THEN COALESCE(team_w.revision_id,sr.revision_id) \
+                                 ELSE w.revision_id END AS revision_id, \
                             CASE WHEN r.visibility='public' THEN r.deprecated_at IS NOT NULL ELSE FALSE END AS deprecated, \
                             CASE WHEN r.visibility='public' THEN replacement.id ELSE NULL END AS replacement_id, \
                             CASE WHEN r.visibility='public' THEN replacement_owner.slug ELSE NULL END AS replacement_owner, \
                             CASE WHEN r.visibility='public' THEN replacement.slug ELSE NULL END AS replacement_name, \
-                            r.visibility<>'public' AS live_private \
+                            (r.visibility<>'public' AND (n.kind='user' OR team_w.resource_id IS NOT NULL)) AS live_private \
                      FROM resources r JOIN namespaces n ON n.id=r.owner_namespace_id \
                      LEFT JOIN skill_releases sr ON sr.resource_id=r.id AND sr.version=r.latest_release_version \
-                     LEFT JOIN skill_private_workspaces w ON w.resource_id=r.id \
+                     LEFT JOIN users owner_user ON owner_user.namespace_id=r.owner_namespace_id \
+                     LEFT JOIN skill_private_workspaces w ON w.resource_id=r.id AND w.workspace_user_id=owner_user.id \
+                     LEFT JOIN skill_private_workspaces team_w ON team_w.resource_id=r.id AND team_w.workspace_user_id=$2 AND n.kind='team' \
                      LEFT JOIN private_skill_shares ps ON ps.resource_id=r.id AND ps.recipient_user_id=$2 \
+                     LEFT JOIN team_memberships tm ON tm.team_namespace_id=r.owner_namespace_id AND tm.user_id=$2 \
                      LEFT JOIN skill_forks f ON f.resource_id=r.id \
                      LEFT JOIN resources replacement ON replacement.id=r.deprecation_replacement_resource_id AND replacement.deleted_at IS NULL \
                      LEFT JOIN namespaces replacement_owner ON replacement_owner.id=replacement.owner_namespace_id \
                      WHERE r.kind='skill' AND r.deleted_at IS NULL AND COALESCE(f.promotion_pending,FALSE)=FALSE \
                        AND ((r.visibility='public' AND sr.resource_id IS NOT NULL) OR \
-                            (r.visibility<>'public' AND w.resource_id IS NOT NULL AND (r.owner_namespace_id=$3 OR ps.resource_id IS NOT NULL))) \
+                            (r.visibility<>'public' AND n.kind='user' AND w.resource_id IS NOT NULL \
+                             AND (r.owner_namespace_id=$3 OR ps.resource_id IS NOT NULL)) OR \
+                            (r.visibility<>'public' AND n.kind='team' AND ( \
+                               team_w.resource_id IS NOT NULL OR \
+                               (sr.resource_id IS NOT NULL AND (tm.user_id IS NOT NULL OR ps.resource_id IS NOT NULL)) \
+                            ))) \
                        AND (r.slug ILIKE $1 OR n.slug ILIKE $1 OR r.description ILIKE $1) \
                        AND ((CASE WHEN r.visibility='public' THEN r.deprecated_at IS NOT NULL ELSE FALSE END) > $4 OR \
                             ((CASE WHEN r.visibility='public' THEN r.deprecated_at IS NOT NULL ELSE FALSE END) = $4 AND \
@@ -128,23 +77,33 @@ impl Registry {
             } else {
                 sqlx::query_as::<_, PublicSkillSearchRow>(
                     "SELECT r.id,n.slug AS owner,r.slug AS name,r.description,r.generation, \
-                            CASE WHEN r.visibility='public' THEN sr.version ELSE NULL END AS version, \
-                            CASE WHEN r.visibility='public' THEN sr.revision_id ELSE w.revision_id END AS revision_id, \
+                            CASE WHEN r.visibility='public' OR (n.kind='team' AND team_w.resource_id IS NULL) THEN sr.version ELSE NULL END AS version, \
+                            CASE WHEN r.visibility='public' THEN sr.revision_id \
+                                 WHEN n.kind='team' THEN COALESCE(team_w.revision_id,sr.revision_id) \
+                                 ELSE w.revision_id END AS revision_id, \
                             CASE WHEN r.visibility='public' THEN r.deprecated_at IS NOT NULL ELSE FALSE END AS deprecated, \
                             CASE WHEN r.visibility='public' THEN replacement.id ELSE NULL END AS replacement_id, \
                             CASE WHEN r.visibility='public' THEN replacement_owner.slug ELSE NULL END AS replacement_owner, \
                             CASE WHEN r.visibility='public' THEN replacement.slug ELSE NULL END AS replacement_name, \
-                            r.visibility<>'public' AS live_private \
+                            (r.visibility<>'public' AND (n.kind='user' OR team_w.resource_id IS NOT NULL)) AS live_private \
                      FROM resources r JOIN namespaces n ON n.id=r.owner_namespace_id \
                      LEFT JOIN skill_releases sr ON sr.resource_id=r.id AND sr.version=r.latest_release_version \
-                     LEFT JOIN skill_private_workspaces w ON w.resource_id=r.id \
+                     LEFT JOIN users owner_user ON owner_user.namespace_id=r.owner_namespace_id \
+                     LEFT JOIN skill_private_workspaces w ON w.resource_id=r.id AND w.workspace_user_id=owner_user.id \
+                     LEFT JOIN skill_private_workspaces team_w ON team_w.resource_id=r.id AND team_w.workspace_user_id=$2 AND n.kind='team' \
                      LEFT JOIN private_skill_shares ps ON ps.resource_id=r.id AND ps.recipient_user_id=$2 \
+                     LEFT JOIN team_memberships tm ON tm.team_namespace_id=r.owner_namespace_id AND tm.user_id=$2 \
                      LEFT JOIN skill_forks f ON f.resource_id=r.id \
                      LEFT JOIN resources replacement ON replacement.id=r.deprecation_replacement_resource_id AND replacement.deleted_at IS NULL \
                      LEFT JOIN namespaces replacement_owner ON replacement_owner.id=replacement.owner_namespace_id \
                      WHERE r.kind='skill' AND r.deleted_at IS NULL AND COALESCE(f.promotion_pending,FALSE)=FALSE \
                        AND ((r.visibility='public' AND sr.resource_id IS NOT NULL) OR \
-                            (r.visibility<>'public' AND w.resource_id IS NOT NULL AND (r.owner_namespace_id=$3 OR ps.resource_id IS NOT NULL))) \
+                            (r.visibility<>'public' AND n.kind='user' AND w.resource_id IS NOT NULL \
+                             AND (r.owner_namespace_id=$3 OR ps.resource_id IS NOT NULL)) OR \
+                            (r.visibility<>'public' AND n.kind='team' AND ( \
+                               team_w.resource_id IS NOT NULL OR \
+                               (sr.resource_id IS NOT NULL AND (tm.user_id IS NOT NULL OR ps.resource_id IS NOT NULL)) \
+                            ))) \
                        AND (r.slug ILIKE $1 OR n.slug ILIKE $1 OR r.description ILIKE $1) \
                      ORDER BY (CASE WHEN r.visibility='public' THEN r.deprecated_at IS NOT NULL ELSE FALSE END),n.slug,r.slug,r.id LIMIT $4",
                 )
@@ -235,26 +194,48 @@ impl Registry {
             ));
         }
         if let Some(authority) = self.optional_read_authority(bearer).await? {
-            let private = sqlx::query_as::<_, PublicSkillDetailRow>(
+            let resolved = match self.resolve_active_skill_locator(&locator).await {
+                Ok(resolved) => Some(resolved),
+                Err(error) if error.code == ApiErrorCode::NotFound => None,
+                Err(error) => return Err(error),
+            };
+            let private = if let Some(resolved) = resolved.as_ref() {
+                sqlx::query_as::<_, PublicSkillDetailRow>(
                 "SELECT r.id,n.slug AS owner,r.slug AS name,r.description,r.generation,NULL::bigint AS version,w.revision_id,w.manifest_json, \
                         FALSE AS deprecated,NULL::uuid AS replacement_id,NULL::text AS replacement_owner,NULL::text AS replacement_name,TRUE AS live_private \
                  FROM resources r JOIN namespaces n ON n.id=r.owner_namespace_id \
-                 JOIN skill_private_workspaces w ON w.resource_id=r.id \
+                 JOIN users owner_user ON owner_user.namespace_id=r.owner_namespace_id \
+                 JOIN skill_private_workspaces w ON w.resource_id=r.id AND w.workspace_user_id=owner_user.id \
                  LEFT JOIN private_skill_shares ps ON ps.resource_id=r.id AND ps.recipient_user_id=$3 \
                  LEFT JOIN skill_forks f ON f.resource_id=r.id \
-                 WHERE n.slug=$1 AND r.slug=$2 AND r.kind='skill' AND r.deleted_at IS NULL AND r.visibility<>'public' \
+                 WHERE r.id=$1 AND r.kind='skill' AND r.deleted_at IS NULL AND r.visibility<>'public' \
                    AND COALESCE(f.promotion_pending,FALSE)=FALSE \
-                   AND (r.owner_namespace_id=$4 OR ps.resource_id IS NOT NULL)",
+                   AND (r.owner_namespace_id=$2 OR ps.resource_id IS NOT NULL)",
             )
-            .bind(locator.owner())
-            .bind(locator.name())
-            .bind(authority.user_id)
+            .bind(resolved.resource_id)
             .bind(authority.namespace_id)
+            .bind(authority.user_id)
             .fetch_optional(&self.pool)
             .await
-            .map_err(internal_api_error)?;
+            .map_err(internal_api_error)?
+            } else {
+                None
+            };
             if let Some(row) = private {
-                return self.skill_detail_with_provenance(row, None).await;
+                let redirected_from = resolved
+                    .as_ref()
+                    .filter(|resolved| {
+                        resolved.owner != locator.owner() || resolved.name != locator.name()
+                    })
+                    .map(|_| locator.to_string());
+                return self
+                    .skill_detail_with_provenance(row, redirected_from)
+                    .await;
+            }
+            if let Some(bearer) = bearer
+                && let Some(detail) = self.team_skill_detail(bearer, &locator).await?
+            {
+                return Ok(detail);
             }
         }
         self.public_skill_detail(locator.owner(), locator.name())
@@ -344,15 +325,18 @@ impl Registry {
             });
         }
 
-        let resource = sqlx::query_as::<_, (i64, String, bool)>(
-            "SELECT generation,visibility,deleted_at IS NOT NULL FROM resources WHERE id = $1 AND kind = 'skill'",
+        let resource = sqlx::query_as::<_, (i64, String, bool, Uuid, Option<i64>, String)>(
+            "SELECT r.generation,r.visibility,r.deleted_at IS NOT NULL,r.owner_namespace_id, \
+                    r.latest_release_version,n.kind \
+             FROM resources r JOIN namespaces n ON n.id=r.owner_namespace_id \
+             WHERE r.id = $1 AND r.kind = 'skill'",
         )
         .bind(resource_id.as_uuid())
         .fetch_optional(&mut *tx)
         .await
         .map_err(internal_api_error)?
         .ok_or_else(|| ApiError::new(ApiErrorCode::NotFound, "skill not found"))?;
-        let shared_private = match subject {
+        let shared = match subject {
             SubscriptionSubject::User(user_id) if !resource.2 => {
                 sqlx::query_scalar::<_, bool>(
                     "SELECT EXISTS(SELECT 1 FROM private_skill_shares WHERE recipient_user_id=$1 AND resource_id=$2)",
@@ -365,8 +349,17 @@ impl Registry {
             }
             _ => false,
         };
+        let personal_live_share = shared && resource.5 == "user";
+        let team_private = match subject {
+            SubscriptionSubject::User(user_id)
+                if !resource.2 && resource.5 == "team" && resource.4.is_some() =>
+            {
+                shared || user_is_team_member(&self.pool, user_id, resource.3).await?
+            }
+            _ => false,
+        };
         if kind == SubscriptionMutationKind::Subscribe
-            && (resource.2 || (resource.1 != "public" && !shared_private))
+            && (resource.2 || (resource.1 != "public" && !personal_live_share && !team_private))
         {
             return Err(ApiError::new(
                 ApiErrorCode::NotFound,
@@ -392,7 +385,7 @@ impl Registry {
         }
         if kind == SubscriptionMutationKind::Subscribe
             && resource.1 != "public"
-            && shared_private
+            && personal_live_share
             && (request.release_version.is_some() || request.retain_on_delete)
         {
             return Err(ApiError::new(
@@ -572,29 +565,34 @@ impl Registry {
             }
             SubscriptionSubject::User(user_id) => {
                 sqlx::query_as::<_, SubscriptionRow>(
-                    "SELECT r.id, COALESCE(n.slug,r.deleted_owner_slug) AS owner, r.slug AS name, r.description, r.generation, \
-                            CASE WHEN ps.resource_id IS NOT NULL AND r.deleted_at IS NULL AND s.pinned_release_version IS NULL AND NOT s.retain_on_delete THEN NULL ELSE sr.version END AS version, \
-                            CASE WHEN ps.resource_id IS NOT NULL AND r.deleted_at IS NULL AND s.pinned_release_version IS NULL AND NOT s.retain_on_delete THEN w.revision_id ELSE sr.revision_id END AS revision_id, \
-                            CASE WHEN ps.resource_id IS NOT NULL AND r.deleted_at IS NULL AND s.pinned_release_version IS NULL AND NOT s.retain_on_delete THEN w.manifest_json ELSE sr.manifest_json END AS manifest_json, \
-                            CASE WHEN ps.resource_id IS NOT NULL AND r.deleted_at IS NULL AND s.pinned_release_version IS NULL AND NOT s.retain_on_delete THEN w.snapshot_key ELSE sr.snapshot_key END AS snapshot_key, \
-                            CASE WHEN ps.resource_id IS NOT NULL AND r.deleted_at IS NULL AND s.pinned_release_version IS NULL AND NOT s.retain_on_delete THEN w.snapshot_sha256 ELSE sr.snapshot_sha256 END AS snapshot_sha256, \
-                            CASE WHEN ps.resource_id IS NOT NULL AND r.deleted_at IS NULL AND s.pinned_release_version IS NULL AND NOT s.retain_on_delete THEN w.snapshot_size ELSE sr.snapshot_size END AS snapshot_size, s.pinned_release_version, \
+                    "SELECT r.id, COALESCE(n.slug,r.deleted_owner_slug) AS owner, r.slug AS name, \
+                            CASE WHEN n.kind='user' AND ps.resource_id IS NOT NULL AND r.deleted_at IS NULL AND s.pinned_release_version IS NULL AND NOT s.retain_on_delete THEN w.description ELSE r.description END AS description, r.generation, \
+                            CASE WHEN n.kind='user' AND ps.resource_id IS NOT NULL AND r.deleted_at IS NULL AND s.pinned_release_version IS NULL AND NOT s.retain_on_delete THEN NULL ELSE sr.version END AS version, \
+                            CASE WHEN n.kind='user' AND ps.resource_id IS NOT NULL AND r.deleted_at IS NULL AND s.pinned_release_version IS NULL AND NOT s.retain_on_delete THEN w.revision_id ELSE sr.revision_id END AS revision_id, \
+                            CASE WHEN n.kind='user' AND ps.resource_id IS NOT NULL AND r.deleted_at IS NULL AND s.pinned_release_version IS NULL AND NOT s.retain_on_delete THEN w.manifest_json ELSE sr.manifest_json END AS manifest_json, \
+                            CASE WHEN n.kind='user' AND ps.resource_id IS NOT NULL AND r.deleted_at IS NULL AND s.pinned_release_version IS NULL AND NOT s.retain_on_delete THEN w.snapshot_key ELSE sr.snapshot_key END AS snapshot_key, \
+                            CASE WHEN n.kind='user' AND ps.resource_id IS NOT NULL AND r.deleted_at IS NULL AND s.pinned_release_version IS NULL AND NOT s.retain_on_delete THEN w.snapshot_sha256 ELSE sr.snapshot_sha256 END AS snapshot_sha256, \
+                            CASE WHEN n.kind='user' AND ps.resource_id IS NOT NULL AND r.deleted_at IS NULL AND s.pinned_release_version IS NULL AND NOT s.retain_on_delete THEN w.snapshot_size ELSE sr.snapshot_size END AS snapshot_size, s.pinned_release_version, \
                             s.retain_on_delete, r.deleted_at IS NOT NULL AS retained_after_delete, \
                             r.deprecated_at IS NOT NULL AS deprecated, replacement.id AS replacement_id, \
                             replacement_owner.slug AS replacement_owner, replacement.slug AS replacement_name, \
-                            (ps.resource_id IS NOT NULL AND r.deleted_at IS NULL AND s.pinned_release_version IS NULL AND NOT s.retain_on_delete) AS live_private \
+                            (n.kind='user' AND ps.resource_id IS NOT NULL AND r.deleted_at IS NULL AND s.pinned_release_version IS NULL AND NOT s.retain_on_delete) AS live_private \
                      FROM account_subscriptions s \
                      JOIN resources r ON r.id = s.resource_id \
                      LEFT JOIN namespaces n ON n.id = r.owner_namespace_id \
+                     LEFT JOIN users owner_user ON owner_user.namespace_id=r.owner_namespace_id \
                      LEFT JOIN private_skill_shares ps ON ps.resource_id=r.id AND ps.recipient_user_id=s.user_id \
-                     LEFT JOIN skill_private_workspaces w ON w.resource_id=r.id \
+                     LEFT JOIN skill_private_workspaces w ON w.resource_id=r.id AND w.workspace_user_id=owner_user.id \
+                     LEFT JOIN team_memberships tm ON tm.team_namespace_id=r.owner_namespace_id AND tm.user_id=s.user_id \
                      LEFT JOIN resources replacement ON replacement.id=r.deprecation_replacement_resource_id AND replacement.deleted_at IS NULL \
                      LEFT JOIN namespaces replacement_owner ON replacement_owner.id=replacement.owner_namespace_id \
                      LEFT JOIN skill_releases sr ON sr.resource_id = r.id AND sr.version = CASE \
                          WHEN r.deleted_at IS NOT NULL THEN r.tombstone_release_version \
                          ELSE COALESCE(s.pinned_release_version,r.latest_release_version) END \
                      WHERE s.user_id = $1 AND r.kind = 'skill' AND ( \
-                         (r.deleted_at IS NULL AND (r.visibility = 'public' OR ps.resource_id IS NOT NULL)) OR \
+                         (r.deleted_at IS NULL AND (r.visibility = 'public' OR \
+                           (ps.resource_id IS NOT NULL AND (n.kind='user' OR r.latest_release_version IS NOT NULL)) \
+                           OR (tm.user_id IS NOT NULL AND r.latest_release_version IS NOT NULL))) OR \
                          (r.deleted_at IS NOT NULL AND s.retain_on_delete AND r.tombstone_release_version IS NOT NULL)) \
                      ORDER BY COALESCE(n.slug,r.deleted_owner_slug), r.slug, r.id",
                 )
@@ -674,7 +672,7 @@ impl Registry {
         Ok(detail)
     }
 
-    async fn skill_fork_provenance(
+    pub(crate) async fn skill_fork_provenance(
         &self,
         resource_id: Uuid,
     ) -> Result<Option<SkillForkProvenance>, ApiError> {

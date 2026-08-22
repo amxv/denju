@@ -17,6 +17,7 @@ mod public;
 mod release;
 mod setup;
 mod sharing;
+mod team_commands;
 mod workspace;
 mod workspace_merge;
 
@@ -32,8 +33,9 @@ use denju_wire::{
     DeleteSkillResponse, DeprecateSkillResponse, DeviceList, DeviceRevokeResponse,
     HistoryPruneResponse, IdentityInfo, PackCreateResponse, PackDetail, PackLifecycleResponse,
     PackMutationResponse, PackSubscriptionResponse, PublicSkillDetail, PublicSkillSearchResponse,
-    PublishSkillResponse, RenameSkillResponse, SkillHistoryResponse, SkillProposal,
-    SkillProposalDetail, SkillProposalList, UnpublishSkillResponse,
+    PublishSkillResponse, RenameSkillResponse, ResourceTransferResponse, SkillHistoryResponse,
+    SkillProposal, SkillProposalDetail, SkillProposalList, TeamDetail, TeamList,
+    TeamMutationResponse, UnpublishSkillResponse,
 };
 use guidance::guidance_output;
 use help::HELP;
@@ -56,7 +58,7 @@ use setup::{DoctorOutcome, RuntimeError, SetupOutcome};
 
 #[derive(Debug, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-enum ResultPayload {
+pub(crate) enum ResultPayload {
     Guidance {
         state: &'static str,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -141,6 +143,29 @@ enum ResultPayload {
     PackSubscription {
         #[serde(flatten)]
         outcome: PackSubscriptionResponse,
+    },
+    Teams {
+        #[serde(flatten)]
+        outcome: TeamList,
+    },
+    Team {
+        #[serde(flatten)]
+        outcome: TeamDetail,
+    },
+    TeamMutation {
+        #[serde(flatten)]
+        outcome: TeamMutationResponse,
+    },
+    TeamInvite {
+        invite_id: String,
+        team: String,
+        role: denju_wire::TeamRole,
+        expires_at_unix_seconds: i64,
+        join_command: String,
+    },
+    Transfer {
+        #[serde(flatten)]
+        outcome: ResourceTransferResponse,
     },
     Import {
         #[serde(flatten)]
@@ -246,10 +271,10 @@ enum ResultPayload {
     },
 }
 
-struct CommandOutput {
-    payload: ResultPayload,
-    text: String,
-    exit: ExitCode,
+pub(crate) struct CommandOutput {
+    pub(crate) payload: ResultPayload,
+    pub(crate) text: String,
+    pub(crate) exit: ExitCode,
 }
 
 #[tokio::main]
@@ -440,13 +465,18 @@ async fn run(args: impl IntoIterator<Item = OsString>) -> ExitCode {
                 })
             }
         }
-        Some(Command::Import { path }) => owned::import(&path).await.map(|outcome| CommandOutput {
-            text: format!("Imported {} as {}", outcome.locator, outcome.harness_name),
-            payload: ResultPayload::Import { outcome },
-            exit: ExitCode::SUCCESS,
-        }),
+        Some(Command::Import { path, to }) => {
+            owned::import(&path, to.as_deref())
+                .await
+                .map(|outcome| CommandOutput {
+                    text: format!("Imported {} as {}", outcome.locator, outcome.harness_name),
+                    payload: ResultPayload::Import { outcome },
+                    exit: ExitCode::SUCCESS,
+                })
+        }
         Some(Command::Publish {
             locator,
+            public,
             message,
             tags,
         }) => {
@@ -457,7 +487,7 @@ async fn run(args: impl IntoIterator<Item = OsString>) -> ExitCode {
                         "pack publish does not accept skill release messages or tags",
                     ))
                 } else {
-                    pack_commands::publish(&locator)
+                    pack_commands::publish(&locator, public)
                         .await
                         .map(|outcome| CommandOutput {
                             text: format!(
@@ -469,7 +499,7 @@ async fn run(args: impl IntoIterator<Item = OsString>) -> ExitCode {
                         })
                 }
             } else {
-                release::publish(&locator, message, tags)
+                release::publish(&locator, public, message, tags)
                     .await
                     .map(|outcome| CommandOutput {
                         text: format!(
@@ -864,6 +894,10 @@ async fn run(args: impl IntoIterator<Item = OsString>) -> ExitCode {
                 payload: ResultPayload::PackMutation { outcome },
                 exit: ExitCode::SUCCESS,
             }),
+        Some(Command::Team { command }) => team_commands::dispatch(command).await,
+        Some(Command::Transfer { locator, team }) => {
+            team_commands::dispatch_transfer(&locator, &team).await
+        }
         Some(Command::Status) => workspace::status().await.map(|outcome| CommandOutput {
             text: status_text(&outcome),
             payload: ResultPayload::Status { outcome },

@@ -37,6 +37,7 @@ use futures_util::stream;
 use serde::Deserialize;
 
 mod auth;
+mod team_routes;
 
 use auth::{bearer_token, optional_bearer_token, recovery_bearer_token};
 
@@ -59,6 +60,7 @@ pub(super) fn router(registry: Arc<Registry>) -> Router {
         )
         .route("/v1/tokens/revoke", post(revoke_automation_token))
         .route("/v1/account/delete", post(delete_account))
+        .merge(team_routes::router())
         .route("/v1/search", get(search_public_skills))
         .route("/v1/skills/show", get(show_public_skill))
         .route("/v1/skills/publish", post(publish_skill))

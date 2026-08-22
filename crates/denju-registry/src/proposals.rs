@@ -19,6 +19,7 @@ use crate::{
     internal_api_error,
     lifecycle::{generation_u64, next_generation},
     outbox::enqueue_resource_wake,
+    team_access::{authorize_resource_publish, ensure_private_workspace_for_user},
 };
 
 const MAX_PROPOSAL_MESSAGE_CHARS: usize = 500;
@@ -39,13 +40,15 @@ struct ProposalRow {
     source_revision_id: Vec<u8>,
     target_resource_id: Uuid,
     target_owner_namespace_id: Uuid,
+    target_owner_kind: String,
     target_owner: String,
     target_name: String,
     target_generation: i64,
     target_visibility: String,
-    target_revision_id: Vec<u8>,
+    target_revision_id: Option<Vec<u8>>,
     target_release_revision_id: Option<Vec<u8>>,
     target_shared_with_proposer: bool,
+    target_team_with_proposer: bool,
     sync_base_revision_id: Vec<u8>,
     closed_revision_id: Option<Vec<u8>>,
     closed_source_generation: Option<i64>,
@@ -89,11 +92,12 @@ impl Registry {
 
         let source = sqlx::query(
             "SELECT r.owner_namespace_id,r.generation,w.revision_id,r.slug,f.upstream_resource_id,f.promotion_pending \
-             FROM resources r JOIN skill_private_workspaces w ON w.resource_id=r.id \
+             FROM resources r JOIN skill_private_workspaces w ON w.resource_id=r.id AND w.workspace_user_id=$2 \
              JOIN skill_forks f ON f.resource_id=r.id \
              WHERE r.id=$1 AND r.kind='skill' AND r.deleted_at IS NULL FOR UPDATE OF r,w,f",
         )
         .bind(source_resource_id.as_uuid())
+        .bind(authority.user_id)
         .fetch_optional(&mut *tx)
         .await
         .map_err(internal_api_error)?
@@ -182,7 +186,10 @@ impl Registry {
         let ids = sqlx::query_scalar::<_, Uuid>(
             "SELECT p.id FROM skill_proposals p \
              JOIN resources target ON target.id=p.target_resource_id \
-             WHERE p.proposer_user_id=$1 OR target.owner_namespace_id=$2 \
+             LEFT JOIN teams team ON team.namespace_id=target.owner_namespace_id \
+             LEFT JOIN team_memberships tm ON tm.team_namespace_id=target.owner_namespace_id AND tm.user_id=$1 \
+             WHERE p.proposer_user_id=$1 OR target.owner_namespace_id=$2 OR \
+               (tm.user_id IS NOT NULL AND (tm.role IN ('owner','maintainer') OR (tm.role='member' AND team.members_can_publish))) \
              ORDER BY p.created_at DESC,p.id",
         )
         .bind(authority.user_id)
@@ -209,8 +216,26 @@ impl Registry {
         let proposal_id = parse_uuid(proposal_id, "proposal ID")?;
         let mut tx = self.pool.begin().await.map_err(internal_api_error)?;
         let row = load_proposal_row(&mut tx, proposal_id).await?;
-        ensure_proposal_visible(&row, authority.user_id, authority.namespace_id)?;
-        let proposal = proposal_summary(&row)?;
+        let target_publisher = can_publish_target(
+            &mut tx,
+            authority.user_id,
+            authority.namespace_id,
+            row.target_owner_namespace_id,
+        )
+        .await?;
+        if row.proposer_user_id != authority.user_id && !target_publisher {
+            return Err(ApiError::new(ApiErrorCode::NotFound, "proposal not found"));
+        }
+        let mut proposal = proposal_summary(&row)?;
+        if target_publisher {
+            proposal.target_generation = workspace_generation_or_resource(
+                &mut tx,
+                row.target_resource_id,
+                authority.user_id,
+                row.target_generation,
+            )
+            .await?;
+        }
         let revision = RevisionId::from_str(&proposal.proposed_revision_id)
             .map_err(|error| ApiError::new(ApiErrorCode::Internal, error.to_string()))?;
         let snapshot = sqlx::query_as::<_, (Value, String, Vec<u8>, i64)>(
@@ -322,10 +347,17 @@ impl Registry {
             return Err(generation_conflict(row.proposal_generation));
         }
         match kind {
-            ProposalCloseKind::Reject
-                if row.target_owner_namespace_id != authority.namespace_id =>
-            {
-                return Err(ApiError::new(ApiErrorCode::NotFound, "proposal not found"));
+            ProposalCloseKind::Reject => {
+                if !can_publish_target(
+                    &mut tx,
+                    authority.user_id,
+                    authority.namespace_id,
+                    row.target_owner_namespace_id,
+                )
+                .await?
+                {
+                    return Err(ApiError::new(ApiErrorCode::NotFound, "proposal not found"));
+                }
             }
             ProposalCloseKind::Withdraw if row.proposer_user_id != authority.user_id => {
                 return Err(ApiError::new(ApiErrorCode::NotFound, "proposal not found"));
@@ -398,7 +430,19 @@ impl Registry {
             return Ok(outcome);
         }
         let row = load_proposal_row_for_update(&mut tx, proposal_id).await?;
-        ensure_target_owner(&row, authority.namespace_id)?;
+        let target_authority =
+            authorize_resource_publish(&mut tx, &authority, row.target_resource_id).await?;
+        if target_authority.namespace_id != row.target_owner_namespace_id {
+            return Err(ApiError::new(ApiErrorCode::NotFound, "proposal not found"));
+        }
+        if target_authority.is_team {
+            let _ = ensure_private_workspace_for_user(
+                &mut tx,
+                row.target_resource_id,
+                authority.user_id,
+            )
+            .await?;
+        }
         ensure_open_and_expected(&row, request.expected_generation)?;
         if row.source_generation != i64_generation(request.expected_source_generation)?
             || row.source_revision_id.as_slice() != expected_revision.as_bytes()
@@ -408,8 +452,18 @@ impl Registry {
                 "proposal fork advanced; inspect the current proposal before accepting",
             ));
         }
-        if row.target_generation != i64_generation(request.expected_target_generation)? {
-            return Err(generation_conflict(row.target_generation));
+        let target_workspace = sqlx::query_as::<_, (i64, Vec<u8>)>(
+            "SELECT generation,revision_id FROM skill_private_workspaces \
+             WHERE resource_id=$1 AND workspace_user_id=$2 FOR UPDATE",
+        )
+        .bind(row.target_resource_id)
+        .bind(authority.user_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(internal_api_error)?
+        .ok_or_else(|| ApiError::new(ApiErrorCode::NotFound, "target workspace not found"))?;
+        if target_workspace.0 != i64_generation(request.expected_target_generation)? {
+            return Err(generation_conflict(target_workspace.0));
         }
         let still_fork = sqlx::query_scalar::<_, bool>(
             "SELECT EXISTS(SELECT 1 FROM skill_forks WHERE resource_id=$1 AND upstream_resource_id=$2 AND promotion_pending=FALSE)",
@@ -461,12 +515,15 @@ impl Registry {
             expected_revision.as_bytes(),
         )
         .await?;
-        let source_description =
-            sqlx::query_scalar::<_, String>("SELECT description FROM resources WHERE id=$1")
-                .bind(row.source_resource_id)
-                .fetch_one(&mut *tx)
-                .await
-                .map_err(internal_api_error)?;
+        let source_description = sqlx::query_scalar::<_, String>(
+            "SELECT description FROM skill_private_workspaces \
+             WHERE resource_id=$1 AND workspace_user_id=$2",
+        )
+        .bind(row.source_resource_id)
+        .bind(row.proposer_user_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(internal_api_error)?;
         let snapshot = sqlx::query_as::<_, (Value, String, Vec<u8>, i64)>(
             "SELECT manifest_json,snapshot_key,snapshot_sha256,snapshot_size FROM resource_revision_snapshots \
              WHERE resource_id=$1 AND revision_id=$2",
@@ -476,25 +533,35 @@ impl Registry {
         .fetch_one(&mut *tx)
         .await
         .map_err(internal_api_error)?;
-        let target_next = next_generation(row.target_generation)?;
-        sqlx::query("UPDATE resources SET generation=$1,description=$2 WHERE id=$3")
-            .bind(target_next)
-            .bind(source_description)
-            .bind(row.target_resource_id)
-            .execute(&mut *tx)
-            .await
-            .map_err(internal_api_error)?;
+        let target_workspace_next = next_generation(target_workspace.0)?;
+        let target_resource_next = if target_authority.is_team {
+            row.target_generation
+        } else {
+            next_generation(row.target_generation)?
+        };
+        if !target_authority.is_team {
+            sqlx::query("UPDATE resources SET generation=$1,description=$2 WHERE id=$3")
+                .bind(target_resource_next)
+                .bind(&source_description)
+                .bind(row.target_resource_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(internal_api_error)?;
+        }
         sqlx::query(
-            "UPDATE skill_private_workspaces SET revision_id=$1,generation=$2,manifest_json=$3, \
-             snapshot_key=$4,snapshot_sha256=$5,snapshot_size=$6,updated_at=now() WHERE resource_id=$7",
+            "UPDATE skill_private_workspaces SET revision_id=$1,generation=$2,description=$3,manifest_json=$4, \
+             snapshot_key=$5,snapshot_sha256=$6,snapshot_size=$7,updated_at=now() \
+             WHERE resource_id=$8 AND workspace_user_id=$9",
         )
         .bind(expected_revision.as_bytes().as_slice())
-        .bind(target_next)
+        .bind(target_workspace_next)
+        .bind(source_description)
         .bind(snapshot.0)
         .bind(snapshot.1)
         .bind(snapshot.2)
         .bind(snapshot.3)
         .bind(row.target_resource_id)
+        .bind(authority.user_id)
         .execute(&mut *tx)
         .await
         .map_err(internal_api_error)?;
@@ -523,10 +590,18 @@ impl Registry {
             &outcome,
         )
         .await?;
-        let target_generation = generation_u64(target_next)?;
-        enqueue_resource_wake(&mut tx, row.target_resource_id, target_generation).await?;
+        if !target_authority.is_team {
+            enqueue_resource_wake(
+                &mut tx,
+                row.target_resource_id,
+                generation_u64(target_resource_next)?,
+            )
+            .await?;
+        }
         tx.commit().await.map_err(internal_api_error)?;
-        let _ = self.drain_outbox(64).await;
+        if !target_authority.is_team {
+            let _ = self.drain_outbox(64).await;
+        }
         Ok(outcome)
     }
 }
@@ -554,40 +629,44 @@ async fn proposal_query(
          p.proposer_user_id,proposer_ns.id AS proposer_namespace_id,proposer_ns.slug AS proposer, \
          source.id AS source_resource_id,source_owner.slug AS source_owner,source.slug AS source_name, \
          source.generation AS source_generation,source_workspace.revision_id AS source_revision_id, \
-         target.id AS target_resource_id,target.owner_namespace_id AS target_owner_namespace_id, \
+         target.id AS target_resource_id,target.owner_namespace_id AS target_owner_namespace_id,target_owner.kind AS target_owner_kind, \
          target_owner.slug AS target_owner,target.slug AS target_name,target.generation AS target_generation, \
-         target.visibility AS target_visibility,target_workspace.revision_id AS target_revision_id, \
+         target.visibility AS target_visibility,COALESCE(target_workspace.revision_id,release.revision_id) AS target_revision_id, \
          release.revision_id AS target_release_revision_id, \
          EXISTS(SELECT 1 FROM private_skill_shares share WHERE share.resource_id=target.id AND share.recipient_user_id=p.proposer_user_id) AS target_shared_with_proposer, \
+         EXISTS(SELECT 1 FROM team_memberships tm WHERE tm.team_namespace_id=target.owner_namespace_id AND tm.user_id=p.proposer_user_id) AS target_team_with_proposer, \
          fork.sync_base_revision_id,p.closed_revision_id,p.closed_source_generation \
          FROM skill_proposals p JOIN users proposer_user ON proposer_user.id=p.proposer_user_id \
          JOIN namespaces proposer_ns ON proposer_ns.id=proposer_user.namespace_id \
          JOIN resources source ON source.id=p.source_resource_id JOIN namespaces source_owner ON source_owner.id=source.owner_namespace_id \
-         JOIN skill_private_workspaces source_workspace ON source_workspace.resource_id=source.id \
+         JOIN skill_private_workspaces source_workspace ON source_workspace.resource_id=source.id AND source_workspace.workspace_user_id=p.proposer_user_id \
          JOIN skill_forks fork ON fork.resource_id=source.id \
          JOIN resources target ON target.id=p.target_resource_id JOIN namespaces target_owner ON target_owner.id=target.owner_namespace_id \
-         JOIN skill_private_workspaces target_workspace ON target_workspace.resource_id=target.id \
+         LEFT JOIN users target_owner_user ON target_owner_user.namespace_id=target.owner_namespace_id \
+         LEFT JOIN skill_private_workspaces target_workspace ON target_workspace.resource_id=target.id AND target_workspace.workspace_user_id=target_owner_user.id \
          LEFT JOIN skill_releases release ON release.resource_id=target.id AND release.version=target.latest_release_version \
          WHERE p.id=$1";
     const SELECT_PROPOSAL_FOR_UPDATE: &str = "SELECT p.id AS proposal_id,p.generation AS proposal_generation,p.state,p.message, \
          p.proposer_user_id,proposer_ns.id AS proposer_namespace_id,proposer_ns.slug AS proposer, \
          source.id AS source_resource_id,source_owner.slug AS source_owner,source.slug AS source_name, \
          source.generation AS source_generation,source_workspace.revision_id AS source_revision_id, \
-         target.id AS target_resource_id,target.owner_namespace_id AS target_owner_namespace_id, \
+         target.id AS target_resource_id,target.owner_namespace_id AS target_owner_namespace_id,target_owner.kind AS target_owner_kind, \
          target_owner.slug AS target_owner,target.slug AS target_name,target.generation AS target_generation, \
-         target.visibility AS target_visibility,target_workspace.revision_id AS target_revision_id, \
+         target.visibility AS target_visibility,COALESCE(target_workspace.revision_id,release.revision_id) AS target_revision_id, \
          release.revision_id AS target_release_revision_id, \
          EXISTS(SELECT 1 FROM private_skill_shares share WHERE share.resource_id=target.id AND share.recipient_user_id=p.proposer_user_id) AS target_shared_with_proposer, \
+         EXISTS(SELECT 1 FROM team_memberships tm WHERE tm.team_namespace_id=target.owner_namespace_id AND tm.user_id=p.proposer_user_id) AS target_team_with_proposer, \
          fork.sync_base_revision_id,p.closed_revision_id,p.closed_source_generation \
          FROM skill_proposals p JOIN users proposer_user ON proposer_user.id=p.proposer_user_id \
          JOIN namespaces proposer_ns ON proposer_ns.id=proposer_user.namespace_id \
          JOIN resources source ON source.id=p.source_resource_id JOIN namespaces source_owner ON source_owner.id=source.owner_namespace_id \
-         JOIN skill_private_workspaces source_workspace ON source_workspace.resource_id=source.id \
+         JOIN skill_private_workspaces source_workspace ON source_workspace.resource_id=source.id AND source_workspace.workspace_user_id=p.proposer_user_id \
          JOIN skill_forks fork ON fork.resource_id=source.id \
          JOIN resources target ON target.id=p.target_resource_id JOIN namespaces target_owner ON target_owner.id=target.owner_namespace_id \
-         JOIN skill_private_workspaces target_workspace ON target_workspace.resource_id=target.id \
+         LEFT JOIN users target_owner_user ON target_owner_user.namespace_id=target.owner_namespace_id \
+         LEFT JOIN skill_private_workspaces target_workspace ON target_workspace.resource_id=target.id AND target_workspace.workspace_user_id=target_owner_user.id \
          LEFT JOIN skill_releases release ON release.resource_id=target.id AND release.version=target.latest_release_version \
-         WHERE p.id=$1 FOR UPDATE OF p,source,target,source_workspace,target_workspace,fork";
+         WHERE p.id=$1 FOR UPDATE OF p,source,target,source_workspace,fork";
     let row = if lock {
         sqlx::query_as::<_, ProposalRow>(SELECT_PROPOSAL_FOR_UPDATE)
             .bind(proposal_id)
@@ -627,10 +706,25 @@ fn proposal_summary(row: &ProposalRow) -> Result<SkillProposal, ApiError> {
     };
     let state = match row.state.as_str() {
         "open" => {
-            let visible_target = if row.target_owner_namespace_id == row.proposer_namespace_id
+            let visible_target = if row.target_owner_kind == "team" {
+                if row.target_shared_with_proposer || row.target_team_with_proposer {
+                    // A personal private target can expose its live workspace to a share,
+                    // but a team target never exposes another maintainer's draft. A transfer
+                    // can temporarily produce a team target with no release; in that case the
+                    // transfer itself did not advance content, so the proposal's recorded sync
+                    // base remains the comparison point until the first team release appears.
+                    row.target_release_revision_id
+                        .as_deref()
+                        .or(Some(row.sync_base_revision_id.as_slice()))
+                } else if row.target_visibility == "public" {
+                    row.target_release_revision_id.as_deref()
+                } else {
+                    None
+                }
+            } else if row.target_owner_namespace_id == row.proposer_namespace_id
                 || row.target_shared_with_proposer
             {
-                Some(row.target_revision_id.as_slice())
+                row.target_revision_id.as_deref()
             } else if row.target_visibility == "public" {
                 row.target_release_revision_id.as_deref()
             } else {
@@ -668,26 +762,6 @@ fn proposal_summary(row: &ProposalRow) -> Result<SkillProposal, ApiError> {
     })
 }
 
-fn ensure_proposal_visible(
-    row: &ProposalRow,
-    user_id: Uuid,
-    namespace_id: Uuid,
-) -> Result<(), ApiError> {
-    if row.proposer_user_id == user_id || row.target_owner_namespace_id == namespace_id {
-        Ok(())
-    } else {
-        Err(ApiError::new(ApiErrorCode::NotFound, "proposal not found"))
-    }
-}
-
-fn ensure_target_owner(row: &ProposalRow, namespace_id: Uuid) -> Result<(), ApiError> {
-    if row.target_owner_namespace_id == namespace_id {
-        Ok(())
-    } else {
-        Err(ApiError::new(ApiErrorCode::NotFound, "proposal not found"))
-    }
-}
-
 fn ensure_open_and_expected(row: &ProposalRow, expected_generation: u64) -> Result<(), ApiError> {
     if row.state != "open" {
         return Err(ApiError::new(
@@ -699,6 +773,45 @@ fn ensure_open_and_expected(row: &ProposalRow, expected_generation: u64) -> Resu
         return Err(generation_conflict(row.proposal_generation));
     }
     Ok(())
+}
+
+async fn can_publish_target(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    user_id: Uuid,
+    personal_namespace_id: Uuid,
+    target_namespace_id: Uuid,
+) -> Result<bool, ApiError> {
+    if target_namespace_id == personal_namespace_id {
+        return Ok(true);
+    }
+    sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM team_memberships tm JOIN teams t ON t.namespace_id=tm.team_namespace_id \
+         WHERE tm.team_namespace_id=$1 AND tm.user_id=$2 AND \
+           (tm.role IN ('owner','maintainer') OR (tm.role='member' AND t.members_can_publish)))",
+    )
+    .bind(target_namespace_id)
+    .bind(user_id)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(internal_api_error)
+}
+
+async fn workspace_generation_or_resource(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    resource_id: Uuid,
+    user_id: Uuid,
+    fallback_resource_generation: i64,
+) -> Result<u64, ApiError> {
+    let generation = sqlx::query_scalar::<_, i64>(
+        "SELECT generation FROM skill_private_workspaces WHERE resource_id=$1 AND workspace_user_id=$2",
+    )
+    .bind(resource_id)
+    .bind(user_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(internal_api_error)?
+    .unwrap_or(fallback_resource_generation);
+    generation_u64(generation)
 }
 
 async fn attach_proposal_revision(

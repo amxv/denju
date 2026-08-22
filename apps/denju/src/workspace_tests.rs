@@ -46,6 +46,7 @@ async fn fixture() -> (TempDir, LocalPaths, LocalDatabase, OwnedSkillRecord) {
         owner: "alice".into(),
         skill_name: "review".into(),
         resource_generation: 1,
+        workspace_generation: 1,
         desired_revision_id: revision_id.to_string(),
         harness_name: None,
         materialized_revision_id: None,
@@ -102,7 +103,7 @@ async fn coherent_edit_queues_exactly_one_revision() {
 }
 
 #[tokio::test]
-async fn metadata_generation_advance_rebases_queued_revision_without_rewriting_it() {
+async fn metadata_generation_advance_does_not_rewrite_workspace_cas_state() {
     let (_home, paths, db, record) = fixture().await;
     fs::write(paths.skills.join("alice/review/notes.txt"), b"changed\n").unwrap();
     let (_pass, blockers) = capture_local_edits(&paths, &db, false).await.unwrap();
@@ -131,14 +132,14 @@ async fn metadata_generation_advance_rebases_queued_revision_without_rewriting_i
         before.expected_head_revision_id
     );
     assert_eq!(after.parent_revision_ids, before.parent_revision_ids);
-    assert_eq!(after.expected_generation, 2);
+    assert_eq!(after.expected_generation, 1);
     let state = db
         .workspace_state(record.resource_id.clone())
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(state.base_generation, 2);
-    assert_eq!(state.status, WorkspaceStatus::Queued);
+    assert_eq!(state.base_generation, 1);
+    assert_eq!(state.status, WorkspaceStatus::Quota);
     let owned = db
         .owned_skills()
         .await
@@ -147,6 +148,7 @@ async fn metadata_generation_advance_rebases_queued_revision_without_rewriting_i
         .find(|item| item.resource_id == record.resource_id)
         .unwrap();
     assert_eq!(owned.resource_generation, 2);
+    assert_eq!(owned.workspace_generation, 1);
 }
 
 #[tokio::test]

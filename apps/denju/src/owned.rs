@@ -35,7 +35,7 @@ pub struct ImportOutcome {
     pub harness_name: String,
 }
 
-pub async fn import(source: &Path) -> Result<ImportOutcome, RuntimeError> {
+pub async fn import(source: &Path, to: Option<&str>) -> Result<ImportOutcome, RuntimeError> {
     let context = installed_context(true).await?;
     let identity = context
         .db
@@ -56,6 +56,9 @@ pub async fn import(source: &Path) -> Result<ImportOutcome, RuntimeError> {
         )
         .recovery(format!("denju login {}", identity.username)));
     }
+    let requested_owner = to
+        .map(|value| value.strip_prefix('@').unwrap_or(value).to_owned())
+        .unwrap_or_else(|| identity.username.trim_start_matches('@').to_owned());
 
     fs::create_dir_all(&context.paths.imports).map_err(local_error)?;
     let absolute_candidate = absolute_candidate(source).map_err(local_error)?;
@@ -83,7 +86,10 @@ pub async fn import(source: &Path) -> Result<ImportOutcome, RuntimeError> {
                     "cannot import a path already inside Denju managed state",
                 ));
             }
-            journal = Some(create_import_journal(&context, &canonical, canonical_text).await?);
+            journal = Some(
+                create_import_journal(&context, &canonical, canonical_text, &requested_owner)
+                    .await?,
+            );
         }
     }
     let mut journal = journal.ok_or_else(|| {
@@ -95,6 +101,15 @@ pub async fn import(source: &Path) -> Result<ImportOutcome, RuntimeError> {
             ),
         )
     })?;
+    if journal.payload.owner != requested_owner {
+        return Err(RuntimeError::new(
+            CliErrorCode::InvalidArguments,
+            format!(
+                "this import is already staged for @{}; retry with --to @{} or finish that import first",
+                journal.payload.owner, journal.payload.owner
+            ),
+        ));
+    }
 
     let (manifest_wire, manifest, snapshot_bytes, entries) = load_staged_import(&journal.payload)?;
     let request = import_request(&journal, &manifest_wire)?;
@@ -195,6 +210,7 @@ pub async fn import(source: &Path) -> Result<ImportOutcome, RuntimeError> {
                     owner: locator.owner().to_owned(),
                     skill_name: journal.payload.skill_name.clone(),
                     resource_generation: 1,
+                    workspace_generation: 1,
                     desired_revision_id: revision_id_text.clone(),
                     harness_name: None,
                     materialized_revision_id: None,
@@ -311,6 +327,7 @@ async fn create_import_journal(
     context: &crate::public::InstalledContext,
     source: &Path,
     source_text: String,
+    owner: &str,
 ) -> Result<ImportJournal, RuntimeError> {
     let entries = read_skill_source(source).map_err(source_error)?;
     let skill_name = source
@@ -363,6 +380,7 @@ async fn create_import_journal(
         private_skill_import_request_hash(&denju_wire::PrivateSkillImportRequestHashInput {
             operation_id: &operation,
             expected_generation: 0,
+            owner,
             name: &skill_name,
             manifest: &manifest,
             snapshot_sha256: &snapshot_sha256,
@@ -378,6 +396,7 @@ async fn create_import_journal(
     persist_staging_snapshot(&snapshot_path, snapshot.bytes()).map_err(local_error)?;
     let payload = ImportJournalPayload {
         source_path: source_text,
+        owner: owner.to_owned(),
         skill_name,
         request_hash: request_hash.to_string(),
         manifest_json: serde_json::to_string(&manifest)
@@ -445,6 +464,7 @@ fn import_request(
         private_skill_import_request_hash(&denju_wire::PrivateSkillImportRequestHashInput {
             operation_id: &operation,
             expected_generation: 0,
+            owner: &journal.payload.owner,
             name: &journal.payload.skill_name,
             manifest,
             snapshot_sha256: &journal.payload.snapshot_sha256,
@@ -462,6 +482,7 @@ fn import_request(
     Ok(PrivateSkillImportRequest {
         operation_id: journal.operation_id.to_string(),
         expected_generation: 0,
+        owner: journal.payload.owner.clone(),
         name: journal.payload.skill_name.clone(),
         manifest: manifest.clone(),
         snapshot_sha256: journal.payload.snapshot_sha256.clone(),

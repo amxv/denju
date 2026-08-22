@@ -78,6 +78,7 @@ pub struct OwnedSkillRecord {
     pub owner: String,
     pub skill_name: String,
     pub resource_generation: i64,
+    pub workspace_generation: i64,
     pub desired_revision_id: String,
     pub harness_name: Option<String>,
     pub materialized_revision_id: Option<String>,
@@ -165,6 +166,7 @@ pub struct ImportJournal {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ImportJournalPayload {
     pub source_path: String,
+    pub owner: String,
     pub skill_name: String,
     pub request_hash: String,
     pub manifest_json: String,

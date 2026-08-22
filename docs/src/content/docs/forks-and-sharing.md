@@ -57,6 +57,8 @@ denju unshare @you/skill @alice
 
 A subscription to a shared private skill follows every coherent valid private save, not only published releases. Revoking the share removes the recipient's managed upstream copy as soon as no public, pack, team, or other access source requires it. A personal fork the recipient already created is independent and survives revocation.
 
+Team-owned skills do not add a second per-skill ACL system. Team membership defines team access, so `denju share` cannot create a new private share on a team skill. If a personally shared skill is later transferred into a team, the existing relationship and stable resource ID are preserved, but that share becomes release-only: it can continue following immutable team releases and can never read a maintainer's future unpublished draft.
+
 
 ## Propose changes upstream
 

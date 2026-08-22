@@ -12,9 +12,8 @@ use denju_core::{
 use denju_wire::{
     ApiError, ApiErrorCode, DirtyResource, PrivateRevisionResponse, PublicSkill,
     PublicSkillManifest, PublishSkillRequest, PublishSkillResponse, RequestHash,
-    RestoreSkillRequest, SkillDeprecation, SkillHistoryResponse, SkillRelease, SkillRevisionDetail,
-    SkillRevisionSummary, SnapshotDownload, SyncHint, SyncReconcileRequest, SyncReconcileResponse,
-    publish_skill_request_hash, restore_skill_request_hash,
+    RestoreSkillRequest, SkillDeprecation, SkillRelease, SyncHint, SyncReconcileRequest,
+    SyncReconcileResponse, publish_skill_request_hash, restore_skill_request_hash,
 };
 use serde_json::Value;
 use sqlx::{FromRow, Row};
@@ -26,6 +25,9 @@ use crate::{
     ingest::{decode_32, manifest_blobs},
     internal_api_error,
     release_validation::validate_release_metadata,
+    revision_graph::{merge_base, revision_is_ancestor},
+    team_access::{authorize_resource_publish, ensure_private_workspace_for_user},
+    workspace_conflict::record_workspace_conflict,
 };
 
 #[derive(Debug, FromRow)]
@@ -36,6 +38,7 @@ struct ReleaseWorkspaceRow {
     description: String,
     visibility: String,
     generation: i64,
+    workspace_generation: i64,
     latest_release_version: Option<i64>,
     revision_id: Vec<u8>,
     manifest_json: Value,
@@ -142,6 +145,7 @@ impl Registry {
             &request.operation_id,
             &request.resource_id,
             request.expected_generation,
+            request.public,
             request.message.as_deref(),
             &request.tags,
         )
@@ -182,23 +186,27 @@ impl Registry {
         }
 
         crate::pack_drain::lock_skill_resource(&mut tx, resource_id.as_uuid()).await?;
+        let resource_authority =
+            authorize_resource_publish(&mut tx, &authority, resource_id.as_uuid()).await?;
         let current = sqlx::query_as::<_, ReleaseWorkspaceRow>(
-            "SELECT r.owner_namespace_id,n.slug AS owner,r.slug AS name,r.description,r.visibility,r.generation, \
+            "SELECT r.owner_namespace_id,n.slug AS owner,r.slug AS name,w.description,r.visibility,r.generation, \
+                    w.generation AS workspace_generation, \
                     r.latest_release_version,w.revision_id,w.manifest_json,w.snapshot_key,w.snapshot_sha256,w.snapshot_size, \
                     r.deprecated_at IS NOT NULL AS deprecated,replacement.id AS replacement_id, \
                     replacement_owner.slug AS replacement_owner,replacement.slug AS replacement_name \
              FROM resources r JOIN namespaces n ON n.id=r.owner_namespace_id \
-             JOIN skill_private_workspaces w ON w.resource_id=r.id \
+             JOIN skill_private_workspaces w ON w.resource_id=r.id AND w.workspace_user_id=$2 \
              LEFT JOIN resources replacement ON replacement.id=r.deprecation_replacement_resource_id AND replacement.deleted_at IS NULL \
              LEFT JOIN namespaces replacement_owner ON replacement_owner.id=replacement.owner_namespace_id \
              WHERE r.id=$1 AND r.kind='skill' AND r.deleted_at IS NULL FOR UPDATE OF r,w",
         )
         .bind(resource_id.as_uuid())
+        .bind(authority.user_id)
         .fetch_optional(&mut *tx)
         .await
         .map_err(internal_api_error)?
         .ok_or_else(|| ApiError::new(ApiErrorCode::NotFound, "owned skill not found"))?;
-        if current.owner_namespace_id != authority.namespace_id {
+        if current.owner_namespace_id != resource_authority.namespace_id {
             return Err(ApiError::new(
                 ApiErrorCode::Unauthorized,
                 "owned skill is unavailable",
@@ -210,12 +218,17 @@ impl Registry {
                 "generation exceeds database range",
             )
         })?;
-        if current.generation != expected_generation {
+        if current.workspace_generation != expected_generation {
             return Err(ApiError::new(
                 ApiErrorCode::GenerationConflict,
-                format!("resource advanced to generation {}", current.generation),
+                format!(
+                    "private workspace advanced to generation {}",
+                    current.workspace_generation
+                ),
             ));
         }
+        let publish_public =
+            !resource_authority.is_team || current.visibility == "public" || request.public;
         if let Some(latest) = current.latest_release_version {
             let latest_revision = sqlx::query_scalar::<_, Vec<u8>>(
                 "SELECT revision_id FROM skill_releases WHERE resource_id=$1 AND version=$2",
@@ -225,13 +238,15 @@ impl Registry {
             .fetch_one(&mut *tx)
             .await
             .map_err(internal_api_error)?;
-            if latest_revision == current.revision_id && current.visibility == "public" {
+            if latest_revision == current.revision_id
+                && (current.visibility == "public" || !publish_public)
+            {
                 return Err(ApiError::new(
                     ApiErrorCode::InvalidRequest,
                     "the private workspace has no unpublished changes",
                 ));
             }
-            if latest_revision == current.revision_id {
+            if latest_revision == current.revision_id && publish_public {
                 let next_generation = current.generation.checked_add(1).ok_or_else(|| {
                     ApiError::new(ApiErrorCode::Internal, "resource generation overflow")
                 })?;
@@ -241,14 +256,6 @@ impl Registry {
                     .execute(&mut *tx)
                     .await
                     .map_err(internal_api_error)?;
-                sqlx::query(
-                    "UPDATE skill_private_workspaces SET generation=$1 WHERE resource_id=$2",
-                )
-                .bind(next_generation)
-                .bind(resource_id.as_uuid())
-                .execute(&mut *tx)
-                .await
-                .map_err(internal_api_error)?;
                 let release_row = sqlx::query(
                     "SELECT sr.message,COALESCE(array_agg(srt.tag ORDER BY srt.tag) FILTER (WHERE srt.tag IS NOT NULL),'{}'::text[]) \
                      FROM skill_releases sr LEFT JOIN skill_release_tags srt \
@@ -308,6 +315,40 @@ impl Registry {
                 let _ = self.drain_outbox(64).await;
                 return Ok(outcome);
             }
+            if resource_authority.is_team && latest_revision != current.revision_id {
+                let current_revision =
+                    decode_32(&current.revision_id, "stored workspace revision ID")?;
+                let latest_revision = decode_32(&latest_revision, "stored release revision ID")?;
+                if !revision_is_ancestor(&mut tx, &latest_revision, &current_revision).await? {
+                    let active_conflict = sqlx::query_scalar::<_, bool>(
+                        "SELECT EXISTS(SELECT 1 FROM skill_workspace_conflicts \
+                         WHERE resource_id=$1 AND workspace_user_id=$2 AND resolved_at IS NULL)",
+                    )
+                    .bind(resource_id.as_uuid())
+                    .bind(authority.user_id)
+                    .fetch_one(&mut *tx)
+                    .await
+                    .map_err(internal_api_error)?;
+                    if !active_conflict {
+                        let base = merge_base(&mut tx, &current_revision, &latest_revision).await?;
+                        record_workspace_conflict(
+                            &mut tx,
+                            resource_id.as_uuid(),
+                            authority.user_id,
+                            &base,
+                            &latest_revision,
+                            &current_revision,
+                            current.workspace_generation,
+                        )
+                        .await?;
+                        tx.commit().await.map_err(internal_api_error)?;
+                    }
+                    return Err(ApiError::new(
+                        ApiErrorCode::GenerationConflict,
+                        "another maintainer published first; merge the newer team release into this private workspace and retry",
+                    ));
+                }
+            }
         }
         let version = current
             .latest_release_version
@@ -349,21 +390,16 @@ impl Registry {
             .map_err(internal_api_error)?;
         }
         sqlx::query(
-            "UPDATE resources SET visibility='public',latest_release_version=$1,generation=$2 WHERE id=$3",
+            "UPDATE resources SET visibility=$1,latest_release_version=$2,generation=$3,description=$4 WHERE id=$5",
         )
+        .bind(if publish_public { "public" } else { "private" })
         .bind(version)
         .bind(next_generation)
+        .bind(&current.description)
         .bind(resource_id.as_uuid())
         .execute(&mut *tx)
         .await
         .map_err(internal_api_error)?;
-        sqlx::query("UPDATE skill_private_workspaces SET generation=$1 WHERE resource_id=$2")
-            .bind(next_generation)
-            .bind(resource_id.as_uuid())
-            .execute(&mut *tx)
-            .await
-            .map_err(internal_api_error)?;
-
         let generation = u64::try_from(next_generation)
             .map_err(|_| ApiError::new(ApiErrorCode::Internal, "resource generation is invalid"))?;
         let release_version = u64::try_from(version)
@@ -418,181 +454,6 @@ impl Registry {
         Ok(outcome)
     }
 
-    pub async fn skill_history(
-        &self,
-        bearer: Option<&str>,
-        locator: &str,
-    ) -> Result<SkillHistoryResponse, ApiError> {
-        let parsed = denju_core::ResourceLocator::from_str(locator)
-            .map_err(|error| ApiError::new(ApiErrorCode::InvalidRequest, error.to_string()))?;
-        let resolved = self.resolve_active_skill_locator(&parsed).await?;
-        let row = sqlx::query(
-            "SELECT r.visibility,r.generation,r.latest_release_version,w.revision_id \
-             FROM resources r JOIN skill_private_workspaces w ON w.resource_id=r.id \
-             WHERE r.id=$1 AND r.kind='skill' AND r.deleted_at IS NULL",
-        )
-        .bind(resolved.resource_id)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(internal_api_error)?
-        .ok_or_else(|| ApiError::new(ApiErrorCode::NotFound, "skill not found"))?;
-        let resource_id = resolved.resource_id;
-        let visibility: String = row.get(0);
-        let generation: i64 = row.get(1);
-        let latest_release: Option<i64> = row.get(2);
-        let private_head: Vec<u8> = row.get(3);
-        let access = match bearer {
-            Some(token) => match self.user_authority(token, "skills:read").await {
-                Ok(authority) => Some(
-                    skill_access_for_user(
-                        &self.pool,
-                        authority.user_id,
-                        authority.namespace_id,
-                        resource_id,
-                    )
-                    .await?,
-                ),
-                Err(_) => None,
-            },
-            None => None,
-        };
-        let private_read = access
-            .as_ref()
-            .is_some_and(|access| access.can_read_private());
-        if visibility != "public" && !private_read {
-            return Err(ApiError::new(ApiErrorCode::NotFound, "skill not found"));
-        }
-
-        let releases = self.release_rows(resource_id).await?;
-        let released_ids = releases
-            .iter()
-            .map(|release| release.revision_id.clone())
-            .collect::<BTreeSet<_>>();
-        let rows = sqlx::query(
-            "SELECT rrs.revision_id FROM resource_revision_snapshots rrs \
-             WHERE rrs.resource_id=$1 ORDER BY rrs.created_at,rrs.revision_id",
-        )
-        .bind(resource_id)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(internal_api_error)?;
-        let mut revisions = Vec::new();
-        for row in rows {
-            let revision = hex::encode(decode_32(&row.get::<Vec<u8>, _>(0), "stored revision ID")?);
-            if !private_read && !released_ids.contains(&revision) {
-                continue;
-            }
-            let parents = revision_parents(&self.pool, &revision).await?;
-            let released_versions = releases
-                .iter()
-                .filter(|release| release.revision_id == revision)
-                .map(|release| release.version)
-                .collect();
-            revisions.push(SkillRevisionSummary {
-                revision_id: revision,
-                parent_revision_ids: parents,
-                released_versions,
-            });
-        }
-        let workspace_revision_id = if private_read {
-            hex::encode(decode_32(&private_head, "stored revision ID")?)
-        } else {
-            releases
-                .last()
-                .map(|release| release.revision_id.clone())
-                .ok_or_else(|| {
-                    ApiError::new(ApiErrorCode::Internal, "public skill has no release")
-                })?
-        };
-        let _ = latest_release;
-        Ok(SkillHistoryResponse {
-            resource_id: resource_id.to_string(),
-            locator: format!("@{}/{}", resolved.owner, resolved.name),
-            generation: u64::try_from(generation).map_err(|_| {
-                ApiError::new(ApiErrorCode::Internal, "stored generation is invalid")
-            })?,
-            workspace_revision_id,
-            revisions,
-            releases,
-        })
-    }
-
-    pub async fn skill_revision_detail(
-        &self,
-        bearer: Option<&str>,
-        locator: &str,
-        revision_id: &str,
-    ) -> Result<SkillRevisionDetail, ApiError> {
-        let parsed = denju_core::ResourceLocator::from_str(locator)
-            .map_err(|error| ApiError::new(ApiErrorCode::InvalidRequest, error.to_string()))?;
-        let resolved = self.resolve_active_skill_locator(&parsed).await?;
-        let revision = RevisionId::from_str(revision_id)
-            .map_err(|error| ApiError::new(ApiErrorCode::InvalidRequest, error.to_string()))?;
-        let row = sqlx::query(
-            "SELECT r.visibility,rrs.manifest_json,rrs.snapshot_key,rrs.snapshot_sha256,rrs.snapshot_size, \
-                    EXISTS(SELECT 1 FROM skill_releases sr WHERE sr.resource_id=r.id AND sr.revision_id=$2) AS released \
-             FROM resources r JOIN resource_revision_snapshots rrs ON rrs.resource_id=r.id AND rrs.revision_id=$2 \
-             WHERE r.id=$1 AND r.kind='skill' AND r.deleted_at IS NULL",
-        )
-        .bind(resolved.resource_id)
-        .bind(revision.as_bytes().as_slice())
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(internal_api_error)?
-        .ok_or_else(|| ApiError::new(ApiErrorCode::NotFound, "revision not found"))?;
-        let resource_id = resolved.resource_id;
-        let visibility: String = row.get(0);
-        let access = match bearer {
-            Some(token) => match self.user_authority(token, "skills:read").await {
-                Ok(authority) => Some(
-                    skill_access_for_user(
-                        &self.pool,
-                        authority.user_id,
-                        authority.namespace_id,
-                        resource_id,
-                    )
-                    .await?,
-                ),
-                Err(_) => None,
-            },
-            None => None,
-        };
-        let released: bool = row.get(5);
-        let readable = match access.as_ref() {
-            Some(access) => {
-                user_can_read_revision(&self.pool, access, resource_id, revision.as_bytes()).await?
-            }
-            None => visibility == "public" && released,
-        };
-        if !readable {
-            return Err(ApiError::new(ApiErrorCode::NotFound, "revision not found"));
-        }
-        let manifest: PublicSkillManifest = serde_json::from_value(row.get(1))
-            .map_err(|error| ApiError::new(ApiErrorCode::Internal, error.to_string()))?;
-        let key: String = row.get(2);
-        let sha = decode_32(&row.get::<Vec<u8>, _>(3), "stored snapshot SHA-256")?;
-        let size: i64 = row.get(4);
-        let url = self
-            .objects
-            .presign_get(&key)
-            .await
-            .map_err(|error| ApiError::new(ApiErrorCode::Unavailable, error.to_string()))?;
-        Ok(SkillRevisionDetail {
-            resource_id: resource_id.to_string(),
-            locator: format!("@{}/{}", resolved.owner, resolved.name),
-            revision_id: revision_id.to_owned(),
-            parent_revision_ids: revision_parents(&self.pool, revision_id).await?,
-            manifest,
-            snapshot: SnapshotDownload {
-                sha256: hex::encode(sha),
-                size_bytes: u64::try_from(size).map_err(|_| {
-                    ApiError::new(ApiErrorCode::Internal, "stored snapshot size is invalid")
-                })?,
-                url,
-            },
-        })
-    }
-
     pub async fn restore_skill(
         &self,
         bearer: &str,
@@ -638,6 +499,32 @@ impl Registry {
                 .map_err(|error| ApiError::new(ApiErrorCode::Internal, error.to_string()));
         }
 
+        let mut authority_tx = self.pool.begin().await.map_err(internal_api_error)?;
+        let resource_authority =
+            authorize_resource_publish(&mut authority_tx, &authority, resource_id.as_uuid())
+                .await?;
+        authority_tx.commit().await.map_err(internal_api_error)?;
+        let access = skill_access_for_user(
+            &self.pool,
+            authority.user_id,
+            authority.namespace_id,
+            resource_id.as_uuid(),
+        )
+        .await?;
+        if !user_can_read_revision(
+            &self.pool,
+            &access,
+            resource_id.as_uuid(),
+            target.as_bytes(),
+        )
+        .await?
+        {
+            return Err(ApiError::new(
+                ApiErrorCode::NotFound,
+                "restore revision not found",
+            ));
+        }
+
         let target_row = sqlx::query(
             "SELECT rrs.manifest_json,rrs.snapshot_key,rrs.snapshot_sha256,rrs.snapshot_size,r.slug,r.owner_namespace_id \
              FROM resource_revision_snapshots rrs JOIN resources r ON r.id=rrs.resource_id \
@@ -650,7 +537,7 @@ impl Registry {
         .map_err(internal_api_error)?
         .ok_or_else(|| ApiError::new(ApiErrorCode::NotFound, "restore revision not found"))?;
         let owner_namespace: Uuid = target_row.get(5);
-        if owner_namespace != authority.namespace_id {
+        if owner_namespace != resource_authority.namespace_id {
             return Err(ApiError::new(
                 ApiErrorCode::Unauthorized,
                 "owned skill is unavailable",
@@ -693,16 +580,28 @@ impl Registry {
             .to_owned();
 
         let mut tx = self.pool.begin().await.map_err(internal_api_error)?;
-        let current = sqlx::query_as::<_, (Uuid, i64, Vec<u8>)>(
-            "SELECT r.owner_namespace_id,r.generation,w.revision_id FROM resources r \
-             JOIN skill_private_workspaces w ON w.resource_id=r.id WHERE r.id=$1 AND r.kind='skill' AND r.deleted_at IS NULL FOR UPDATE",
+        let resource_authority =
+            authorize_resource_publish(&mut tx, &authority, resource_id.as_uuid()).await?;
+        if resource_authority.is_team {
+            let _ = ensure_private_workspace_for_user(
+                &mut tx,
+                resource_id.as_uuid(),
+                authority.user_id,
+            )
+            .await?;
+        }
+        let current = sqlx::query_as::<_, (Uuid, i64, i64, Vec<u8>)>(
+            "SELECT r.owner_namespace_id,r.generation,w.generation,w.revision_id FROM resources r \
+             JOIN skill_private_workspaces w ON w.resource_id=r.id AND w.workspace_user_id=$2 \
+             WHERE r.id=$1 AND r.kind='skill' AND r.deleted_at IS NULL FOR UPDATE OF r,w",
         )
         .bind(resource_id.as_uuid())
+        .bind(authority.user_id)
         .fetch_optional(&mut *tx)
         .await
         .map_err(internal_api_error)?
         .ok_or_else(|| ApiError::new(ApiErrorCode::NotFound, "owned skill not found"))?;
-        if current.0 != authority.namespace_id {
+        if current.0 != resource_authority.namespace_id {
             return Err(ApiError::new(
                 ApiErrorCode::Unauthorized,
                 "owned skill is unavailable",
@@ -714,28 +613,34 @@ impl Registry {
                 "generation exceeds database range",
             )
         })?;
-        if current.1 != expected_generation {
+        if current.2 != expected_generation {
             return Err(ApiError::new(
                 ApiErrorCode::GenerationConflict,
-                format!("resource advanced to generation {}", current.1),
+                format!("private workspace advanced to generation {}", current.2),
             ));
         }
-        if current.2.as_slice() == target.as_bytes() {
+        if current.3.as_slice() == target.as_bytes() {
             return Err(ApiError::new(
                 ApiErrorCode::InvalidRequest,
                 "the requested revision is already the private workspace head",
             ));
         }
-        let parent = RevisionId::from_bytes(decode_32(&current.2, "stored revision ID")?);
+        let parent = RevisionId::from_bytes(decode_32(&current.3, "stored revision ID")?);
         let author = AuthorPrincipalId::from_uuid(authority.author_principal_id)
             .map_err(|error| ApiError::new(ApiErrorCode::Internal, error.to_string()))?;
         let revision = Revision::new(manifest.root_tree(), vec![parent], author, operation_id)
             .map_err(|error| ApiError::new(ApiErrorCode::InvalidRequest, error.to_string()))?;
         let new_revision = revision.id();
-        let next_generation = current
-            .1
-            .checked_add(1)
-            .ok_or_else(|| ApiError::new(ApiErrorCode::Internal, "resource generation overflow"))?;
+        let next_workspace_generation = current.2.checked_add(1).ok_or_else(|| {
+            ApiError::new(ApiErrorCode::Internal, "workspace generation overflow")
+        })?;
+        let next_resource_generation = if resource_authority.is_team {
+            current.1
+        } else {
+            current.1.checked_add(1).ok_or_else(|| {
+                ApiError::new(ApiErrorCode::Internal, "resource generation overflow")
+            })?
+        };
         sqlx::query(
             "INSERT INTO revisions (revision_id,root_tree_id,author_principal_id,operation_id) VALUES ($1,$2,$3,$4)",
         )
@@ -768,7 +673,7 @@ impl Registry {
                 .execute(&mut *tx).await.map_err(internal_api_error)?;
             sqlx::query(
                 "UPDATE namespace_blob_reachability SET reference_count=reference_count+1 WHERE namespace_id=$1 AND blob_id=$2",
-            ).bind(authority.namespace_id).bind(blob.as_bytes().as_slice())
+            ).bind(resource_authority.namespace_id).bind(blob.as_bytes().as_slice())
                 .execute(&mut *tx).await.map_err(internal_api_error)?;
         }
         sqlx::query(
@@ -782,24 +687,27 @@ impl Registry {
         .bind(&snapshot_sha)
         .bind(snapshot_size)
         .execute(&mut *tx).await.map_err(internal_api_error)?;
-        sqlx::query("UPDATE resources SET generation=$1,description=$2 WHERE id=$3")
-            .bind(next_generation)
-            .bind(&description)
-            .bind(resource_id.as_uuid())
-            .execute(&mut *tx)
-            .await
-            .map_err(internal_api_error)?;
+        if !resource_authority.is_team {
+            sqlx::query("UPDATE resources SET generation=$1,description=$2 WHERE id=$3")
+                .bind(next_resource_generation)
+                .bind(&description)
+                .bind(resource_id.as_uuid())
+                .execute(&mut *tx)
+                .await
+                .map_err(internal_api_error)?;
+        }
         sqlx::query(
-            "UPDATE skill_private_workspaces SET revision_id=$1,generation=$2,manifest_json=$3,snapshot_key=$4,snapshot_sha256=$5,snapshot_size=$6,updated_at=now() WHERE resource_id=$7",
+            "UPDATE skill_private_workspaces SET revision_id=$1,generation=$2,description=$3,manifest_json=$4,snapshot_key=$5,snapshot_sha256=$6,snapshot_size=$7,updated_at=now() \
+             WHERE resource_id=$8 AND workspace_user_id=$9",
         )
-        .bind(new_revision.as_bytes().as_slice()).bind(next_generation)
+        .bind(new_revision.as_bytes().as_slice()).bind(next_workspace_generation).bind(&description)
         .bind(serde_json::to_value(&manifest_wire).map_err(|error| ApiError::new(ApiErrorCode::Internal, error.to_string()))?)
-        .bind(&snapshot_key).bind(&snapshot_sha).bind(snapshot_size).bind(resource_id.as_uuid())
+        .bind(&snapshot_key).bind(&snapshot_sha).bind(snapshot_size).bind(resource_id.as_uuid()).bind(authority.user_id)
         .execute(&mut *tx).await.map_err(internal_api_error)?;
         let outcome = PrivateRevisionResponse {
             resource_id: resource_id.to_string(),
-            generation: u64::try_from(next_generation).map_err(|_| {
-                ApiError::new(ApiErrorCode::Internal, "resource generation is invalid")
+            generation: u64::try_from(next_workspace_generation).map_err(|_| {
+                ApiError::new(ApiErrorCode::Internal, "workspace generation is invalid")
             })?,
             revision_id: new_revision.to_string(),
             description,
@@ -812,7 +720,20 @@ impl Registry {
         .bind(resource_id.as_uuid())
         .bind(serde_json::to_value(&outcome).map_err(|error| ApiError::new(ApiErrorCode::Internal, error.to_string()))?)
         .execute(&mut *tx).await.map_err(internal_api_error)?;
+        if !resource_authority.is_team {
+            enqueue_resource_wake(
+                &mut tx,
+                resource_id.as_uuid(),
+                u64::try_from(next_resource_generation).map_err(|_| {
+                    ApiError::new(ApiErrorCode::Internal, "resource generation is invalid")
+                })?,
+            )
+            .await?;
+        }
         tx.commit().await.map_err(internal_api_error)?;
+        if !resource_authority.is_team {
+            let _ = self.drain_outbox(64).await;
+        }
         Ok(outcome)
     }
 
@@ -894,43 +815,4 @@ impl Registry {
             RegistryWake::ResyncAll => Some(SyncHint::ResyncAll),
         }
     }
-
-    async fn release_rows(&self, resource_id: Uuid) -> Result<Vec<SkillRelease>, ApiError> {
-        let rows = sqlx::query(
-            "SELECT sr.version,sr.revision_id,sr.message,COALESCE(array_agg(srt.tag ORDER BY srt.tag) FILTER (WHERE srt.tag IS NOT NULL),'{}'::text[]) \
-             FROM skill_releases sr LEFT JOIN skill_release_tags srt ON srt.resource_id=sr.resource_id AND srt.version=sr.version \
-             WHERE sr.resource_id=$1 GROUP BY sr.version,sr.revision_id,sr.message ORDER BY sr.version",
-        )
-        .bind(resource_id).fetch_all(&self.pool).await.map_err(internal_api_error)?;
-        rows.into_iter()
-            .map(|row| {
-                Ok(SkillRelease {
-                    version: u64::try_from(row.get::<i64, _>(0)).map_err(|_| {
-                        ApiError::new(ApiErrorCode::Internal, "stored release version is invalid")
-                    })?,
-                    revision_id: hex::encode(decode_32(
-                        &row.get::<Vec<u8>, _>(1),
-                        "stored revision ID",
-                    )?),
-                    message: row.get(2),
-                    tags: row.get::<Vec<String>, _>(3),
-                })
-            })
-            .collect()
-    }
-}
-
-async fn revision_parents(pool: &sqlx::PgPool, revision_id: &str) -> Result<Vec<String>, ApiError> {
-    let revision = RevisionId::from_str(revision_id)
-        .map_err(|error| ApiError::new(ApiErrorCode::Internal, error.to_string()))?;
-    let rows = sqlx::query_scalar::<_, Vec<u8>>(
-        "SELECT parent_revision_id FROM revision_parents WHERE revision_id=$1 ORDER BY ordinal",
-    )
-    .bind(revision.as_bytes().as_slice())
-    .fetch_all(pool)
-    .await
-    .map_err(internal_api_error)?;
-    rows.into_iter()
-        .map(|bytes| decode_32(&bytes, "stored parent revision ID").map(hex::encode))
-        .collect()
 }

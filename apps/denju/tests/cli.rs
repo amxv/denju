@@ -243,9 +243,42 @@ fn pack_cli_shapes_parse_without_ambiguity() {
             "@bob/review",
         ],
         vec!["--json", "show", "@alice/packs/core"],
-        vec!["--json", "publish", "@alice/packs/core"],
+        vec!["--json", "publish", "@alice/packs/core", "--public"],
         vec!["--json", "subscribe", "@alice/packs/core"],
         vec!["--json", "unsubscribe", "@alice/packs/core"],
+    ] {
+        let output = denju(&args);
+        assert_eq!(output.status.code(), Some(1), "args: {args:?}");
+        assert!(stderr(&output).is_empty(), "args: {args:?}");
+        let value: Value = serde_json::from_str(stdout(&output).trim()).expect("valid JSON error");
+        assert_eq!(value["ok"], false, "args: {args:?}");
+        assert_eq!(value["error"]["code"], "setup_required", "args: {args:?}");
+    }
+}
+
+#[test]
+fn team_and_transfer_cli_shapes_parse_without_ambiguity() {
+    for args in [
+        vec!["--json", "team"],
+        vec!["--json", "team", "create", "@acme"],
+        vec!["--json", "team", "invite", "@acme"],
+        vec!["--json", "team", "invite", "@acme", "--role", "maintainer"],
+        vec!["--json", "team", "join", "deadbeef"],
+        vec!["--json", "team", "show", "@acme"],
+        vec!["--json", "team", "role", "@acme", "@alice", "maintainer"],
+        vec!["--json", "team", "remove", "@acme", "@alice"],
+        vec![
+            "--json",
+            "team",
+            "settings",
+            "@acme",
+            "--members-can-publish",
+            "true",
+        ],
+        vec!["--json", "transfer", "@alice/review", "@acme"],
+        vec!["--json", "transfer", "@alice/packs/core", "@acme"],
+        vec!["--json", "import", "/tmp/review", "--to", "@acme"],
+        vec!["--json", "publish", "@acme/review", "--public"],
     ] {
         let output = denju(&args);
         assert_eq!(output.status.code(), Some(1), "args: {args:?}");

@@ -1,7 +1,7 @@
 ---
 title: Proposals
 description: Send a fork's moving private head back to its upstream maintainer without creating review threads or publishing releases.
-order: 7
+order: 8
 category: Start
 summary: Proposals are private moving references from a fork to its upstream; acceptance updates private history only.
 ---

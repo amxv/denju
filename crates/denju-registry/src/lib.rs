@@ -2,13 +2,17 @@
 
 mod access;
 mod fork_sync;
+mod history;
 mod identity;
+mod identity_auth;
 mod identity_support;
 mod ingest;
 mod ingest_storage;
 mod lifecycle;
+mod lifecycle_hash;
 mod lifecycle_storage;
 mod outbox;
+mod pack_detail;
 mod pack_drain;
 mod pack_lifecycle;
 mod pack_storage;
@@ -21,7 +25,13 @@ mod realtime;
 mod release;
 mod release_validation;
 mod rename_content;
+mod revision_graph;
 mod sharing;
+mod subscription_access;
+mod team_access;
+mod team_rename;
+mod teams;
+mod transfer;
 mod workspace;
 mod workspace_conflict;
 mod workspace_storage;
@@ -49,7 +59,7 @@ use url::Url;
 use uuid::Uuid;
 
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
-const EXPECTED_SCHEMA_VERSION: i64 = 11;
+const EXPECTED_SCHEMA_VERSION: i64 = 12;
 const SNAPSHOT_URL_TTL: Duration = Duration::from_secs(5 * 60);
 const STAGING_URL_TTL: Duration = Duration::from_secs(10 * 60);
 

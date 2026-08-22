@@ -60,12 +60,23 @@ pub fn pack_publish_request_hash(
     operation_id: &str,
     resource_id: &str,
     expected_generation: u64,
+    public: bool,
 ) -> Result<RequestHash, RequestHashError> {
-    lifecycle_resource_hash(
+    #[derive(Serialize)]
+    struct Input<'a> {
+        operation_id: &'a str,
+        resource_id: &'a str,
+        expected_generation: u64,
+        public: bool,
+    }
+    hash_payload(
         PACK_PUBLISH_DOMAIN,
-        operation_id,
-        resource_id,
-        expected_generation,
+        &Input {
+            operation_id,
+            resource_id,
+            expected_generation,
+            public,
+        },
     )
 }
 
@@ -183,5 +194,14 @@ mod tests {
         )
         .unwrap();
         assert_ne!(subscribe, unsubscribe);
+    }
+
+    #[test]
+    fn pack_publish_visibility_is_part_of_the_request_hash() {
+        let operation = "01890f47-6a1c-7cc2-98c1-5f6c1ed8a3a1";
+        let pack = "01890f47-6a1d-7ad0-8f43-9a4d8c29f002";
+        let team_only = pack_publish_request_hash(operation, pack, 8, false).unwrap();
+        let public = pack_publish_request_hash(operation, pack, 8, true).unwrap();
+        assert_ne!(team_only, public);
     }
 }

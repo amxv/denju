@@ -64,8 +64,8 @@ impl Registry {
         }
 
         let mut tx = self.pool.begin().await.map_err(internal_api_error)?;
-        let resource = sqlx::query_as::<_, (Uuid, String, String, i64)>(
-            "SELECT r.owner_namespace_id,n.slug,r.slug,r.generation FROM resources r \
+        let resource = sqlx::query_as::<_, (Uuid, String, String, i64, String)>(
+            "SELECT r.owner_namespace_id,n.slug,r.slug,r.generation,n.kind FROM resources r \
              JOIN namespaces n ON n.id=r.owner_namespace_id \
              WHERE r.id=$1 AND r.kind='skill' AND r.deleted_at IS NULL FOR UPDATE OF r",
         )
@@ -74,7 +74,31 @@ impl Registry {
         .await
         .map_err(internal_api_error)?
         .ok_or_else(|| ApiError::new(ApiErrorCode::NotFound, "owned skill not found"))?;
-        if resource.0 != authority.namespace_id {
+        if resource.4 == "team" {
+            if kind == ShareMutationKind::Share {
+                return Err(ApiError::new(
+                    ApiErrorCode::InvalidRequest,
+                    "team skills use team membership; new per-skill private shares are unavailable",
+                ));
+            }
+            let role = sqlx::query_scalar::<_, String>(
+                "SELECT role FROM team_memberships WHERE team_namespace_id=$1 AND user_id=$2",
+            )
+            .bind(resource.0)
+            .bind(authority.user_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(internal_api_error)?;
+            if !role
+                .as_deref()
+                .is_some_and(|role| matches!(role, "owner" | "maintainer"))
+            {
+                return Err(ApiError::new(
+                    ApiErrorCode::Unauthorized,
+                    "only team owners and maintainers may revoke inherited private shares",
+                ));
+            }
+        } else if resource.4 != "user" || resource.0 != authority.namespace_id {
             return Err(ApiError::new(
                 ApiErrorCode::Unauthorized,
                 "only the skill owner can change private shares",

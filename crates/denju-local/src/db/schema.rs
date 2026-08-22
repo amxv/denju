@@ -291,3 +291,13 @@ CREATE TABLE pack_apply_journal (
 PRAGMA user_version = 10;
 COMMIT;
 "#;
+
+pub(super) const MIGRATION_V11: &str = r#"
+BEGIN IMMEDIATE;
+
+ALTER TABLE owned_skills ADD COLUMN workspace_generation INTEGER NOT NULL DEFAULT 1 CHECK (workspace_generation > 0);
+UPDATE owned_skills SET workspace_generation=resource_generation;
+
+PRAGMA user_version = 11;
+COMMIT;
+"#;

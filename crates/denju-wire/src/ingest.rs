@@ -6,6 +6,7 @@ use crate::{PrivateWorkspaceConflict, PublicSkillManifest, SnapshotDownload};
 pub struct PrivateSkillImportRequest {
     pub operation_id: String,
     pub expected_generation: u64,
+    pub owner: String,
     pub name: String,
     pub manifest: PublicSkillManifest,
     pub snapshot_sha256: String,
@@ -67,7 +68,10 @@ pub struct PrivateSkill {
     pub owner: String,
     pub name: String,
     pub description: String,
+    /// Stable resource generation for lifecycle/subscriber-visible changes.
     pub generation: u64,
+    /// Private CAS generation for this authenticated user's workspace ref.
+    pub workspace_generation: u64,
     pub revision_id: String,
     pub manifest: PublicSkillManifest,
     pub snapshot: SnapshotDownload,

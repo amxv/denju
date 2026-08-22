@@ -12,7 +12,9 @@ use sha2::{Digest, Sha256};
 use sqlx::Row;
 use uuid::Uuid;
 
-use crate::{Registry, identity_support::*, internal_api_error};
+use crate::{
+    Registry, identity_support::*, internal_api_error, teams::remove_team_workspaces_for_user,
+};
 
 impl Registry {
     pub async fn claim_identity(
@@ -735,6 +737,47 @@ impl Registry {
         let password_hash: String = row.get(1);
         let username: String = row.get(2);
         verify_password(&request.password, &password_hash)?;
+        let owned_team = sqlx::query_scalar::<_, String>(
+            "SELECT n.slug FROM team_memberships tm \
+             JOIN namespaces n ON n.id=tm.team_namespace_id \
+             WHERE tm.user_id=$1 AND tm.role='owner' ORDER BY n.slug LIMIT 1 FOR UPDATE OF tm",
+        )
+        .bind(user_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(internal_api_error)?;
+        if let Some(team) = owned_team {
+            return Err(ApiError::new(
+                ApiErrorCode::InvalidRequest,
+                format!(
+                    "account owns @{team}; team ownership succession must be completed before deleting the account"
+                ),
+            ));
+        }
+        let joined_teams = sqlx::query_scalar::<_, Uuid>(
+            "SELECT team_namespace_id FROM team_memberships \
+             WHERE user_id=$1 ORDER BY team_namespace_id FOR UPDATE",
+        )
+        .bind(user_id)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(internal_api_error)?;
+        for team_id in joined_teams {
+            remove_team_workspaces_for_user(&mut tx, team_id, user_id).await?;
+        }
+        sqlx::query("DELETE FROM team_memberships WHERE user_id=$1")
+            .bind(user_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(internal_api_error)?;
+        sqlx::query(
+            "UPDATE team_invites SET revoked_at=now() \
+             WHERE created_by_user_id=$1 AND used_at IS NULL AND revoked_at IS NULL",
+        )
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(internal_api_error)?;
         let _resource_wakes = self
             .tombstone_owned_resources_for_account_delete(&mut tx, namespace_id, &username)
             .await?;
@@ -817,62 +860,6 @@ impl Registry {
         tx.commit().await.map_err(internal_api_error)?;
         let _ = self.drain_outbox(256).await;
         Ok(outcome)
-    }
-
-    pub(super) async fn authenticate_actor(&self, bearer: &str) -> Result<AuthActor, ApiError> {
-        let raw = decode_secret_value(bearer, "bearer token")?;
-        let token_hash: [u8; 32] = Sha256::digest(raw).into();
-        if let Some((session_id, user_id, installation_id)) =
-            sqlx::query_as::<_, (Uuid, Uuid, Uuid)>(
-                "SELECT id,user_id,installation_id FROM sessions WHERE token_hash=$1 AND revoked_at IS NULL",
-            )
-            .bind(token_hash.as_slice())
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(internal_api_error)?
-        {
-            return Ok(AuthActor::Session {
-                session_id,
-                user_id,
-                installation_id,
-            });
-        }
-        if let Some((user_id, scopes)) = sqlx::query_as::<_, (Uuid, serde_json::Value)>(
-            "SELECT user_id,scopes FROM automation_tokens \
-             WHERE token_hash=$1 AND revoked_at IS NULL AND expires_at > now()",
-        )
-        .bind(token_hash.as_slice())
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(internal_api_error)?
-        {
-            let scopes = serde_json::from_value(scopes)
-                .map_err(|error| ApiError::new(ApiErrorCode::Internal, error.to_string()))?;
-            return Ok(AuthActor::Automation { user_id, scopes });
-        }
-        if let Ok(installation_id) = self.authenticate_installation(bearer).await {
-            return Ok(AuthActor::Installation { installation_id });
-        }
-        Err(ApiError::new(
-            ApiErrorCode::Unauthorized,
-            "invalid or revoked credential",
-        ))
-    }
-
-    pub(super) async fn subscription_subject(
-        &self,
-        bearer: &str,
-    ) -> Result<SubscriptionSubject, ApiError> {
-        match self.authenticate_actor(bearer).await? {
-            AuthActor::Installation { installation_id } => {
-                Ok(SubscriptionSubject::Installation(installation_id))
-            }
-            AuthActor::Session { user_id, .. } => Ok(SubscriptionSubject::User(user_id)),
-            AuthActor::Automation { .. } => Err(ApiError::new(
-                ApiErrorCode::Unauthorized,
-                "automation credentials cannot manage direct subscriptions",
-            )),
-        }
     }
 
     async fn installation_id_from_bearer_any(

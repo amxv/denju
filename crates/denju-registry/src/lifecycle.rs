@@ -22,8 +22,10 @@ use crate::{
         decode_32, enforce_namespace_quota, manifest_blobs, persist_canonical_blobs, persist_trees,
     },
     internal_api_error,
+    lifecycle_hash::validate_lifecycle_hash,
     release::enqueue_resource_wake,
-    rename_content::consume_prepared_rename_operation,
+    rename_content::{PreparedRenameExpectation, consume_prepared_rename_operation},
+    team_access::authorize_resource_publish,
 };
 
 #[derive(Debug, FromRow)]
@@ -131,6 +133,19 @@ impl Registry {
             return Ok(outcome);
         }
 
+        if let Some(outcome) = crate::team_rename::try_rename_team_skill(
+            self,
+            &authority,
+            operation_id,
+            resource_id.as_uuid(),
+            request,
+            request_hash,
+        )
+        .await?
+        {
+            return Ok(outcome);
+        }
+
         let source = sqlx::query_as::<_, RenameSourceRow>(
             "SELECT r.owner_namespace_id,n.slug AS owner,r.slug AS name,r.generation, \
                     w.revision_id,w.manifest_json,w.snapshot_key \
@@ -173,11 +188,14 @@ impl Registry {
             let prepared = self
                 .verified_prepared_rename_content(
                     &authority,
-                    prepared_operation_id.as_uuid(),
-                    resource_id.as_uuid(),
-                    expected_generation,
-                    &source.revision_id,
-                    &source.name,
+                    PreparedRenameExpectation {
+                        operation_id: prepared_operation_id.as_uuid(),
+                        resource_id: resource_id.as_uuid(),
+                        namespace_id: authority.namespace_id,
+                        generation: expected_generation,
+                        parent_revision_id: &source.revision_id,
+                        current_name: &source.name,
+                    },
                 )
                 .await?;
             (prepared.entries, prepared.staging_keys)
@@ -446,8 +464,10 @@ impl Registry {
             return Ok(outcome);
         }
         let mut tx = self.pool.begin().await.map_err(internal_api_error)?;
+        let resource_authority =
+            authorize_resource_publish(&mut tx, &authority, resource_id.as_uuid()).await?;
         let locked = lock_active_owned_skill(&mut tx, resource_id.as_uuid()).await?;
-        ensure_owner(&locked, authority.namespace_id)?;
+        ensure_owner(&locked, resource_authority.namespace_id)?;
         ensure_generation(&locked, request.expected_generation)?;
         if locked.latest_release_version.is_none() {
             return Err(ApiError::new(
@@ -463,12 +483,6 @@ impl Registry {
         }
         let next = next_generation(locked.generation)?;
         sqlx::query("UPDATE resources SET visibility='private',generation=$1 WHERE id=$2")
-            .bind(next)
-            .bind(resource_id.as_uuid())
-            .execute(&mut *tx)
-            .await
-            .map_err(internal_api_error)?;
-        sqlx::query("UPDATE skill_private_workspaces SET generation=$1 WHERE resource_id=$2")
             .bind(next)
             .bind(resource_id.as_uuid())
             .execute(&mut *tx)
@@ -518,8 +532,16 @@ impl Registry {
             return Ok(outcome);
         }
         let mut tx = self.pool.begin().await.map_err(internal_api_error)?;
+        let resource_authority =
+            authorize_resource_publish(&mut tx, &authority, resource_id.as_uuid()).await?;
+        if resource_authority.is_team {
+            return Err(ApiError::new(
+                ApiErrorCode::InvalidRequest,
+                "team skill deletion requires the owner-only team lifecycle rules",
+            ));
+        }
         let locked = lock_active_owned_skill(&mut tx, resource_id.as_uuid()).await?;
-        ensure_owner(&locked, authority.namespace_id)?;
+        ensure_owner(&locked, resource_authority.namespace_id)?;
         ensure_generation(&locked, request.expected_generation)?;
         let next = next_generation(locked.generation)?;
         sqlx::query(
@@ -532,12 +554,6 @@ impl Registry {
         .execute(&mut *tx)
         .await
         .map_err(internal_api_error)?;
-        sqlx::query("UPDATE skill_private_workspaces SET generation=$1 WHERE resource_id=$2")
-            .bind(next)
-            .bind(resource_id.as_uuid())
-            .execute(&mut *tx)
-            .await
-            .map_err(internal_api_error)?;
         sqlx::query("DELETE FROM resource_redirects WHERE target_resource_id=$1")
             .bind(resource_id.as_uuid())
             .execute(&mut *tx)
@@ -621,8 +637,10 @@ impl Registry {
             return Ok(outcome);
         }
         let mut tx = self.pool.begin().await.map_err(internal_api_error)?;
+        let resource_authority =
+            authorize_resource_publish(&mut tx, &authority, resource_id.as_uuid()).await?;
         let locked = lock_active_owned_skill(&mut tx, resource_id.as_uuid()).await?;
-        ensure_owner(&locked, authority.namespace_id)?;
+        ensure_owner(&locked, resource_authority.namespace_id)?;
         ensure_generation(&locked, request.expected_generation)?;
         if locked.visibility != "public" || locked.latest_release_version.is_none() {
             return Err(ApiError::new(
@@ -659,12 +677,6 @@ impl Registry {
         .execute(&mut *tx)
         .await
         .map_err(internal_api_error)?;
-        sqlx::query("UPDATE skill_private_workspaces SET generation=$1 WHERE resource_id=$2")
-            .bind(next)
-            .bind(resource_id.as_uuid())
-            .execute(&mut *tx)
-            .await
-            .map_err(internal_api_error)?;
         let generation = generation_u64(next)?;
         let outcome = DeprecateSkillResponse {
             resource_id: resource_id.to_string(),
@@ -825,36 +837,18 @@ pub(crate) fn validate_resource_lifecycle_request(
     Ok((operation_id, resource_id, request_hash))
 }
 
-fn validate_lifecycle_hash(
-    supplied: &str,
-    expected: Result<RequestHash, denju_wire::RequestHashError>,
-) -> Result<RequestHash, ApiError> {
-    let supplied = RequestHash::from_str(supplied)
-        .map_err(|error| ApiError::new(ApiErrorCode::InvalidRequestHash, error.to_string()))?;
-    let expected = expected
-        .map_err(|error| ApiError::new(ApiErrorCode::InvalidRequestHash, error.to_string()))?;
-    if supplied == expected {
-        Ok(supplied)
-    } else {
-        Err(ApiError::new(
-            ApiErrorCode::InvalidRequestHash,
-            "request_hash does not match the canonical lifecycle payload",
-        ))
-    }
+pub(crate) struct RevisionPersistence<'a> {
+    pub(crate) revision_id: RevisionId,
+    pub(crate) root_tree: denju_core::TreeId,
+    pub(crate) author: Uuid,
+    pub(crate) operation_id: OperationId,
+    pub(crate) parent: Option<RevisionId>,
+    pub(crate) blobs: &'a BTreeMap<BlobId, u64>,
+    pub(crate) resource_id: Uuid,
+    pub(crate) namespace_id: Uuid,
 }
 
-struct RevisionPersistence<'a> {
-    revision_id: RevisionId,
-    root_tree: denju_core::TreeId,
-    author: Uuid,
-    operation_id: OperationId,
-    parent: Option<RevisionId>,
-    blobs: &'a BTreeMap<BlobId, u64>,
-    resource_id: Uuid,
-    namespace_id: Uuid,
-}
-
-async fn persist_revision(
+pub(crate) async fn persist_revision(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     revision: RevisionPersistence<'_>,
 ) -> Result<(), ApiError> {
@@ -912,7 +906,7 @@ async fn persist_revision(
     Ok(())
 }
 
-async fn persist_revision_snapshot(
+pub(crate) async fn persist_revision_snapshot(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     resource_id: Uuid,
     revision_id: RevisionId,

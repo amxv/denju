@@ -20,4 +20,10 @@ If the registry is offline, a staged object is corrupt, quota is exceeded, or lo
 
 Imported skills start private. Their stable locator is the authenticated namespace plus the validated skill name, for example `@alice/my-skill`. Another logged-in device reconciles the same private workspace through verified snapshot downloads.
 
-Team-targeted `--to @team` import is not available yet; team ownership and publishing permission arrive with the team implementation rather than being guessed during personal import.
+To create the skill directly in a team namespace, target that team explicitly:
+
+```bash
+denju import ~/.agents/skills/my-skill --to @acme
+```
+
+The caller must currently be allowed to publish for that team. The imported team skill starts team-private and creates only the importing publisher's private workspace ref; another publisher receives a private ref from the latest immutable team release when one exists. Import never turns the importing user's unpublished draft into shared live state.

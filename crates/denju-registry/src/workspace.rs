@@ -26,6 +26,7 @@ use crate::{
         persist_canonical_blobs, persist_trees, verify_blob,
     },
     internal_api_error,
+    team_access::{authorize_resource_publish, ensure_private_workspace_for_user},
     workspace_conflict::{
         record_workspace_conflict, resolve_workspace_conflict, validate_merge_conflict,
     },
@@ -147,17 +148,28 @@ impl Registry {
             });
         }
 
+        let resource_authority =
+            authorize_resource_publish(&mut tx, &authority, resource_id.as_uuid()).await?;
+        if resource_authority.is_team {
+            let _ = ensure_private_workspace_for_user(
+                &mut tx,
+                resource_id.as_uuid(),
+                authority.user_id,
+            )
+            .await?;
+        }
         let current = sqlx::query_as::<_, (Uuid, i64, Vec<u8>)>(
-            "SELECT r.owner_namespace_id,r.generation,w.revision_id \
-             FROM resources r JOIN skill_private_workspaces w ON w.resource_id=r.id \
-             WHERE r.id=$1 AND r.kind='skill' AND r.deleted_at IS NULL FOR UPDATE",
+            "SELECT r.owner_namespace_id,w.generation,w.revision_id \
+             FROM resources r JOIN skill_private_workspaces w ON w.resource_id=r.id AND w.workspace_user_id=$2 \
+             WHERE r.id=$1 AND r.kind='skill' AND r.deleted_at IS NULL FOR UPDATE OF r,w",
         )
         .bind(resource_id.as_uuid())
+        .bind(authority.user_id)
         .fetch_optional(&mut *tx)
         .await
         .map_err(internal_api_error)?
         .ok_or_else(|| ApiError::new(ApiErrorCode::NotFound, "private skill not found"))?;
-        if current.0 != authority.namespace_id {
+        if current.0 != resource_authority.namespace_id {
             return Err(ApiError::new(
                 ApiErrorCode::Unauthorized,
                 "private skill is unavailable",
@@ -175,9 +187,10 @@ impl Registry {
         let current_head_matches = current.2.as_slice() == expected_head.as_bytes();
         let active_conflict = sqlx::query_scalar::<_, Uuid>(
             "SELECT conflict_id FROM skill_workspace_conflicts \
-             WHERE resource_id=$1 AND resolved_at IS NULL ORDER BY created_at,conflict_id LIMIT 1",
+             WHERE resource_id=$1 AND workspace_user_id=$2 AND resolved_at IS NULL ORDER BY created_at,conflict_id LIMIT 1",
         )
         .bind(resource_id.as_uuid())
+        .bind(authority.user_id)
         .fetch_optional(&mut *tx)
         .await
         .map_err(internal_api_error)?;
@@ -200,7 +213,14 @@ impl Registry {
                     "workspace conflict target advanced; reconcile before retrying the merge",
                 ));
             }
-            validate_merge_conflict(&mut tx, conflict_id, resource_id.as_uuid(), &parents).await?;
+            validate_merge_conflict(
+                &mut tx,
+                conflict_id,
+                resource_id.as_uuid(),
+                authority.user_id,
+                &parents,
+            )
+            .await?;
         } else if current_head_matches {
             if current.1 != expected_generation {
                 return Err(ApiError::new(
@@ -268,7 +288,7 @@ impl Registry {
         .bind(authority.user_id)
         .bind(operation_id.as_uuid())
         .bind(supplied_hash.as_bytes().as_slice())
-        .bind(authority.namespace_id)
+        .bind(resource_authority.namespace_id)
         .bind(resource_id.as_uuid())
         .bind(expected_generation)
         .bind(expected_head.as_bytes().as_slice())
@@ -305,7 +325,7 @@ impl Registry {
             let proven = sqlx::query_scalar::<_, bool>(
                 "SELECT EXISTS(SELECT 1 FROM namespace_blob_reachability WHERE namespace_id=$1 AND blob_id=$2)",
             )
-            .bind(authority.namespace_id)
+            .bind(resource_authority.namespace_id)
             .bind(blob.as_bytes().as_slice())
             .fetch_one(&mut *tx)
             .await
@@ -368,12 +388,17 @@ impl Registry {
         if revision_operation_state(&operation.state)? != PrivateRevisionOperationState::Prepared {
             return decode_revision_outcome(operation.outcome_json);
         }
-        if operation.namespace_id != authority.namespace_id {
+        let mut authority_tx = self.pool.begin().await.map_err(internal_api_error)?;
+        let resource_authority =
+            authorize_resource_publish(&mut authority_tx, &authority, operation.resource_id)
+                .await?;
+        if operation.namespace_id != resource_authority.namespace_id {
             return Err(ApiError::new(
                 ApiErrorCode::Unauthorized,
                 "private revision namespace is unavailable",
             ));
         }
+        authority_tx.commit().await.map_err(internal_api_error)?;
         let manifest_wire: PublicSkillManifest =
             serde_json::from_value(operation.manifest_json.clone())
                 .map_err(|error| ApiError::new(ApiErrorCode::Internal, error.to_string()))?;
@@ -420,7 +445,7 @@ impl Registry {
                      JOIN canonical_blobs cb ON cb.blob_id=nbr.blob_id \
                      WHERE nbr.namespace_id=$1 AND nbr.blob_id=$2",
                 )
-                .bind(authority.namespace_id)
+                .bind(operation.namespace_id)
                 .bind(blob.as_bytes().as_slice())
                 .fetch_optional(&self.pool)
                 .await
@@ -454,7 +479,7 @@ impl Registry {
         .await
         .map_err(internal_api_error)?
         .ok_or_else(|| ApiError::new(ApiErrorCode::NotFound, "private skill not found"))?;
-        if resource.1 != authority.namespace_id {
+        if resource.1 != operation.namespace_id {
             return Err(ApiError::new(
                 ApiErrorCode::Unauthorized,
                 "private skill is unavailable",
@@ -519,17 +544,26 @@ impl Registry {
         .await?;
 
         let mut tx = self.pool.begin().await.map_err(internal_api_error)?;
-        let current = sqlx::query_as::<_, (Uuid, i64, Vec<u8>)>(
-            "SELECT r.owner_namespace_id,r.generation,w.revision_id \
-             FROM resources r JOIN skill_private_workspaces w ON w.resource_id=r.id \
-             WHERE r.id=$1 AND r.kind='skill' AND r.deleted_at IS NULL FOR UPDATE",
+        let resource_authority =
+            authorize_resource_publish(&mut tx, &authority, operation.resource_id).await?;
+        if resource_authority.namespace_id != operation.namespace_id {
+            return Err(ApiError::new(
+                ApiErrorCode::Unauthorized,
+                "private revision namespace is unavailable",
+            ));
+        }
+        let current = sqlx::query_as::<_, (Uuid, i64, i64, Vec<u8>)>(
+            "SELECT r.owner_namespace_id,r.generation,w.generation,w.revision_id \
+             FROM resources r JOIN skill_private_workspaces w ON w.resource_id=r.id AND w.workspace_user_id=$2 \
+             WHERE r.id=$1 AND r.kind='skill' AND r.deleted_at IS NULL FOR UPDATE OF r,w",
         )
         .bind(operation.resource_id)
+        .bind(authority.user_id)
         .fetch_optional(&mut *tx)
         .await
         .map_err(internal_api_error)?
         .ok_or_else(|| ApiError::new(ApiErrorCode::NotFound, "private skill not found"))?;
-        if current.0 != authority.namespace_id {
+        if current.0 != operation.namespace_id {
             return Err(ApiError::new(
                 ApiErrorCode::Unauthorized,
                 "private skill is unavailable",
@@ -551,13 +585,14 @@ impl Registry {
             .revision_author_principal_id
             .unwrap_or(authority.author_principal_id);
         let fork_sync = revision_operation_fork_sync(&locked)?;
-        let current_head = decode_32(&current.2, "stored private workspace head")?;
+        let current_head = decode_32(&current.3, "stored private workspace head")?;
         let head_matches = current_head == expected_head;
         let active_conflict = sqlx::query_scalar::<_, Uuid>(
             "SELECT conflict_id FROM skill_workspace_conflicts \
-             WHERE resource_id=$1 AND resolved_at IS NULL ORDER BY created_at,conflict_id LIMIT 1",
+             WHERE resource_id=$1 AND workspace_user_id=$2 AND resolved_at IS NULL ORDER BY created_at,conflict_id LIMIT 1",
         )
         .bind(operation.resource_id)
+        .bind(authority.user_id)
         .fetch_optional(&mut *tx)
         .await
         .map_err(internal_api_error)?;
@@ -569,10 +604,10 @@ impl Registry {
                 "private workspace has an unresolved content conflict; reconcile it before saving another revision",
             ));
         }
-        if head_matches && current.1 != operation.expected_generation {
+        if head_matches && current.2 != operation.expected_generation {
             return Err(ApiError::new(
                 ApiErrorCode::GenerationConflict,
-                format!("private workspace advanced to generation {}", current.1),
+                format!("private workspace advanced to generation {}", current.2),
             ));
         }
         if !head_matches && fork_sync.is_some() {
@@ -613,20 +648,21 @@ impl Registry {
                     &mut tx,
                     operation_id.as_uuid(),
                     operation.resource_id,
+                    authority.user_id,
                     &parent_ids,
                 )
                 .await?;
             }
         }
 
-        enforce_namespace_quota(self, &mut tx, authority.namespace_id, &expected_blobs).await?;
+        enforce_namespace_quota(self, &mut tx, operation.namespace_id, &expected_blobs).await?;
         persist_canonical_blobs(&mut tx, &expected_blobs).await?;
         persist_trees(&mut tx, &trees).await?;
         persist_private_revision_storage(
             &mut tx,
             PrivateRevisionStorage {
                 resource_id: operation.resource_id,
-                namespace_id: authority.namespace_id,
+                namespace_id: operation.namespace_id,
                 author_principal_id: revision_author,
                 operation_id: operation_id.as_uuid(),
                 revision_id,
@@ -642,22 +678,32 @@ impl Registry {
         .await?;
 
         let (state, outcome, wake_generation) = if head_matches {
-            let next_generation = current.1.checked_add(1).ok_or_else(|| {
+            let next_resource_generation = if resource_authority.is_team {
+                current.1
+            } else {
+                current.1.checked_add(1).ok_or_else(|| {
+                    ApiError::new(ApiErrorCode::Internal, "resource generation overflow")
+                })?
+            };
+            let next_workspace_generation = current.2.checked_add(1).ok_or_else(|| {
                 ApiError::new(ApiErrorCode::Internal, "workspace generation overflow")
             })?;
-            sqlx::query("UPDATE resources SET generation=$1,description=$2 WHERE id=$3")
-                .bind(next_generation)
-                .bind(&description)
-                .bind(operation.resource_id)
-                .execute(&mut *tx)
-                .await
-                .map_err(internal_api_error)?;
+            if !resource_authority.is_team {
+                sqlx::query("UPDATE resources SET generation=$1,description=$2 WHERE id=$3")
+                    .bind(next_resource_generation)
+                    .bind(&description)
+                    .bind(operation.resource_id)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(internal_api_error)?;
+            }
             sqlx::query(
-                "UPDATE skill_private_workspaces SET revision_id=$1,generation=$2,manifest_json=$3,snapshot_key=$4,snapshot_sha256=$5,snapshot_size=$6,updated_at=now() \
-                 WHERE resource_id=$7",
+                "UPDATE skill_private_workspaces SET revision_id=$1,generation=$2,description=$3,manifest_json=$4,snapshot_key=$5,snapshot_sha256=$6,snapshot_size=$7,updated_at=now() \
+                 WHERE resource_id=$8 AND workspace_user_id=$9",
             )
             .bind(revision_id.as_slice())
-            .bind(next_generation)
+            .bind(next_workspace_generation)
+            .bind(&description)
             .bind(serde_json::to_value(&manifest_wire).map_err(|error| {
                 ApiError::new(ApiErrorCode::Internal, error.to_string())
             })?)
@@ -667,6 +713,7 @@ impl Registry {
                 ApiError::new(ApiErrorCode::Internal, "snapshot size exceeds database range")
             })?)
             .bind(operation.resource_id)
+            .bind(authority.user_id)
             .execute(&mut *tx)
             .await
             .map_err(internal_api_error)?;
@@ -675,6 +722,7 @@ impl Registry {
                     &mut tx,
                     operation_id.as_uuid(),
                     operation.resource_id,
+                    authority.user_id,
                     &revision_id,
                 )
                 .await?;
@@ -699,8 +747,11 @@ impl Registry {
             .execute(&mut *tx)
             .await
             .map_err(internal_api_error)?;
-            let generation = u64::try_from(next_generation).map_err(|_| {
+            let generation = u64::try_from(next_workspace_generation).map_err(|_| {
                 ApiError::new(ApiErrorCode::Internal, "workspace generation is invalid")
+            })?;
+            let resource_generation = u64::try_from(next_resource_generation).map_err(|_| {
+                ApiError::new(ApiErrorCode::Internal, "resource generation is invalid")
             })?;
             (
                 "advanced",
@@ -713,20 +764,21 @@ impl Registry {
                         manifest: manifest_wire.clone(),
                     },
                 },
-                generation,
+                resource_generation,
             )
         } else {
             let conflict = record_workspace_conflict(
                 &mut tx,
                 operation.resource_id,
+                authority.user_id,
                 &expected_head,
                 &revision_id,
                 &current_head,
-                current.1,
+                current.2,
             )
             .await?;
-            let generation = u64::try_from(current.1).map_err(|_| {
-                ApiError::new(ApiErrorCode::Internal, "workspace generation is invalid")
+            let resource_generation = u64::try_from(current.1).map_err(|_| {
+                ApiError::new(ApiErrorCode::Internal, "resource generation is invalid")
             })?;
             (
                 "diverged",
@@ -735,7 +787,7 @@ impl Registry {
                     revision_id: hex::encode(revision_id),
                     conflict,
                 },
-                generation,
+                resource_generation,
             )
         };
         sqlx::query(
@@ -752,8 +804,10 @@ impl Registry {
         .execute(&mut *tx)
         .await
         .map_err(internal_api_error)?;
-        crate::release::enqueue_resource_wake(&mut tx, operation.resource_id, wake_generation)
-            .await?;
+        if !resource_authority.is_team {
+            crate::release::enqueue_resource_wake(&mut tx, operation.resource_id, wake_generation)
+                .await?;
+        }
         tx.commit().await.map_err(internal_api_error)?;
 
         for (_, key) in staging.values() {

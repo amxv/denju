@@ -63,6 +63,7 @@ struct PromotionRename {
 }
 
 struct ForkImportSpec<'a> {
+    owner: &'a str,
     name: &'a str,
     operation: OperationId,
     author: &'a str,
@@ -164,6 +165,7 @@ pub(crate) async fn create(locator: &str) -> Result<ForkOutcome, RuntimeError> {
     let response = import_fork(
         &context,
         ForkImportSpec {
+            owner: &identity.username,
             name: &target.name,
             operation,
             author,
@@ -262,6 +264,7 @@ async fn promote_one(
     let imported = import_fork(
         context,
         ForkImportSpec {
+            owner: username,
             name: &fork.desired_name,
             operation,
             author: &first_author,
@@ -483,6 +486,7 @@ async fn import_fork(
         private_skill_import_request_hash(&denju_wire::PrivateSkillImportRequestHashInput {
             operation_id: &operation_id,
             expected_generation: 0,
+            owner: spec.owner,
             name: spec.name,
             manifest: spec.manifest,
             snapshot_sha256: &snapshot_sha,
@@ -496,6 +500,7 @@ async fn import_fork(
         .prepare_private_skill_import(&PrivateSkillImportRequest {
             operation_id: operation_id.clone(),
             expected_generation: 0,
+            owner: spec.owner.to_owned(),
             name: spec.name.to_owned(),
             manifest: spec.manifest.clone(),
             snapshot_sha256: snapshot_sha,
@@ -773,6 +778,7 @@ async fn install_server_fork(
         name: remote.name.clone(),
         description: remote.description.clone(),
         generation,
+        workspace_generation: generation,
         revision_id: revision_id.to_owned(),
         manifest: manifest.clone(),
         snapshot: denju_wire::SnapshotDownload {
@@ -813,6 +819,7 @@ pub(crate) async fn install_owned_revision(
                 owner: remote.owner.clone(),
                 skill_name: remote.name.clone(),
                 resource_generation: generation_i64,
+                workspace_generation: generation_i64,
                 desired_revision_id: revision_id.to_owned(),
                 harness_name: None,
                 materialized_revision_id: None,

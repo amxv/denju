@@ -226,7 +226,7 @@ impl LocalDatabase {
                 ],
             )?;
             tx.execute(
-                "UPDATE owned_skills SET resource_generation=?1,desired_revision_id=?2,materialized_revision_id=?2,updated_at_unix_ms=?3 WHERE resource_id=?4",
+                "UPDATE owned_skills SET resource_generation=?1,workspace_generation=?1,desired_revision_id=?2,materialized_revision_id=?2,updated_at_unix_ms=?3 WHERE resource_id=?4",
                 params![
                     next_generation,
                     revision.revision_id,

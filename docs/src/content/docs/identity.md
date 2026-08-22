@@ -47,6 +47,6 @@ Revocation is authoritative on the next request. Token listing exposes IDs, scop
 
 ## Delete an account
 
-`denju identity delete` requires explicit confirmation and hidden password input. It tombstones personally owned skills using the same resource-delete semantics, revokes device/install/automation credentials, clears managed local desired state, preserves historical authorship under a deleted-user principal, and releases the username. Team ownership rules are added when teams exist; until then this is the complete personal-resource deletion boundary.
+`denju identity delete` requires explicit confirmation and hidden password input. It tombstones personally owned skills using the same resource-delete semantics, revokes device/install/automation credentials, clears managed local desired state, preserves historical authorship under a deleted-user principal, and releases the username. Non-owner team memberships and that user's private team workspaces are removed as part of deletion. An account that owns a team cannot be deleted until team ownership succession has been completed; Denju refuses to create an ownerless team.
 
 A deleted username can be claimed again, but the new account receives new internal user, namespace, and author-principal IDs and inherits no subscriptions or attribution.

@@ -10,6 +10,8 @@ pub struct PublishSkillRequest {
     pub resource_id: String,
     pub expected_generation: u64,
     #[serde(default)]
+    pub public: bool,
+    #[serde(default)]
     pub message: Option<String>,
     #[serde(default)]
     pub tags: Vec<String>,

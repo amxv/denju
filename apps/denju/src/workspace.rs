@@ -420,7 +420,7 @@ async fn capture_one(
     if state.is_none() {
         db.ensure_workspace_baseline(
             record.resource_id.clone(),
-            record.resource_generation,
+            record.workspace_generation,
             record.desired_revision_id.clone(),
             root_tree.clone(),
             working_generation_path.clone(),

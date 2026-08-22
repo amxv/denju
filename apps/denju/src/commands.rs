@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use clap::{ArgAction, Parser, Subcommand};
+use clap::{ArgAction, Parser, Subcommand, ValueEnum};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -53,9 +53,13 @@ pub(crate) enum Command {
     },
     Import {
         path: PathBuf,
+        #[arg(long, value_name = "@TEAM")]
+        to: Option<String>,
     },
     Publish {
         locator: String,
+        #[arg(long, action = ArgAction::SetTrue)]
+        public: bool,
         #[arg(long)]
         message: Option<String>,
         #[arg(long = "tag")]
@@ -136,6 +140,14 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: PackCommand,
     },
+    Team {
+        #[command(subcommand)]
+        command: Option<TeamCommand>,
+    },
+    Transfer {
+        locator: String,
+        team: String,
+    },
     Status,
     Sync,
     Doctor,
@@ -203,6 +215,58 @@ pub(crate) enum PackCommand {
         #[arg(required = true)]
         skills: Vec<String>,
     },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum TeamCommand {
+    Create {
+        team: String,
+    },
+    Invite {
+        team: String,
+        #[arg(long, value_enum, default_value_t = TeamRoleArg::Member)]
+        role: TeamRoleArg,
+    },
+    InviteRevoke {
+        team: String,
+        invite_id: String,
+    },
+    Join {
+        code: String,
+    },
+    Show {
+        team: String,
+    },
+    Role {
+        team: String,
+        member: String,
+        #[arg(value_enum)]
+        role: TeamRoleArg,
+    },
+    Remove {
+        team: String,
+        member: String,
+    },
+    Settings {
+        team: String,
+        #[arg(long, action = ArgAction::Set)]
+        members_can_publish: bool,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum TeamRoleArg {
+    Member,
+    Maintainer,
+}
+
+impl TeamRoleArg {
+    pub(crate) const fn to_wire(self) -> denju_wire::TeamRole {
+        match self {
+            Self::Member => denju_wire::TeamRole::Member,
+            Self::Maintainer => denju_wire::TeamRole::Maintainer,
+        }
+    }
 }
 
 #[derive(Debug, Subcommand)]

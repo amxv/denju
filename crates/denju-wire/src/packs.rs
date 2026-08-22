@@ -49,6 +49,8 @@ pub struct PackPublishRequest {
     pub operation_id: String,
     pub resource_id: String,
     pub expected_generation: u64,
+    #[serde(default)]
+    pub public: bool,
     pub request_hash: String,
 }
 

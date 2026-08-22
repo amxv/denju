@@ -741,12 +741,7 @@ impl LocalDatabase {
         new_generation: i64,
         now_unix_ms: i64,
     ) -> Result<(), LocalDbError> {
-        let delta = new_generation
-            .checked_sub(expected_generation)
-            .ok_or_else(|| {
-                LocalDbError::Corrupt("metadata generation moved backwards".to_owned())
-            })?;
-        if delta <= 0 {
+        if new_generation <= expected_generation {
             return Err(LocalDbError::Corrupt(
                 "metadata generation did not advance".to_owned(),
             ));
@@ -756,27 +751,16 @@ impl LocalDatabase {
             let owned = tx.execute(
                 "UPDATE owned_skills SET resource_generation=?1,updated_at_unix_ms=?2 \
                  WHERE resource_id=?3 AND resource_generation=?4",
-                params![new_generation, now_unix_ms, resource_id, expected_generation],
+                params![
+                    new_generation,
+                    now_unix_ms,
+                    resource_id,
+                    expected_generation
+                ],
             )?;
             if owned != 1 {
                 return Err(rusqlite::Error::QueryReturnedNoRows.into());
             }
-            let workspace = tx.execute(
-                "UPDATE workspace_state SET base_generation=?1, \
-                 status=CASE WHEN status='quota' THEN 'queued' ELSE status END, \
-                 error_message=CASE WHEN status='quota' THEN NULL ELSE error_message END, \
-                 updated_at_unix_ms=?2 WHERE resource_id=?3 AND base_generation=?4 \
-                 AND status IN ('clean','queued','quota')",
-                params![new_generation, now_unix_ms, resource_id, expected_generation],
-            )?;
-            if workspace != 1 {
-                return Err(rusqlite::Error::QueryReturnedNoRows.into());
-            }
-            tx.execute(
-                "UPDATE local_revisions SET expected_generation=expected_generation+?1,updated_at_unix_ms=?2 \
-                 WHERE resource_id=?3 AND state='queued'",
-                params![delta, now_unix_ms, resource_id],
-            )?;
             tx.commit()?;
             Ok(())
         })
@@ -804,6 +788,10 @@ impl LocalDatabase {
             tx.execute(
                 "UPDATE workspace_state SET base_generation=?1,base_revision_id=?2,updated_at_unix_ms=?3 WHERE resource_id=?4",
                 params![generation, revision_id, now_unix_ms, resource_id],
+            )?;
+            tx.execute(
+                "UPDATE owned_skills SET workspace_generation=?1,updated_at_unix_ms=?2 WHERE resource_id=?3",
+                params![generation, now_unix_ms, resource_id],
             )?;
             let queued: i64 = tx.query_row(
                 "SELECT count(*) FROM local_revisions WHERE resource_id=?1 AND state='queued'",

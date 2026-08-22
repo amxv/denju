@@ -19,12 +19,15 @@ use denju_wire::{
     PrivateSkillImportResponse, ProposalAcceptRequest, ProposalCloseRequest, ProposalCreateRequest,
     PublicSkillDetail, PublicSkillSearchResponse, PublishSkillRequest, PublishSkillResponse,
     RecoveryResetRequest, RegistryCapabilities, RenameSkillRequest, RenameSkillResponse,
-    ResourceLifecycleRequest, RestoreSkillRequest, RestoreSkillResponse, ShareMutationKind,
-    ShareSkillRequest, ShareSkillResponse, SkillHistoryResponse, SkillProposal,
-    SkillProposalDetail, SkillProposalList, SkillRevisionDetail, SnapshotDownload,
-    StagedBlobUpload, SubscriptionCatalog, SubscriptionMutationRequest,
-    SubscriptionMutationResponse, SubscriptionTarget, SyncHint, SyncReconcileRequest,
-    SyncReconcileResponse, UnpublishSkillResponse, UsageResponse,
+    ResourceLifecycleRequest, ResourceTransferRequest, ResourceTransferResponse,
+    RestoreSkillRequest, RestoreSkillResponse, ShareMutationKind, ShareSkillRequest,
+    ShareSkillResponse, SkillHistoryResponse, SkillProposal, SkillProposalDetail,
+    SkillProposalList, SkillRevisionDetail, SnapshotDownload, StagedBlobUpload,
+    SubscriptionCatalog, SubscriptionMutationRequest, SubscriptionMutationResponse,
+    SubscriptionTarget, SyncHint, SyncReconcileRequest, SyncReconcileResponse, TeamCreateRequest,
+    TeamDetail, TeamInviteRequest, TeamInviteResponse, TeamInviteRevokeRequest, TeamJoinRequest,
+    TeamList, TeamMemberRemoveRequest, TeamMemberRoleRequest, TeamMutationResponse,
+    TeamSettingsRequest, UnpublishSkillResponse, UsageResponse,
 };
 use futures_util::StreamExt;
 use reqwest::{Client, RequestBuilder, StatusCode};
@@ -156,6 +159,84 @@ impl RegistryClient {
         request: &AccountDeleteRequest,
     ) -> Result<AccountDeleteResponse, ClientError> {
         self.authenticated_post_json("v1/account/delete", request)
+            .await
+    }
+
+    pub async fn create_team(
+        &self,
+        request: &TeamCreateRequest,
+    ) -> Result<TeamMutationResponse, ClientError> {
+        self.authenticated_post_json("v1/teams", request).await
+    }
+
+    pub async fn teams(&self) -> Result<TeamList, ClientError> {
+        self.authenticated_get_json("v1/teams").await
+    }
+
+    pub async fn team_detail(&self, team: &str) -> Result<TeamDetail, ClientError> {
+        let response = self
+            .with_auth(
+                self.http
+                    .get(self.endpoint("v1/teams/show")?)
+                    .query(&[("team", team)]),
+            )?
+            .send()
+            .await?;
+        decode_response(response).await
+    }
+
+    pub async fn create_team_invite(
+        &self,
+        request: &TeamInviteRequest,
+    ) -> Result<TeamInviteResponse, ClientError> {
+        self.authenticated_post_json("v1/teams/invites", request)
+            .await
+    }
+
+    pub async fn revoke_team_invite(
+        &self,
+        request: &TeamInviteRevokeRequest,
+    ) -> Result<TeamMutationResponse, ClientError> {
+        self.authenticated_post_json("v1/teams/invites/revoke", request)
+            .await
+    }
+
+    pub async fn join_team(
+        &self,
+        request: &TeamJoinRequest,
+    ) -> Result<TeamMutationResponse, ClientError> {
+        self.authenticated_post_json("v1/teams/join", request).await
+    }
+
+    pub async fn change_team_member_role(
+        &self,
+        request: &TeamMemberRoleRequest,
+    ) -> Result<TeamMutationResponse, ClientError> {
+        self.authenticated_post_json("v1/teams/members/role", request)
+            .await
+    }
+
+    pub async fn remove_team_member(
+        &self,
+        request: &TeamMemberRemoveRequest,
+    ) -> Result<TeamMutationResponse, ClientError> {
+        self.authenticated_post_json("v1/teams/members/remove", request)
+            .await
+    }
+
+    pub async fn update_team_settings(
+        &self,
+        request: &TeamSettingsRequest,
+    ) -> Result<TeamMutationResponse, ClientError> {
+        self.authenticated_post_json("v1/teams/settings", request)
+            .await
+    }
+
+    pub async fn transfer_resource(
+        &self,
+        request: &ResourceTransferRequest,
+    ) -> Result<ResourceTransferResponse, ClientError> {
+        self.authenticated_post_json("v1/resources/transfer", request)
             .await
     }
 

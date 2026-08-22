@@ -24,12 +24,21 @@ pub(crate) struct PreparedRenameContent {
     pub(crate) staging_keys: Vec<String>,
 }
 
+pub(crate) struct PreparedRenameExpectation<'a> {
+    pub(crate) operation_id: Uuid,
+    pub(crate) resource_id: Uuid,
+    pub(crate) namespace_id: Uuid,
+    pub(crate) generation: i64,
+    pub(crate) parent_revision_id: &'a [u8],
+    pub(crate) current_name: &'a str,
+}
+
 #[derive(Debug, FromRow)]
 struct PreparedRevisionRow {
     namespace_id: Uuid,
     resource_id: Uuid,
     expected_generation: i64,
-    parent_revision_id: Vec<u8>,
+    expected_head_revision_id: Vec<u8>,
     manifest_json: Value,
     state: String,
 }
@@ -38,18 +47,14 @@ impl Registry {
     pub(crate) async fn verified_prepared_rename_content(
         &self,
         authority: &UserAuthority,
-        operation_id: Uuid,
-        resource_id: Uuid,
-        expected_generation: i64,
-        expected_parent_revision_id: &[u8],
-        current_name: &str,
+        expectation: PreparedRenameExpectation<'_>,
     ) -> Result<PreparedRenameContent, ApiError> {
         let operation = sqlx::query_as::<_, PreparedRevisionRow>(
-            "SELECT namespace_id,resource_id,expected_generation,parent_revision_id,manifest_json,state \
+            "SELECT namespace_id,resource_id,expected_generation,expected_head_revision_id,manifest_json,state \
              FROM private_revision_operations WHERE user_id=$1 AND operation_id=$2",
         )
         .bind(authority.user_id)
-        .bind(operation_id)
+        .bind(expectation.operation_id)
         .fetch_optional(&self.pool)
         .await
         .map_err(internal_api_error)?
@@ -60,10 +65,10 @@ impl Registry {
             )
         })?;
         if operation.state != "prepared"
-            || operation.namespace_id != authority.namespace_id
-            || operation.resource_id != resource_id
-            || operation.expected_generation != expected_generation
-            || operation.parent_revision_id.as_slice() != expected_parent_revision_id
+            || operation.namespace_id != expectation.namespace_id
+            || operation.resource_id != expectation.resource_id
+            || operation.expected_generation != expectation.generation
+            || operation.expected_head_revision_id.as_slice() != expectation.parent_revision_id
         {
             return Err(ApiError::new(
                 ApiErrorCode::GenerationConflict,
@@ -84,7 +89,7 @@ impl Registry {
              WHERE user_id=$1 AND operation_id=$2 ORDER BY blob_id",
         )
         .bind(authority.user_id)
-        .bind(operation_id)
+        .bind(expectation.operation_id)
         .fetch_all(&self.pool)
         .await
         .map_err(internal_api_error)?;
@@ -122,7 +127,7 @@ impl Registry {
                      JOIN canonical_blobs cb ON cb.blob_id=nbr.blob_id \
                      WHERE nbr.namespace_id=$1 AND nbr.blob_id=$2",
                 )
-                .bind(authority.namespace_id)
+                .bind(expectation.namespace_id)
                 .bind(blob.as_bytes().as_slice())
                 .fetch_optional(&self.pool)
                 .await
@@ -148,7 +153,7 @@ impl Registry {
             bytes_by_blob.insert(*blob, bytes);
         }
         let entries = owned_entries_from_manifest(&manifest, &bytes_by_blob)?;
-        let snapshot = build_deterministic_skill_snapshot(current_name, &entries)
+        let snapshot = build_deterministic_skill_snapshot(expectation.current_name, &entries)
             .map_err(|error| ApiError::new(ApiErrorCode::InvalidRequest, error.to_string()))?;
         if snapshot.manifest() != &manifest {
             return Err(ApiError::new(

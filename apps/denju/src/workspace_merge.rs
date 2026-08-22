@@ -300,6 +300,12 @@ async fn commit_merge_entries(
             "merged resource generation exceeds local storage",
         )
     })?;
+    let workspace_generation = i64::try_from(refreshed.workspace_generation).map_err(|_| {
+        RuntimeError::new(
+            CliErrorCode::LocalState,
+            "merged workspace generation exceeds local storage",
+        )
+    })?;
     context
         .db
         .upsert_owned_skill_desired(
@@ -309,6 +315,7 @@ async fn commit_merge_entries(
                 owner: refreshed.owner.clone(),
                 skill_name: refreshed.name.clone(),
                 resource_generation: generation,
+                workspace_generation,
                 desired_revision_id: refreshed.revision_id.clone(),
                 harness_name: None,
                 materialized_revision_id: None,
@@ -340,7 +347,7 @@ async fn commit_merge_entries(
         .db
         .advance_clean_workspace_baseline(
             refreshed.resource_id.clone(),
-            generation,
+            workspace_generation,
             refreshed.revision_id.clone(),
             desired.manifest.root_tree().to_string(),
             generation_path.display().to_string(),
@@ -355,7 +362,7 @@ async fn commit_merge_entries(
         .map_err(local_error)?;
     Ok(PrivateRevisionResponse {
         resource_id: refreshed.resource_id,
-        generation: refreshed.generation,
+        generation: refreshed.workspace_generation,
         revision_id: refreshed.revision_id,
         description: refreshed.description,
         manifest: refreshed.manifest,

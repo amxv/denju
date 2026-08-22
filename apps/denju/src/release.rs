@@ -3,12 +3,13 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use denju_client::ClientError;
 use denju_core::OperationId;
-use denju_local::export_skill_snapshot;
+use denju_local::{OwnedSkillRecord, export_skill_snapshot};
 use denju_wire::{
-    CliErrorCode, PrivateRevisionResponse, PublicSkillManifestEntry, PublishSkillRequest,
-    PublishSkillResponse, RestoreSkillRequest, SkillHistoryResponse, SkillRevisionDetail,
-    publish_skill_request_hash, restore_skill_request_hash,
+    ApiErrorCode, CliErrorCode, PrivateRevisionResponse, PublicSkillManifestEntry,
+    PublishSkillRequest, PublishSkillResponse, RestoreSkillRequest, SkillHistoryResponse,
+    SkillRevisionDetail, publish_skill_request_hash, restore_skill_request_hash,
 };
 use serde::Serialize;
 use uuid::Uuid;
@@ -47,6 +48,7 @@ pub struct ExportOutcome {
 
 pub async fn publish(
     locator: &str,
+    public: bool,
     message: Option<String>,
     tags: Vec<String>,
 ) -> Result<PublishSkillResponse, RuntimeError> {
@@ -67,39 +69,76 @@ pub async fn publish(
                 format!("{locator} is not an owned skill on this identity"),
             )
         })?;
-    let generation = u64::try_from(owned.resource_generation).map_err(|_| {
-        RuntimeError::new(
-            CliErrorCode::LocalState,
-            "stored resource generation is invalid",
-        )
-    })?;
-    let operation_id = OperationId::from_uuid(Uuid::now_v7())
-        .map_err(|error| RuntimeError::new(CliErrorCode::Internal, error.to_string()))?;
-    let request_hash = publish_skill_request_hash(
-        &operation_id.to_string(),
-        &owned.resource_id,
-        generation,
-        message.as_deref(),
-        &tags,
-    )
-    .map_err(|error| RuntimeError::new(CliErrorCode::Internal, error.to_string()))?;
-    let request = PublishSkillRequest {
-        operation_id: operation_id.to_string(),
-        resource_id: owned.resource_id,
-        expected_generation: generation,
-        message,
-        tags,
-        request_hash: request_hash.to_string(),
+    let request = build_publish_request(&owned, public, &message, &tags)?;
+    let outcome = match context.client.publish_skill(&request).await {
+        Ok(outcome) => outcome,
+        Err(ClientError::Registry(api)) if api.code == ApiErrorCode::GenerationConflict => {
+            // A team maintainer may have published from another private workspace after this
+            // workspace last synced. Reconcile once: clean three-way merges are committed by
+            // the existing conflict path, while real content conflicts return a precise blocker.
+            sync_once().await?;
+            let refreshed = installed_context(true).await?;
+            let owned = refreshed
+                .db
+                .owned_skills()
+                .await
+                .map_err(local_error)?
+                .into_iter()
+                .find(|skill| skill.locator == locator)
+                .ok_or_else(|| {
+                    RuntimeError::new(
+                        CliErrorCode::NotFound,
+                        format!("{locator} is no longer an owned skill on this identity"),
+                    )
+                })?;
+            let request = build_publish_request(&owned, public, &message, &tags)?;
+            refreshed
+                .client
+                .publish_skill(&request)
+                .await
+                .map_err(client_error)?
+        }
+        Err(error) => return Err(client_error(error)),
     };
-    let outcome = context
-        .client
-        .publish_skill(&request)
-        .await
-        .map_err(client_error)?;
     // Publishing advances the resource generation without changing the private workspace
     // revision. Refresh local authority immediately so the next save uses the new CAS token.
     sync_once().await?;
     Ok(outcome)
+}
+
+fn build_publish_request(
+    owned: &OwnedSkillRecord,
+    public: bool,
+    message: &Option<String>,
+    tags: &[String],
+) -> Result<PublishSkillRequest, RuntimeError> {
+    let generation = u64::try_from(owned.workspace_generation).map_err(|_| {
+        RuntimeError::new(
+            CliErrorCode::LocalState,
+            "stored workspace generation is invalid",
+        )
+    })?;
+    let operation_id = OperationId::from_uuid(Uuid::now_v7())
+        .map_err(|error| RuntimeError::new(CliErrorCode::Internal, error.to_string()))?;
+    let operation = operation_id.to_string();
+    let request_hash = publish_skill_request_hash(
+        &operation,
+        &owned.resource_id,
+        generation,
+        public,
+        message.as_deref(),
+        tags,
+    )
+    .map_err(|error| RuntimeError::new(CliErrorCode::Internal, error.to_string()))?;
+    Ok(PublishSkillRequest {
+        operation_id: operation,
+        resource_id: owned.resource_id.clone(),
+        expected_generation: generation,
+        public,
+        message: message.clone(),
+        tags: tags.to_vec(),
+        request_hash: request_hash.to_string(),
+    })
 }
 
 pub async fn history(locator: &str) -> Result<SkillHistoryResponse, RuntimeError> {
@@ -206,10 +245,10 @@ pub async fn restore(locator: &str, revision: &str) -> Result<RestoreOutcome, Ru
                 format!("{locator} is not an owned skill on this identity"),
             )
         })?;
-    let generation = u64::try_from(owned.resource_generation).map_err(|_| {
+    let generation = u64::try_from(owned.workspace_generation).map_err(|_| {
         RuntimeError::new(
             CliErrorCode::LocalState,
-            "stored resource generation is invalid",
+            "stored workspace generation is invalid",
         )
     })?;
     let operation_id = OperationId::from_uuid(Uuid::now_v7())

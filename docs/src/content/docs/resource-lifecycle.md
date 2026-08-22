@@ -1,7 +1,7 @@
 ---
 title: Resource lifecycle
 description: Rename, publish, unpublish, deprecate, delete, retain, prune, and inspect storage for owned skills.
-order: 9
+order: 10
 category: Start
 summary: Stable resource IDs keep lifecycle mutations precise even when locators change or are reused.
 ---
@@ -17,6 +17,8 @@ denju rename @alice/review code-review
 Rename keeps the same resource ID. Denju creates a real revision whose `SKILL.md` declares the new name and moves the local canonical/projection paths through a recoverable journal. If the skill is public, that rename revision becomes the next immutable release; the unused old locator redirects to the renamed resource.
 
 If you edit the `name` field directly first, Denju preserves those working bytes and reports the matching explicit rename command instead of silently changing registry identity. Running that command stages the complete working tree, verifies its object proofs, and makes those exact edits part of the rename revision/release; it does not publish the name change first and upload the rest afterward.
+
+For a team skill, rename rewrites every publisher's current private ref independently so divergent drafts stay private. If the skill has a release, the renamed release is rebuilt from that immutable release snapshot rather than from any maintainer workspace; renaming can never publish somebody's unrelated pending edits.
 
 ## Unpublish and republish
 
@@ -55,6 +57,19 @@ denju delete @alice/code-review --yes
 ```
 
 Delete tombstones the resource and removes active canonical/projection state. Published history needed for integrity and retained direct subscriptions remains immutable in the registry. Redirects targeting the deleted resource are removed, and its locator becomes available for a new resource with a new resource ID.
+
+Team resource deletion is intentionally blocked until the owner-only team deletion and ownership-succession rules are implemented. Team rename, publish, unpublish, and deprecation already use team publishing authority.
+
+## Transfer into a team
+
+```bash
+denju transfer @alice/code-review @acme
+denju transfer @alice/packs/core @acme
+```
+
+Transfer is an ownership mutation, not a copy. It keeps the same resource ID, name, revisions, releases, visibility, subscriptions, forks, proposals, provenance, stars, and pack references while changing the owning namespace. The old personal locator redirects to the new team locator. A destination name collision or destination storage-quota failure aborts the whole transfer without changing ownership or creating a redirect.
+
+For skills, the transferor's current personal workspace becomes only that user's first private team workspace. Other publishers are seeded from the latest immutable release, never from the transferor's unpublished draft. Existing one-person shares survive as release-only access after the transfer.
 
 ## Storage usage and private-history pruning
 

@@ -53,7 +53,7 @@ async fn local_schema_converges_directly_to_current_version() {
         })
         .await
         .unwrap();
-    assert_eq!(version, 10);
+    assert_eq!(version, 11);
 }
 
 #[tokio::test]
@@ -193,6 +193,7 @@ async fn phase9_schema_keeps_phase8_local_revision_insert_shape() {
             owner: "alice".to_owned(),
             skill_name: "review".to_owned(),
             resource_generation: 1,
+            workspace_generation: 1,
             desired_revision_id: "11".repeat(32),
             harness_name: None,
             materialized_revision_id: None,
@@ -247,6 +248,7 @@ async fn merge_revision_parent_order_round_trips_canonically() {
             owner: "alice".to_owned(),
             skill_name: "review".to_owned(),
             resource_generation: 2,
+            workspace_generation: 2,
             desired_revision_id: active_head.clone(),
             harness_name: None,
             materialized_revision_id: None,
@@ -303,6 +305,7 @@ async fn fork_sync_conflict_round_trips_and_clears() {
             owner: "alice".to_owned(),
             skill_name: "review".to_owned(),
             resource_generation: 2,
+            workspace_generation: 2,
             desired_revision_id: "11".repeat(32),
             harness_name: None,
             materialized_revision_id: None,
@@ -376,6 +379,7 @@ async fn owned_skills_share_projection_state_without_becoming_subscriptions() {
             owner: "alice".to_owned(),
             skill_name: "owned".to_owned(),
             resource_generation: 1,
+            workspace_generation: 1,
             desired_revision_id: "11".repeat(32),
             harness_name: None,
             materialized_revision_id: None,
@@ -434,6 +438,7 @@ async fn local_fork_provenance_is_immutable_and_cascades_with_owned_skill() {
             owner: "local".to_owned(),
             skill_name: "review".to_owned(),
             resource_generation: 1,
+            workspace_generation: 1,
             desired_revision_id: "11".repeat(32),
             harness_name: None,
             materialized_revision_id: Some("11".repeat(32)),
@@ -497,6 +502,7 @@ async fn import_journal_resumes_only_until_complete() {
     let source = dir.path().join("source/review").display().to_string();
     let payload = ImportJournalPayload {
         source_path: source.clone(),
+        owner: "alice".to_owned(),
         skill_name: "review".to_owned(),
         request_hash: "11".repeat(32),
         manifest_json: "{}".to_owned(),

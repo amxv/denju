@@ -44,6 +44,12 @@ The status output includes both immutable head IDs and exact commands to compare
 
 If another device resolves the conflict first, the next sync adopts that resolved revision only when this device's preserved conflict working tree is still untouched. New local resolution work is never overwritten.
 
+## Team workspaces
+
+A team does not have one shared writable branch. Every owner, maintainer, or publishing-enabled member edits a private workspace ref for that team skill. Another team member can read the latest team release, but cannot inspect another publisher's unpublished workspace.
+
+When two publishers start from the same team release, their private heads may diverge safely. Publishing reconciles only the caller's private head with the latest team release. Non-overlapping changes merge deterministically; overlapping changes preserve both revisions and create conflict state scoped to that publisher. Another maintainer's private ref is never silently fast-forwarded or overwritten because somebody else published.
+
 ## Collision-derived projections
 
 When two installed skills need the same Agent Skills invocation name, Denju exposes deterministic collision-safe derived projections. Those views are independently writable so an edit cannot mutate canonical bytes before Denju validates it.

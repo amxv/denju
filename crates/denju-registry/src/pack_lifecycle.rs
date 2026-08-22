@@ -13,6 +13,7 @@ use crate::{
     pack_drain::lock_and_catch_up_pack,
     pack_storage::{PackRow, load_owned_pack_for_update, pack_summary},
     packs::{record_pack_operation, replay_pack_operation},
+    team_access::authorize_resource_publish,
 };
 
 impl Registry {
@@ -59,9 +60,14 @@ impl Registry {
             tx.commit().await.map_err(internal_api_error)?;
             return Ok(outcome);
         }
-        let mut pack =
-            load_owned_pack_for_update(&mut tx, resource_id.as_uuid(), authority.namespace_id)
-                .await?;
+        let resource_authority =
+            authorize_resource_publish(&mut tx, &authority, resource_id.as_uuid()).await?;
+        let mut pack = load_owned_pack_for_update(
+            &mut tx,
+            resource_id.as_uuid(),
+            resource_authority.namespace_id,
+        )
+        .await?;
         if let Some(generation) = catch_up_pack(&mut tx, &mut pack, &[]).await? {
             enqueue_resource_wake(&mut tx, pack.id, generation).await?;
             tx.commit().await.map_err(internal_api_error)?;
@@ -78,7 +84,7 @@ impl Registry {
         let collision = sqlx::query_scalar::<_, bool>(
             "SELECT EXISTS(SELECT 1 FROM resources WHERE owner_namespace_id=$1 AND kind='pack' AND slug=$2 AND deleted_at IS NULL AND id<>$3)",
         )
-        .bind(authority.namespace_id)
+        .bind(resource_authority.namespace_id)
         .bind(proposed.name())
         .bind(pack.id)
         .fetch_one(&mut *tx)
@@ -87,11 +93,7 @@ impl Registry {
         if collision {
             return Err(ApiError::new(
                 ApiErrorCode::GenerationConflict,
-                format!(
-                    "@{}/packs/{} already exists",
-                    authority.namespace_slug,
-                    proposed.name()
-                ),
+                format!("@{}/packs/{} already exists", pack.owner, proposed.name()),
             ));
         }
         let old_locator = format!("@{}/packs/{}", pack.owner, pack.name);
@@ -100,7 +102,7 @@ impl Registry {
         sqlx::query(
             "DELETE FROM resource_redirects WHERE namespace_id=$1 AND kind='pack' AND old_slug=$2",
         )
-        .bind(authority.namespace_id)
+        .bind(resource_authority.namespace_id)
         .bind(proposed.name())
         .execute(&mut *tx)
         .await
@@ -116,7 +118,7 @@ impl Registry {
             "INSERT INTO resource_redirects (namespace_id,kind,old_slug,target_resource_id) VALUES ($1,'pack',$2,$3) \
              ON CONFLICT(namespace_id,kind,old_slug) DO UPDATE SET target_resource_id=excluded.target_resource_id,created_at=now()",
         )
-        .bind(authority.namespace_id)
+        .bind(resource_authority.namespace_id)
         .bind(old_name)
         .bind(pack.id)
         .execute(&mut *tx)
@@ -184,9 +186,20 @@ impl Registry {
             tx.commit().await.map_err(internal_api_error)?;
             return Ok(outcome);
         }
-        let mut pack =
-            load_owned_pack_for_update(&mut tx, resource_id.as_uuid(), authority.namespace_id)
-                .await?;
+        let resource_authority =
+            authorize_resource_publish(&mut tx, &authority, resource_id.as_uuid()).await?;
+        if resource_authority.is_team {
+            return Err(ApiError::new(
+                ApiErrorCode::InvalidRequest,
+                "team pack deletion requires the owner-only team lifecycle rules",
+            ));
+        }
+        let mut pack = load_owned_pack_for_update(
+            &mut tx,
+            resource_id.as_uuid(),
+            resource_authority.namespace_id,
+        )
+        .await?;
         if let Some(generation) = catch_up_pack(&mut tx, &mut pack, &[]).await? {
             enqueue_resource_wake(&mut tx, pack.id, generation).await?;
             tx.commit().await.map_err(internal_api_error)?;
@@ -279,9 +292,14 @@ impl Registry {
             tx.commit().await.map_err(internal_api_error)?;
             return Ok(outcome);
         }
-        let mut pack =
-            load_owned_pack_for_update(&mut tx, resource_id.as_uuid(), authority.namespace_id)
-                .await?;
+        let resource_authority =
+            authorize_resource_publish(&mut tx, &authority, resource_id.as_uuid()).await?;
+        let mut pack = load_owned_pack_for_update(
+            &mut tx,
+            resource_id.as_uuid(),
+            resource_authority.namespace_id,
+        )
+        .await?;
         if let Some(generation) = catch_up_pack(&mut tx, &mut pack, &[]).await? {
             enqueue_resource_wake(&mut tx, pack.id, generation).await?;
             tx.commit().await.map_err(internal_api_error)?;

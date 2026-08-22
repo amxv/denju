@@ -1,7 +1,7 @@
 ---
 title: Packs
 description: Group exact skill requirements into versioned desired-state sources that subscribers can apply atomically.
-order: 8
+order: 9
 category: Start
 summary: Packs are flat, versioned sets of skill resource IDs with exact resolved revisions and durable follow-latest behavior.
 ---
@@ -21,6 +21,8 @@ denju pack remove @alice/packs/core @bob/review
 Members without `@vN` follow the skill's latest immutable release when the pack is public. `@vN` pins that member to one exact release. Packs are deliberately flat: a pack may contain skills, never another pack.
 
 A private personal pack can also contain private skills the owner is authorized to read, including the owner's current private workspace. Publishing the pack requires every member to be readable by the pack's public audience.
+
+A team-private pack may contain public skills and private skills owned by that same team. A one-person private share is not sufficient because every pack member must be readable by the pack's full audience. Making a team pack public is stricter again: every member must be globally public.
 
 ## Publish and subscribe
 
@@ -55,4 +57,4 @@ denju delete @alice/packs/core-tools
 
 Rename preserves the pack's stable resource ID and keeps old-locator redirect behavior. Unpublish makes public-only subscriptions dormant: their pack-managed skills disappear on reconcile, while republishing the same pack reactivates the existing relationship.
 
-Delete tombstones the pack and removes its subscription roots; packs do not support retain-on-delete. Recreating the same locator later creates a different resource ID and never reconnects subscriptions to the deleted pack.
+Delete tombstones a personal pack and removes its subscription roots; packs do not support retain-on-delete. Recreating the same locator later creates a different resource ID and never reconnects subscriptions to the deleted pack. Team pack deletion remains blocked until the owner-only team deletion and ownership-succession rules are available.

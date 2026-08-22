@@ -21,7 +21,8 @@ struct PrivateSkillRow {
     owner: String,
     name: String,
     description: String,
-    generation: i64,
+    resource_generation: i64,
+    workspace_generation: i64,
     revision_id: Vec<u8>,
     manifest_json: Value,
     snapshot_key: String,
@@ -40,36 +41,62 @@ impl Registry {
         bearer: &str,
     ) -> Result<PrivateSkillCatalog, ApiError> {
         let authority = self.user_authority(bearer, "skills:read").await?;
+        // Team workspaces are private maintainer refs, not shared drafts. Provision a missing
+        // ref only from the team's last immutable release; unpublished work from another
+        // maintainer is never a seed. Ordinary members receive none unless the team-wide
+        // members-can-publish policy explicitly grants them maintainer-equivalent write access.
+        sqlx::query(
+            "INSERT INTO skill_private_workspaces \
+             (resource_id,workspace_user_id,description,revision_id,generation,manifest_json,snapshot_key,snapshot_sha256,snapshot_size) \
+             SELECT r.id,$1,r.description,sr.revision_id,r.generation,rrs.manifest_json,rrs.snapshot_key,rrs.snapshot_sha256,rrs.snapshot_size \
+             FROM resources r JOIN namespaces n ON n.id=r.owner_namespace_id AND n.kind='team' \
+             JOIN teams t ON t.namespace_id=r.owner_namespace_id \
+             JOIN team_memberships tm ON tm.team_namespace_id=r.owner_namespace_id AND tm.user_id=$1 \
+             JOIN skill_releases sr ON sr.resource_id=r.id AND sr.version=r.latest_release_version \
+             JOIN resource_revision_snapshots rrs ON rrs.resource_id=r.id AND rrs.revision_id=sr.revision_id \
+             WHERE r.kind='skill' AND r.deleted_at IS NULL AND \
+               (tm.role IN ('owner','maintainer') OR (tm.role='member' AND t.members_can_publish)) \
+             ON CONFLICT(resource_id,workspace_user_id) DO NOTHING",
+        )
+        .bind(authority.user_id)
+        .execute(&self.pool)
+        .await
+        .map_err(internal_api_error)?;
         let rows = sqlx::query_as::<_, PrivateSkillRow>(
-            "SELECT r.id AS resource_id,n.slug AS owner,r.slug AS name,r.description,r.generation, \
+            "SELECT r.id AS resource_id,n.slug AS owner,r.slug AS name,w.description, \
+                    r.generation AS resource_generation,w.generation AS workspace_generation, \
                     w.revision_id,w.manifest_json,w.snapshot_key,w.snapshot_sha256,w.snapshot_size, \
                     f.upstream_resource_id,COALESCE(upstream_owner.slug,upstream.deleted_owner_slug) AS upstream_owner,upstream.slug AS upstream_name, \
                     f.created_from_revision_id,f.sync_base_revision_id \
              FROM resources r \
              JOIN namespaces n ON n.id=r.owner_namespace_id \
-             JOIN skill_private_workspaces w ON w.resource_id=r.id \
+             JOIN skill_private_workspaces w ON w.resource_id=r.id AND w.workspace_user_id=$1 \
              LEFT JOIN skill_forks f ON f.resource_id=r.id \
              LEFT JOIN resources upstream ON upstream.id=f.upstream_resource_id \
              LEFT JOIN namespaces upstream_owner ON upstream_owner.id=upstream.owner_namespace_id \
-             WHERE r.owner_namespace_id=$1 AND r.kind='skill' AND r.deleted_at IS NULL \
+             WHERE r.kind='skill' AND r.deleted_at IS NULL \
                AND COALESCE(f.promotion_pending,FALSE)=FALSE \
              ORDER BY r.slug,r.id",
         )
-        .bind(authority.namespace_id)
+        .bind(authority.user_id)
         .fetch_all(&self.pool)
         .await
         .map_err(internal_api_error)?;
         let generations = rows
             .iter()
             .map(|row| {
-                let generation = u64::try_from(row.generation).map_err(|_| {
+                let generation = u64::try_from(row.workspace_generation).map_err(|_| {
                     ApiError::new(ApiErrorCode::Internal, "stored generation is invalid")
                 })?;
                 Ok((row.resource_id, generation))
             })
             .collect::<Result<BTreeMap<_, _>, ApiError>>()?;
-        let mut conflicts =
-            unresolved_workspace_conflicts_for_resources(&self.pool, &generations).await?;
+        let mut conflicts = unresolved_workspace_conflicts_for_resources(
+            &self.pool,
+            authority.user_id,
+            &generations,
+        )
+        .await?;
 
         let mut skills = Vec::with_capacity(rows.len());
         for row in rows {
@@ -78,7 +105,13 @@ impl Registry {
                 .map_err(|error| ApiError::new(ApiErrorCode::Internal, error.to_string()))?;
             let revision_id = decode_32(&row.revision_id, "stored revision ID")?;
             let snapshot_sha = decode_32(&row.snapshot_sha256, "stored snapshot SHA-256")?;
-            let generation = generations[&row.resource_id];
+            let workspace_generation = generations[&row.resource_id];
+            let generation = u64::try_from(row.resource_generation).map_err(|_| {
+                ApiError::new(
+                    ApiErrorCode::Internal,
+                    "stored resource generation is invalid",
+                )
+            })?;
             let snapshot_size = u64::try_from(row.snapshot_size).map_err(|_| {
                 ApiError::new(ApiErrorCode::Internal, "stored snapshot size is invalid")
             })?;
@@ -94,6 +127,7 @@ impl Registry {
                 name: row.name,
                 description: row.description,
                 generation,
+                workspace_generation,
                 revision_id: hex::encode(revision_id),
                 manifest,
                 snapshot: SnapshotDownload {

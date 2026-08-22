@@ -82,6 +82,7 @@ async fn insert_owned_materialized(
             owner: owner.to_owned(),
             skill_name: name.to_owned(),
             resource_generation: 1,
+            workspace_generation: 1,
             desired_revision_id: revision_id.to_string(),
             harness_name: None,
             materialized_revision_id: None,

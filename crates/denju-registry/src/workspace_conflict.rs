@@ -11,6 +11,7 @@ pub(crate) async fn validate_merge_conflict(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     conflict_id: Uuid,
     resource_id: Uuid,
+    workspace_user_id: Uuid,
     parents: &[RevisionId],
 ) -> Result<(), ApiError> {
     if parents.len() != 2 {
@@ -21,10 +22,11 @@ pub(crate) async fn validate_merge_conflict(
     }
     let row = sqlx::query(
         "SELECT head_a_revision_id,head_b_revision_id FROM skill_workspace_conflicts \
-         WHERE conflict_id=$1 AND resource_id=$2 AND resolved_at IS NULL FOR UPDATE",
+         WHERE conflict_id=$1 AND resource_id=$2 AND workspace_user_id=$3 AND resolved_at IS NULL FOR UPDATE",
     )
     .bind(conflict_id)
     .bind(resource_id)
+    .bind(workspace_user_id)
     .fetch_optional(&mut **tx)
     .await
     .map_err(internal_api_error)?
@@ -50,6 +52,7 @@ pub(crate) async fn validate_merge_conflict(
 pub(crate) async fn record_workspace_conflict(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     resource_id: Uuid,
+    workspace_user_id: Uuid,
     base_revision_id: &[u8; 32],
     detached_revision_id: &[u8; 32],
     active_revision_id: &[u8; 32],
@@ -60,14 +63,15 @@ pub(crate) async fn record_workspace_conflict(
     let new_conflict_id = Uuid::now_v7();
     let row = sqlx::query(
         "INSERT INTO skill_workspace_conflicts \
-         (conflict_id,resource_id,base_revision_id,head_a_revision_id,head_b_revision_id,active_revision_id,detected_generation) \
-         VALUES ($1,$2,$3,$4,$5,$6,$7) \
-         ON CONFLICT (resource_id,head_a_revision_id,head_b_revision_id) WHERE resolved_at IS NULL \
+         (conflict_id,resource_id,workspace_user_id,base_revision_id,head_a_revision_id,head_b_revision_id,active_revision_id,detected_generation) \
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8) \
+         ON CONFLICT (workspace_user_id,resource_id,head_a_revision_id,head_b_revision_id) WHERE resolved_at IS NULL \
          DO UPDATE SET active_revision_id=excluded.active_revision_id,detected_generation=excluded.detected_generation \
          RETURNING conflict_id,base_revision_id,head_a_revision_id,head_b_revision_id,active_revision_id",
     )
     .bind(new_conflict_id)
     .bind(resource_id)
+    .bind(workspace_user_id)
     .bind(base_revision_id.as_slice())
     .bind(heads[0].as_slice())
     .bind(heads[1].as_slice())
@@ -86,6 +90,7 @@ pub(crate) async fn record_workspace_conflict(
 
 pub(crate) async fn unresolved_workspace_conflicts_for_resources(
     pool: &sqlx::PgPool,
+    workspace_user_id: Uuid,
     generations: &BTreeMap<Uuid, u64>,
 ) -> Result<BTreeMap<Uuid, Vec<PrivateWorkspaceConflict>>, ApiError> {
     if generations.is_empty() {
@@ -94,9 +99,10 @@ pub(crate) async fn unresolved_workspace_conflicts_for_resources(
     let resource_ids = generations.keys().copied().collect::<Vec<_>>();
     let rows = sqlx::query(
         "SELECT resource_id,conflict_id,base_revision_id,head_a_revision_id,head_b_revision_id,active_revision_id \
-         FROM skill_workspace_conflicts WHERE resource_id = ANY($1) AND resolved_at IS NULL \
+         FROM skill_workspace_conflicts WHERE workspace_user_id=$1 AND resource_id = ANY($2) AND resolved_at IS NULL \
          ORDER BY resource_id,created_at,conflict_id",
     )
+    .bind(workspace_user_id)
     .bind(&resource_ids)
     .fetch_all(pool)
     .await
@@ -130,15 +136,17 @@ pub(crate) async fn resolve_workspace_conflict(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     conflict_id: Uuid,
     resource_id: Uuid,
+    workspace_user_id: Uuid,
     resolution_revision_id: &[u8; 32],
 ) -> Result<(), ApiError> {
     let changed = sqlx::query(
         "UPDATE skill_workspace_conflicts SET resolution_revision_id=$1,resolved_at=now() \
-         WHERE conflict_id=$2 AND resource_id=$3 AND resolved_at IS NULL",
+         WHERE conflict_id=$2 AND resource_id=$3 AND workspace_user_id=$4 AND resolved_at IS NULL",
     )
     .bind(resolution_revision_id.as_slice())
     .bind(conflict_id)
     .bind(resource_id)
+    .bind(workspace_user_id)
     .execute(&mut **tx)
     .await
     .map_err(internal_api_error)?

@@ -31,6 +31,8 @@ Commands:\n\
   proposals  List proposals visible to you\n\
   proposal   Show, accept, reject, or withdraw a proposal\n\
   pack    Create a pack or atomically add/remove skill members\n\
+  team    Create, join, inspect, and manage teams\n\
+  transfer  Transfer a personal skill or pack into a team\n\
   status  Show local synchronization and conflict state\n\
   sync    Reconcile subscriptions and harness projections\n\
   doctor  Check and repair the local Denju installation\n\

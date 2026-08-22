@@ -23,13 +23,6 @@ pub(crate) fn is_pack_locator(locator: &str) -> bool {
 pub(crate) async fn create(locator: &str) -> Result<PackCreateResponse, RuntimeError> {
     let parsed = pack_locator(locator)?;
     let context = installed_context(true).await?;
-    let identity = context.client.identity().await.map_err(client_error)?;
-    if parsed.owner() != identity.username.trim_start_matches('@') {
-        return Err(RuntimeError::new(
-            CliErrorCode::InvalidArguments,
-            format!("pack owner must be {}", identity.username),
-        ));
-    }
     let operation_id = new_operation()?;
     let operation_id_text = operation_id.to_string();
     let request_hash = pack_create_request_hash(&operation_id_text, parsed.owner(), parsed.name())
@@ -99,7 +92,10 @@ pub(crate) async fn show(locator: &str) -> Result<PackDetail, RuntimeError> {
         .map_err(client_error)
 }
 
-pub(crate) async fn publish(locator: &str) -> Result<PackMutationResponse, RuntimeError> {
+pub(crate) async fn publish(
+    locator: &str,
+    public: bool,
+) -> Result<PackMutationResponse, RuntimeError> {
     let context = installed_context(true).await?;
     let pack = context
         .client
@@ -107,15 +103,20 @@ pub(crate) async fn publish(locator: &str) -> Result<PackMutationResponse, Runti
         .await
         .map_err(client_error)?;
     let operation_id = new_operation()?.to_string();
-    let request_hash =
-        pack_publish_request_hash(&operation_id, &pack.pack.resource_id, pack.pack.generation)
-            .map_err(hash_error)?;
+    let request_hash = pack_publish_request_hash(
+        &operation_id,
+        &pack.pack.resource_id,
+        pack.pack.generation,
+        public,
+    )
+    .map_err(hash_error)?;
     let outcome = context
         .client
         .publish_pack(&PackPublishRequest {
             operation_id,
             resource_id: pack.pack.resource_id,
             expected_generation: pack.pack.generation,
+            public,
             request_hash: request_hash.to_string(),
         })
         .await

@@ -2,13 +2,11 @@ use std::{collections::BTreeSet, str::FromStr};
 
 use denju_core::{OperationId, ResourceId, ResourceKind, ResourceLocator};
 use denju_wire::{
-    ApiError, ApiErrorCode, PackCreateRequest, PackCreateResponse, PackDetail, PackMember,
-    PackMemberTarget, PackMutationKind, PackMutationRequest, PackMutationResponse,
-    PackPublishRequest, PackSubscriptionCatalog, PackSubscriptionMutationKind,
-    PackSubscriptionRequest, PackSubscriptionResponse, PackSummary, PackUnavailableReason,
-    PublicSkillManifest, RequestHash, SnapshotDownload, SubscribedSkill, SubscriptionContent,
-    pack_create_request_hash, pack_mutation_request_hash, pack_publish_request_hash,
-    pack_subscription_request_hash,
+    ApiError, ApiErrorCode, PackCreateRequest, PackCreateResponse, PackDetail, PackMemberTarget,
+    PackMutationKind, PackMutationRequest, PackMutationResponse, PackPublishRequest,
+    PackSubscriptionCatalog, PackSubscriptionMutationKind, PackSubscriptionRequest,
+    PackSubscriptionResponse, PackSummary, RequestHash, pack_create_request_hash,
+    pack_mutation_request_hash, pack_publish_request_hash, pack_subscription_request_hash,
 };
 use serde::{Serialize, de::DeserializeOwned};
 use sqlx::Row;
@@ -17,16 +15,16 @@ use uuid::Uuid;
 use crate::{
     Registry,
     identity_support::SubscriptionSubject,
-    ingest::decode_32,
     internal_api_error,
     lifecycle::{generation_u64, next_generation},
     outbox::enqueue_resource_wake,
     pack_drain::lock_and_catch_up_pack,
     pack_storage::{
-        PackRow, ResolvedPackMember, insert_pack_revision, load_owned_pack_for_update,
-        load_pack_by_locator, load_pack_revision_members, order_resolved_members, pack_summary,
-        resolve_all_members, resolve_member,
+        insert_pack_revision, load_owned_pack_for_update, load_pack_by_locator,
+        load_pack_revision_members, order_resolved_members, pack_summary, resolve_all_members,
+        resolve_member,
     },
+    team_access::{authorize_namespace_publish, authorize_resource_publish, user_is_team_member},
 };
 
 impl Registry {
@@ -39,10 +37,10 @@ impl Registry {
         let locator = format!("@{}/packs/{}", request.owner, request.name)
             .parse::<ResourceLocator>()
             .map_err(|error| ApiError::new(ApiErrorCode::InvalidRequest, error.to_string()))?;
-        if locator.kind() != ResourceKind::Pack || locator.owner() != authority.namespace_slug {
+        if locator.kind() != ResourceKind::Pack {
             return Err(ApiError::new(
-                ApiErrorCode::Unauthorized,
-                "personal packs must be created in the authenticated user's namespace",
+                ApiErrorCode::InvalidRequest,
+                "expected a pack locator",
             ));
         }
         let operation_id = parse_operation(&request.operation_id)?;
@@ -53,6 +51,8 @@ impl Registry {
                 .map_err(hash_error)?,
         )?;
         let mut tx = self.pool.begin().await.map_err(internal_api_error)?;
+        let owner_authority =
+            authorize_namespace_publish(&mut tx, &authority, locator.owner()).await?;
         if let Some(outcome) = replay_pack_operation::<PackCreateResponse>(
             &mut tx,
             authority.user_id,
@@ -68,7 +68,7 @@ impl Registry {
         let occupied = sqlx::query_scalar::<_, bool>(
             "SELECT EXISTS(SELECT 1 FROM resources WHERE owner_namespace_id=$1 AND kind='pack' AND slug=$2 AND deleted_at IS NULL)",
         )
-        .bind(authority.namespace_id)
+        .bind(owner_authority.namespace_id)
         .bind(locator.name())
         .fetch_one(&mut *tx)
         .await
@@ -85,7 +85,7 @@ impl Registry {
              VALUES ($1,$2,$3,'pack','private','',1,NULL)",
         )
         .bind(resource_id)
-        .bind(authority.namespace_id)
+        .bind(owner_authority.namespace_id)
         .bind(locator.name())
         .execute(&mut *tx)
         .await
@@ -170,9 +170,14 @@ impl Registry {
             tx.commit().await.map_err(internal_api_error)?;
             return Ok(outcome);
         }
-        let mut pack =
-            load_owned_pack_for_update(&mut tx, resource_id.as_uuid(), authority.namespace_id)
-                .await?;
+        let resource_authority =
+            authorize_resource_publish(&mut tx, &authority, resource_id.as_uuid()).await?;
+        let mut pack = load_owned_pack_for_update(
+            &mut tx,
+            resource_id.as_uuid(),
+            resource_authority.namespace_id,
+        )
+        .await?;
         let extra_skill_ids = request
             .members
             .iter()
@@ -210,8 +215,9 @@ impl Registry {
                     let resolved = resolve_member(
                         &mut tx,
                         authority.user_id,
-                        authority.namespace_id,
+                        resource_authority.namespace_id,
                         pack.visibility == "public",
+                        resource_authority.is_team,
                         skill_id.as_uuid(),
                         target.release_version,
                     )
@@ -312,6 +318,7 @@ impl Registry {
                 &request.operation_id,
                 &request.resource_id,
                 request.expected_generation,
+                request.public,
             )
             .map_err(hash_error)?,
         )?;
@@ -328,9 +335,14 @@ impl Registry {
             tx.commit().await.map_err(internal_api_error)?;
             return Ok(outcome);
         }
-        let mut pack =
-            load_owned_pack_for_update(&mut tx, resource_id.as_uuid(), authority.namespace_id)
-                .await?;
+        let resource_authority =
+            authorize_resource_publish(&mut tx, &authority, resource_id.as_uuid()).await?;
+        let mut pack = load_owned_pack_for_update(
+            &mut tx,
+            resource_id.as_uuid(),
+            resource_authority.namespace_id,
+        )
+        .await?;
         let caught_up = lock_and_catch_up_pack(&mut tx, &mut pack, &[]).await?;
         if let Some(generation) = caught_up.last().copied() {
             enqueue_resource_wake(&mut tx, pack.id, generation).await?;
@@ -348,11 +360,14 @@ impl Registry {
         // Public packs may expose only public immutable skill releases. If a private pack
         // currently resolves a follow-latest member to a private workspace revision, public
         // publication creates one exact public-safe pack version rather than leaking that draft.
+        let make_public =
+            !resource_authority.is_team || pack.visibility == "public" || request.public;
         let resolved = resolve_all_members(
             &mut tx,
             authority.user_id,
-            authority.namespace_id,
-            true,
+            resource_authority.namespace_id,
+            make_public,
+            resource_authority.is_team,
             pack.id,
         )
         .await?;
@@ -360,7 +375,7 @@ impl Registry {
         if resolution_changed {
             pack = insert_pack_revision(&mut tx, &pack, &resolved, None).await?;
         }
-        let visibility_changed = pack.visibility != "public";
+        let visibility_changed = make_public && pack.visibility != "public";
         if visibility_changed {
             pack.generation = next_generation(pack.generation)?;
             pack.visibility = "public".to_owned();
@@ -427,10 +442,19 @@ impl Registry {
             let bearer =
                 bearer.ok_or_else(|| ApiError::new(ApiErrorCode::NotFound, "pack not found"))?;
             let authority = self.user_authority(bearer, "skills:read").await?;
-            if authority.namespace_id != pack.owner_namespace_id {
+            let team_member =
+                user_is_team_member(&self.pool, authority.user_id, pack.owner_namespace_id).await?;
+            if authority.namespace_id != pack.owner_namespace_id && !team_member {
                 return Err(ApiError::new(ApiErrorCode::NotFound, "pack not found"));
             }
-            Some((authority.user_id, authority.namespace_id))
+            Some((
+                authority.user_id,
+                if team_member {
+                    pack.owner_namespace_id
+                } else {
+                    authority.namespace_id
+                },
+            ))
         };
         let member_rows =
             load_pack_revision_members(&mut tx, pack.id, pack.current_version).await?;
@@ -523,7 +547,13 @@ impl Registry {
                         .fetch_one(&mut *tx)
                         .await
                         .map_err(internal_api_error)?;
-                        owner_namespace_id == Some(namespace)
+                        if owner_namespace_id == Some(namespace) {
+                            true
+                        } else if let Some(owner_namespace_id) = owner_namespace_id {
+                            user_is_team_member(&self.pool, user_id, owner_namespace_id).await?
+                        } else {
+                            false
+                        }
                     } else {
                         false
                     }
@@ -579,7 +609,9 @@ impl Registry {
             SubscriptionSubject::User(user_id) => sqlx::query_scalar::<_, Uuid>(
                 "SELECT s.resource_id FROM account_subscriptions s JOIN resources r ON r.id=s.resource_id \
                  JOIN users u ON u.id=s.user_id WHERE s.user_id=$1 AND r.kind='pack' AND r.deleted_at IS NULL \
-                 AND (r.visibility='public' OR r.owner_namespace_id=u.namespace_id) ORDER BY r.id",
+                 AND (r.visibility='public' OR r.owner_namespace_id=u.namespace_id OR EXISTS( \
+                   SELECT 1 FROM team_memberships tm WHERE tm.team_namespace_id=r.owner_namespace_id AND tm.user_id=s.user_id \
+                 )) ORDER BY r.id",
             )
             .bind(user_id)
             .fetch_all(&self.pool)
@@ -601,125 +633,6 @@ impl Registry {
             );
         }
         Ok(PackSubscriptionCatalog { packs })
-    }
-
-    async fn pack_member_detail(
-        &self,
-        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-        pack: &PackRow,
-        actor: Option<(Uuid, Uuid)>,
-        member: ResolvedPackMember,
-    ) -> Result<PackMember, ApiError> {
-        let row = sqlx::query(
-            "SELECT r.owner_namespace_id,n.slug,r.slug,r.description,r.generation,r.visibility,r.deleted_at IS NOT NULL, \
-             EXISTS(SELECT 1 FROM private_skill_shares s WHERE s.resource_id=r.id AND s.recipient_user_id=$2) \
-             FROM resources r LEFT JOIN namespaces n ON n.id=r.owner_namespace_id WHERE r.id=$1 AND r.kind='skill'",
-        )
-        .bind(member.skill_resource_id)
-        .bind(actor.map(|value| value.0))
-        .fetch_optional(&mut **tx)
-        .await
-        .map_err(internal_api_error)?
-        .ok_or_else(|| ApiError::new(ApiErrorCode::Internal, "pack member resource is missing"))?;
-        let owner_namespace: Option<Uuid> = row.get(0);
-        let owner: Option<String> = row.get(1);
-        let name: String = row.get(2);
-        let description: String = row.get(3);
-        let generation: i64 = row.get(4);
-        let visibility: String = row.get(5);
-        let deleted: bool = row.get(6);
-        let shared: bool = row.get(7);
-        let locator = format!(
-            "@{}/{}",
-            owner.clone().unwrap_or_else(|| "deleted".to_owned()),
-            name
-        );
-        let readable = if deleted {
-            false
-        } else if pack.visibility == "public" {
-            visibility == "public"
-        } else if visibility == "public" {
-            true
-        } else {
-            actor.is_some_and(|(_, namespace)| owner_namespace == Some(namespace) || shared)
-        };
-        let unavailable_reason = if deleted {
-            Some(PackUnavailableReason::Deleted)
-        } else if pack.visibility == "public" && visibility != "public" {
-            Some(PackUnavailableReason::Unpublished)
-        } else if !readable {
-            Some(PackUnavailableReason::AccessRevoked)
-        } else {
-            None
-        };
-        let revision_id = hex::encode(decode_32(&member.resolved_revision_id, "pack revision ID")?);
-        let desired = if unavailable_reason.is_none() {
-            let snapshot = sqlx::query_as::<_, (serde_json::Value, String, Vec<u8>, i64)>(
-                "SELECT manifest_json,snapshot_key,snapshot_sha256,snapshot_size FROM resource_revision_snapshots \
-                 WHERE resource_id=$1 AND revision_id=$2",
-            )
-            .bind(member.skill_resource_id)
-            .bind(member.resolved_revision_id.as_slice())
-            .fetch_optional(&mut **tx)
-            .await
-            .map_err(internal_api_error)?;
-            let snapshot = snapshot.ok_or_else(|| {
-                ApiError::new(
-                    ApiErrorCode::Internal,
-                    "pack member revision lost its immutable snapshot",
-                )
-            })?;
-            let manifest: PublicSkillManifest = serde_json::from_value(snapshot.0)
-                .map_err(|error| ApiError::new(ApiErrorCode::Internal, error.to_string()))?;
-            let sha = decode_32(&snapshot.2, "pack member snapshot SHA-256")?;
-            let size_bytes = u64::try_from(snapshot.3).map_err(|_| {
-                ApiError::new(
-                    ApiErrorCode::Internal,
-                    "pack member snapshot size is invalid",
-                )
-            })?;
-            let url = self
-                .objects
-                .presign_get(&snapshot.1)
-                .await
-                .map_err(|error| ApiError::new(ApiErrorCode::Unavailable, error.to_string()))?;
-            Some(SubscribedSkill {
-                resource_id: member.skill_resource_id.to_string(),
-                locator: locator.clone(),
-                owner: owner.unwrap_or_else(|| "deleted".to_owned()),
-                name,
-                description,
-                generation: generation_u64(generation)?,
-                revision_id: revision_id.clone(),
-                deprecation: None,
-                content: match member.resolved_release_version {
-                    Some(version) => SubscriptionContent::Release {
-                        version: generation_u64(version)?,
-                        following_latest: member.pinned_release_version.is_none(),
-                    },
-                    None => SubscriptionContent::PrivateWorkspace,
-                },
-                manifest,
-                snapshot: SnapshotDownload {
-                    sha256: hex::encode(sha),
-                    size_bytes,
-                    url,
-                },
-                retain_on_delete: false,
-                retained_after_delete: false,
-            })
-        } else {
-            None
-        };
-        Ok(PackMember {
-            resource_id: member.skill_resource_id.to_string(),
-            locator,
-            pinned_release_version: u64_version(member.pinned_release_version)?,
-            resolved_release_version: u64_version(member.resolved_release_version)?,
-            revision_id,
-            unavailable_reason,
-            desired,
-        })
     }
 }
 
@@ -981,8 +894,4 @@ fn i64_version(value: Option<u64>) -> Result<Option<i64>, ApiError> {
             })
         })
         .transpose()
-}
-
-fn u64_version(value: Option<i64>) -> Result<Option<u64>, ApiError> {
-    value.map(generation_u64).transpose()
 }

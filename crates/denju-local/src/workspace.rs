@@ -410,6 +410,7 @@ mod tests {
                 owner: "alice".into(),
                 skill_name: "review".into(),
                 resource_generation: 1,
+                workspace_generation: 1,
                 desired_revision_id: revision_id.to_string(),
                 harness_name: None,
                 materialized_revision_id: None,
