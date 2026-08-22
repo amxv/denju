@@ -29,6 +29,7 @@ mod revision_graph;
 mod sharing;
 mod subscription_access;
 mod team_access;
+mod team_policy;
 mod team_rename;
 mod teams;
 mod transfer;
@@ -59,7 +60,7 @@ use url::Url;
 use uuid::Uuid;
 
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
-const EXPECTED_SCHEMA_VERSION: i64 = 12;
+const EXPECTED_SCHEMA_VERSION: i64 = 13;
 const SNAPSHOT_URL_TTL: Duration = Duration::from_secs(5 * 60);
 const STAGING_URL_TTL: Duration = Duration::from_secs(10 * 60);
 

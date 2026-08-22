@@ -235,6 +235,14 @@ impl Registry {
             .execute(&mut *tx)
             .await
             .map_err(internal_api_error)?;
+        // Assignment is another durable desired root, with the same no-retention semantics as a
+        // pack subscription. A later resource that reuses this locator has a different ID and
+        // must never inherit the deleted pack's team policy.
+        sqlx::query("DELETE FROM team_pack_assignments WHERE pack_resource_id=$1")
+            .bind(pack.id)
+            .execute(&mut *tx)
+            .await
+            .map_err(internal_api_error)?;
         pack.visibility = "private".to_owned();
         pack.generation = next;
         let outcome = PackLifecycleResponse {

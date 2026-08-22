@@ -5,6 +5,68 @@ use crate::{
 };
 
 impl LocalDatabase {
+    pub async fn source_suppressions(
+        &self,
+        source_kind: &'static str,
+    ) -> Result<Vec<String>, LocalDbError> {
+        self.call(move |connection| {
+            let mut statement = connection.prepare(
+                "SELECT resource_id FROM desired_source_suppressions WHERE source_kind=?1 ORDER BY resource_id",
+            )?;
+            let rows = statement.query_map(params![source_kind], |row| row.get(0))?;
+            rows.collect::<Result<Vec<String>, _>>()
+                .map_err(LocalDbError::from)
+        })
+        .await
+    }
+
+    pub async fn reconcile_source_suppressions(
+        &self,
+        subscriptions: Vec<(String, String)>,
+        owned: Vec<(String, String)>,
+        preserve_resources: Vec<String>,
+        now_unix_ms: i64,
+    ) -> Result<(), LocalDbError> {
+        self.call(move |connection| {
+            let tx = connection.transaction()?;
+            let preserve = preserve_resources.into_iter().collect::<std::collections::BTreeSet<_>>();
+            let existing = {
+                let mut statement = tx.prepare(
+                    "SELECT source_kind,resource_id FROM desired_source_suppressions ORDER BY source_kind,resource_id",
+                )?;
+                let rows = statement.query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?;
+                rows.collect::<Result<Vec<_>, _>>()?
+            };
+            for (kind, resource_id) in existing {
+                if !preserve.contains(&resource_id) {
+                    tx.execute(
+                        "DELETE FROM desired_source_suppressions WHERE source_kind=?1 AND resource_id=?2",
+                        params![kind, resource_id],
+                    )?;
+                }
+            }
+            for (kind, values) in [("subscription", subscriptions), ("owned", owned)] {
+                for (resource_id, enforcing_source_id) in values {
+                    if preserve.contains(&resource_id) {
+                        continue;
+                    }
+                    tx.execute(
+                        "INSERT INTO desired_source_suppressions \
+                         (source_kind,resource_id,enforcing_source_id,updated_at_unix_ms) VALUES (?1,?2,?3,?4) \
+                         ON CONFLICT(source_kind,resource_id) DO UPDATE SET \
+                         enforcing_source_id=excluded.enforcing_source_id,updated_at_unix_ms=excluded.updated_at_unix_ms",
+                        params![kind, resource_id, enforcing_source_id, now_unix_ms],
+                    )?;
+                }
+            }
+            tx.commit()?;
+            Ok(())
+        })
+        .await
+    }
+
     pub async fn subscription_edit_locks(&self) -> Result<Vec<String>, LocalDbError> {
         self.call(|connection| {
             let mut statement = connection
@@ -107,10 +169,14 @@ impl LocalDatabase {
         self.call(|connection| {
             let mut statement = connection.prepare(
                 "SELECT resource_id, locator, owner, skill_name, harness_name, materialized_revision_id \
-                 FROM subscriptions \
+                 FROM subscriptions s WHERE NOT EXISTS ( \
+                   SELECT 1 FROM desired_source_suppressions x WHERE x.source_kind='subscription' AND x.resource_id=s.resource_id \
+                 ) \
                  UNION ALL \
                  SELECT resource_id, locator, owner, skill_name, harness_name, materialized_revision_id \
-                 FROM owned_skills \
+                 FROM owned_skills o WHERE NOT EXISTS ( \
+                   SELECT 1 FROM desired_source_suppressions x WHERE x.source_kind='owned' AND x.resource_id=o.resource_id \
+                 ) \
                  UNION ALL \
                  SELECT resource_id, locator, owner, skill_name, harness_name, materialized_revision_id \
                  FROM pack_materialized_skills \
@@ -259,21 +325,32 @@ impl LocalDatabase {
         now_unix_ms: i64,
     ) -> Result<(), LocalDbError> {
         self.call(move |connection| {
-            let subscription_changed = connection.execute(
-                "UPDATE subscriptions SET materialized_revision_id=?1, updated_at_unix_ms=?2 WHERE resource_id=?3",
+            let tx = connection.transaction()?;
+            // Overlapping durable relationships can briefly coexist before the next resolver
+            // pass (for example a just-created direct subscription while team policy is active).
+            // A successful materialization only proves the source(s) whose desired revision is
+            // exactly the bytes we switched, so never stamp a different desired source current.
+            let subscription_changed = tx.execute(
+                "UPDATE subscriptions SET materialized_revision_id=?1, updated_at_unix_ms=?2 \
+                 WHERE resource_id=?3 AND desired_revision_id=?1 AND NOT EXISTS (SELECT 1 FROM desired_source_suppressions x \
+                   WHERE x.source_kind='subscription' AND x.resource_id=subscriptions.resource_id)",
                 params![revision_id, now_unix_ms, resource_id],
             )?;
-            let owned_changed = connection.execute(
-                "UPDATE owned_skills SET materialized_revision_id=?1, updated_at_unix_ms=?2 WHERE resource_id=?3",
+            let owned_changed = tx.execute(
+                "UPDATE owned_skills SET materialized_revision_id=?1, updated_at_unix_ms=?2 \
+                 WHERE resource_id=?3 AND desired_revision_id=?1 AND NOT EXISTS (SELECT 1 FROM desired_source_suppressions x \
+                   WHERE x.source_kind='owned' AND x.resource_id=owned_skills.resource_id)",
                 params![revision_id, now_unix_ms, resource_id],
             )?;
-            let pack_changed = connection.execute(
-                "UPDATE pack_materialized_skills SET materialized_revision_id=?1, updated_at_unix_ms=?2 WHERE resource_id=?3",
+            let pack_changed = tx.execute(
+                "UPDATE pack_materialized_skills SET materialized_revision_id=?1, updated_at_unix_ms=?2 \
+                 WHERE resource_id=?3 AND desired_revision_id=?1",
                 params![revision_id, now_unix_ms, resource_id],
             )?;
-            if subscription_changed + owned_changed + pack_changed != 1 {
+            if subscription_changed + owned_changed + pack_changed == 0 {
                 return Err(rusqlite::Error::QueryReturnedNoRows.into());
             }
+            tx.commit()?;
             Ok(())
         })
         .await
@@ -286,21 +363,27 @@ impl LocalDatabase {
         now_unix_ms: i64,
     ) -> Result<(), LocalDbError> {
         self.call(move |connection| {
-            let subscription_changed = connection.execute(
-                "UPDATE subscriptions SET harness_name=?1, updated_at_unix_ms=?2 WHERE resource_id=?3",
+            let tx = connection.transaction()?;
+            let subscription_changed = tx.execute(
+                "UPDATE subscriptions SET harness_name=?1, updated_at_unix_ms=?2 \
+                 WHERE resource_id=?3 AND NOT EXISTS (SELECT 1 FROM desired_source_suppressions x \
+                   WHERE x.source_kind='subscription' AND x.resource_id=subscriptions.resource_id)",
                 params![harness_name, now_unix_ms, resource_id],
             )?;
-            let owned_changed = connection.execute(
-                "UPDATE owned_skills SET harness_name=?1, updated_at_unix_ms=?2 WHERE resource_id=?3",
+            let owned_changed = tx.execute(
+                "UPDATE owned_skills SET harness_name=?1, updated_at_unix_ms=?2 \
+                 WHERE resource_id=?3 AND NOT EXISTS (SELECT 1 FROM desired_source_suppressions x \
+                   WHERE x.source_kind='owned' AND x.resource_id=owned_skills.resource_id)",
                 params![harness_name, now_unix_ms, resource_id],
             )?;
-            let pack_changed = connection.execute(
+            let pack_changed = tx.execute(
                 "UPDATE pack_materialized_skills SET harness_name=?1, updated_at_unix_ms=?2 WHERE resource_id=?3",
                 params![harness_name, now_unix_ms, resource_id],
             )?;
             if subscription_changed + owned_changed + pack_changed != 1 {
                 return Err(rusqlite::Error::QueryReturnedNoRows.into());
             }
+            tx.commit()?;
             Ok(())
         })
         .await

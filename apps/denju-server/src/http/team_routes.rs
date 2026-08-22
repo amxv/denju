@@ -8,9 +8,12 @@ use axum::{
 };
 use denju_registry::Registry;
 use denju_wire::{
-    ResourceTransferRequest, ResourceTransferResponse, TeamCreateRequest, TeamDetail,
-    TeamInviteRequest, TeamInviteResponse, TeamInviteRevokeRequest, TeamJoinRequest, TeamList,
-    TeamMemberRemoveRequest, TeamMemberRoleRequest, TeamMutationResponse, TeamSettingsRequest,
+    ResourceTransferRequest, ResourceTransferResponse, TeamCreateRequest, TeamDeleteRequest,
+    TeamDeleteResponse, TeamDetail, TeamInviteRequest, TeamInviteResponse, TeamInviteRevokeRequest,
+    TeamJoinRequest, TeamLeaveRequest, TeamLeaveResponse, TeamList, TeamMemberRemoveRequest,
+    TeamMemberRoleRequest, TeamMutationResponse, TeamOwnerTransferAcceptRequest,
+    TeamOwnerTransferRequest, TeamOwnerTransferResponse, TeamPackAssignmentMutationKind,
+    TeamPackAssignmentRequest, TeamPackAssignmentResponse, TeamSettingsRequest,
 };
 use serde::Deserialize;
 
@@ -26,6 +29,15 @@ pub(super) fn router() -> Router<Arc<Registry>> {
         .route("/v1/teams/members/role", post(change_team_member_role))
         .route("/v1/teams/members/remove", post(remove_team_member))
         .route("/v1/teams/settings", post(update_team_settings))
+        .route("/v1/teams/packs/assign", post(assign_team_pack))
+        .route("/v1/teams/packs/unassign", post(unassign_team_pack))
+        .route("/v1/teams/leave", post(leave_team))
+        .route("/v1/teams/owner-transfer", post(create_owner_transfer))
+        .route(
+            "/v1/teams/owner-transfer/accept",
+            post(accept_owner_transfer),
+        )
+        .route("/v1/teams/delete", post(delete_team))
         .route("/v1/resources/transfer", post(transfer_resource))
 }
 
@@ -145,6 +157,84 @@ pub(super) async fn update_team_settings(
     let bearer = bearer_token(&headers)?;
     registry
         .update_team_settings(bearer, &request)
+        .await
+        .map(Json)
+        .map_err(ApiResponseError)
+}
+
+pub(super) async fn assign_team_pack(
+    State(registry): State<Arc<Registry>>,
+    headers: HeaderMap,
+    Json(request): Json<TeamPackAssignmentRequest>,
+) -> Result<Json<TeamPackAssignmentResponse>, ApiResponseError> {
+    let bearer = bearer_token(&headers)?;
+    registry
+        .mutate_team_pack_assignment(bearer, TeamPackAssignmentMutationKind::Assign, &request)
+        .await
+        .map(Json)
+        .map_err(ApiResponseError)
+}
+
+pub(super) async fn unassign_team_pack(
+    State(registry): State<Arc<Registry>>,
+    headers: HeaderMap,
+    Json(request): Json<TeamPackAssignmentRequest>,
+) -> Result<Json<TeamPackAssignmentResponse>, ApiResponseError> {
+    let bearer = bearer_token(&headers)?;
+    registry
+        .mutate_team_pack_assignment(bearer, TeamPackAssignmentMutationKind::Unassign, &request)
+        .await
+        .map(Json)
+        .map_err(ApiResponseError)
+}
+
+pub(super) async fn leave_team(
+    State(registry): State<Arc<Registry>>,
+    headers: HeaderMap,
+    Json(request): Json<TeamLeaveRequest>,
+) -> Result<Json<TeamLeaveResponse>, ApiResponseError> {
+    let bearer = bearer_token(&headers)?;
+    registry
+        .leave_team(bearer, &request)
+        .await
+        .map(Json)
+        .map_err(ApiResponseError)
+}
+
+pub(super) async fn create_owner_transfer(
+    State(registry): State<Arc<Registry>>,
+    headers: HeaderMap,
+    Json(request): Json<TeamOwnerTransferRequest>,
+) -> Result<Json<TeamOwnerTransferResponse>, ApiResponseError> {
+    let bearer = bearer_token(&headers)?;
+    registry
+        .create_team_owner_transfer(bearer, &request)
+        .await
+        .map(Json)
+        .map_err(ApiResponseError)
+}
+
+pub(super) async fn accept_owner_transfer(
+    State(registry): State<Arc<Registry>>,
+    headers: HeaderMap,
+    Json(request): Json<TeamOwnerTransferAcceptRequest>,
+) -> Result<Json<TeamOwnerTransferResponse>, ApiResponseError> {
+    let bearer = bearer_token(&headers)?;
+    registry
+        .accept_team_owner_transfer(bearer, &request)
+        .await
+        .map(Json)
+        .map_err(ApiResponseError)
+}
+
+pub(super) async fn delete_team(
+    State(registry): State<Arc<Registry>>,
+    headers: HeaderMap,
+    Json(request): Json<TeamDeleteRequest>,
+) -> Result<Json<TeamDeleteResponse>, ApiResponseError> {
+    let bearer = bearer_token(&headers)?;
+    registry
+        .delete_team(bearer, &request)
         .await
         .map(Json)
         .map_err(ApiResponseError)

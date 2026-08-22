@@ -97,6 +97,7 @@ fn json_identity_commands_never_prompt_for_human_secrets() {
         vec!["--json", "identity", "backup"],
         vec!["--json", "identity", "recover", "@alice"],
         vec!["--json", "identity", "delete", "--yes"],
+        vec!["--json", "team", "delete", "@acme", "--yes"],
     ] {
         let output = denju(&args);
         assert_eq!(output.status.code(), Some(1));
@@ -267,6 +268,11 @@ fn team_and_transfer_cli_shapes_parse_without_ambiguity() {
         vec!["--json", "team", "show", "@acme"],
         vec!["--json", "team", "role", "@acme", "@alice", "maintainer"],
         vec!["--json", "team", "remove", "@acme", "@alice"],
+        vec!["--json", "team", "assign", "@acme", "@alice/packs/core"],
+        vec!["--json", "team", "unassign", "@acme", "@alice/packs/core"],
+        vec!["--json", "team", "leave", "@acme"],
+        vec!["--json", "team", "transfer-owner", "@acme", "@alice"],
+        vec!["--json", "team", "accept-owner", "deadbeef"],
         vec![
             "--json",
             "team",

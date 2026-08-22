@@ -47,6 +47,20 @@ An authored member stays in the pack when it temporarily cannot be satisfied. `d
 
 If two subscribed packs require different exact revisions of the same skill, neither silently wins. A first-install conflict exposes no pack-selected revision. If a valid pack-managed revision was already visible, Denju preserves that exact last-known-good projection and `denju status` lists the conflicting pack sources plus explicit `denju unsubscribe ...` resolution commands.
 
+## Team-assigned packs
+
+A team owner can enforce a readable pack for every current and future member:
+
+```bash
+denju team assign @acme @acme/packs/core
+```
+
+This is a distinct desired-state source from an ordinary pack subscription. A member cannot unsubscribe an enforced assignment. Team policy overrides weaker direct subscriptions and personal-pack requirements for the same immutable skill resource without deleting those weaker relationships, so `denju team unassign ...` or leaving the team can reactivate them automatically.
+
+Assignments from different teams have equal authority. If two enforced packs require incompatible revisions of one resource, Denju pauses only that resource instead of using last-write-wins. Existing valid bytes stay on the last known-good revision; a first install exposes no winner. `denju status` names each team/pack source and gives source-specific unassignment commands.
+
+Editing a skill currently supplied by an enforced pack creates a personal fork but does **not** replace team policy. Denju restores the required team revision and projects both it and the independent personal fork with deterministic collision-safe harness names. Ordinary non-enforced subscription edits keep the usual behavior of replacing the subscription with the fork.
+
 ## Rename, unpublish, and delete
 
 ```bash
@@ -57,4 +71,4 @@ denju delete @alice/packs/core-tools
 
 Rename preserves the pack's stable resource ID and keeps old-locator redirect behavior. Unpublish makes public-only subscriptions dormant: their pack-managed skills disappear on reconcile, while republishing the same pack reactivates the existing relationship.
 
-Delete tombstones a personal pack and removes its subscription roots; packs do not support retain-on-delete. Recreating the same locator later creates a different resource ID and never reconnects subscriptions to the deleted pack. Team pack deletion remains blocked until the owner-only team deletion and ownership-succession rules are available.
+Delete tombstones a personal pack and removes its subscription and team-assignment roots; packs do not support retain-on-delete. Recreating the same locator later creates a different resource ID and never reconnects subscriptions or assignments to the deleted pack. Deleting an entire team likewise removes its assigned-pack policy and tombstones its remaining team resources.

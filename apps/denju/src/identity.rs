@@ -441,7 +441,7 @@ async fn resume_account_delete(
                 request_hash: request_hash.to_string(),
             })
             .await
-            .map_err(client_error)?;
+            .map_err(account_delete_client_error)?;
         if response.username != journal.payload.username {
             return Err(RuntimeError::new(
                 CliErrorCode::Internal,
@@ -644,7 +644,7 @@ fn prompt_new_password() -> Result<String, RuntimeError> {
     Ok(password)
 }
 
-fn prompt_password(prompt: &str) -> Result<String, RuntimeError> {
+pub(crate) fn prompt_password(prompt: &str) -> Result<String, RuntimeError> {
     #[cfg(unix)]
     let result = {
         let _guard = UnixEchoGuard::disable()?;
@@ -724,7 +724,7 @@ fn stty_status(tty: &File, args: &[&str]) -> Result<(), RuntimeError> {
     }
 }
 
-fn confirm(prompt: &str) -> Result<bool, RuntimeError> {
+pub(crate) fn confirm(prompt: &str) -> Result<bool, RuntimeError> {
     print!("{prompt}");
     io::stdout().flush().map_err(local_error)?;
     let mut answer = String::new();
@@ -735,7 +735,7 @@ fn confirm(prompt: &str) -> Result<bool, RuntimeError> {
     ))
 }
 
-fn require_interactive(json: bool, message: &str) -> Result<(), RuntimeError> {
+pub(crate) fn require_interactive(json: bool, message: &str) -> Result<(), RuntimeError> {
     if json {
         Err(RuntimeError::new(
             CliErrorCode::InteractiveRequired,
@@ -767,19 +767,21 @@ fn force_file_credentials() -> bool {
 }
 
 fn client_error(error: ClientError) -> RuntimeError {
-    match &error {
-        ClientError::Registry(api) if api.code == ApiErrorCode::Unauthorized => {
-            RuntimeError::new(CliErrorCode::CredentialUnavailable, api.message.clone())
-        }
-        ClientError::Registry(api) if api.code == ApiErrorCode::NotFound => {
-            RuntimeError::new(CliErrorCode::NotFound, api.message.clone())
-        }
-        ClientError::Registry(api) if api.code == ApiErrorCode::OperationConflict => {
-            RuntimeError::new(CliErrorCode::InvalidArguments, api.message.clone())
-        }
-        _ => RuntimeError::new(CliErrorCode::RegistryUnavailable, error.to_string())
-            .recovery("denju doctor"),
+    crate::context::client_error(error)
+}
+
+fn account_delete_client_error(error: ClientError) -> RuntimeError {
+    if let ClientError::Registry(api) = &error
+        && api.code == ApiErrorCode::InvalidRequest
+        && let Some(team) = api
+            .message
+            .strip_prefix("account owns @")
+            .and_then(|rest| rest.split(';').next())
+    {
+        return RuntimeError::new(CliErrorCode::InvalidArguments, api.message.clone())
+            .recovery(format!("denju team show @{team}"));
     }
+    client_error(error)
 }
 
 fn credential_error(error: impl std::fmt::Display) -> RuntimeError {

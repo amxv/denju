@@ -4,9 +4,10 @@ use denju_core::{OperationId, ResourceId, ResourceKind, ResourceLocator};
 use denju_wire::{
     ApiError, ApiErrorCode, PackCreateRequest, PackCreateResponse, PackDetail, PackMemberTarget,
     PackMutationKind, PackMutationRequest, PackMutationResponse, PackPublishRequest,
-    PackSubscriptionCatalog, PackSubscriptionMutationKind, PackSubscriptionRequest,
-    PackSubscriptionResponse, PackSummary, RequestHash, pack_create_request_hash,
-    pack_mutation_request_hash, pack_publish_request_hash, pack_subscription_request_hash,
+    PackRequirement, PackRequirementKind, PackRequirementSource, PackSubscriptionCatalog,
+    PackSubscriptionMutationKind, PackSubscriptionRequest, PackSubscriptionResponse, PackSummary,
+    RequestHash, pack_create_request_hash, pack_mutation_request_hash, pack_publish_request_hash,
+    pack_subscription_request_hash,
 };
 use serde::{Serialize, de::DeserializeOwned};
 use sqlx::Row;
@@ -566,6 +567,29 @@ impl Registry {
                 ));
             }
         }
+        if kind == PackSubscriptionMutationKind::Unsubscribe
+            && let SubscriptionSubject::User(user_id) = subject
+        {
+            let assigning_team = sqlx::query_scalar::<_, String>(
+                "SELECT n.slug FROM team_pack_assignments a \
+                 JOIN team_memberships tm ON tm.team_namespace_id=a.team_namespace_id AND tm.user_id=$1 \
+                 JOIN namespaces n ON n.id=a.team_namespace_id \
+                 WHERE a.pack_resource_id=$2 ORDER BY n.slug LIMIT 1",
+            )
+            .bind(user_id)
+            .bind(resource_id.as_uuid())
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(internal_api_error)?;
+            if let Some(team) = assigning_team {
+                return Err(ApiError::new(
+                    ApiErrorCode::InvalidRequest,
+                    format!(
+                        "pack is enforced by @{team}; the team owner must unassign it before members can unsubscribe"
+                    ),
+                ));
+            }
+        }
         mutate_generic_subscription_row(&mut tx, subject, resource_id.as_uuid(), kind).await?;
         let outcome = PackSubscriptionResponse {
             resource_id: resource_id.to_string(),
@@ -597,7 +621,7 @@ impl Registry {
         bearer: &str,
     ) -> Result<PackSubscriptionCatalog, ApiError> {
         let subject = self.subscription_subject(bearer).await?;
-        let ids = match subject {
+        let requirements = match subject {
             SubscriptionSubject::Installation(id) => sqlx::query_scalar::<_, Uuid>(
                 "SELECT s.resource_id FROM installation_subscriptions s JOIN resources r ON r.id=s.resource_id \
                  WHERE s.installation_id=$1 AND r.kind='pack' AND r.visibility='public' AND r.deleted_at IS NULL ORDER BY r.id",
@@ -605,21 +629,75 @@ impl Registry {
             .bind(id)
             .fetch_all(&self.pool)
             .await
-            .map_err(internal_api_error)?,
-            SubscriptionSubject::User(user_id) => sqlx::query_scalar::<_, Uuid>(
-                "SELECT s.resource_id FROM account_subscriptions s JOIN resources r ON r.id=s.resource_id \
-                 JOIN users u ON u.id=s.user_id WHERE s.user_id=$1 AND r.kind='pack' AND r.deleted_at IS NULL \
-                 AND (r.visibility='public' OR r.owner_namespace_id=u.namespace_id OR EXISTS( \
-                   SELECT 1 FROM team_memberships tm WHERE tm.team_namespace_id=r.owner_namespace_id AND tm.user_id=s.user_id \
-                 )) ORDER BY r.id",
-            )
-            .bind(user_id)
-            .fetch_all(&self.pool)
-            .await
-            .map_err(internal_api_error)?,
+            .map_err(internal_api_error)?
+            .into_iter()
+            .map(|pack_id| {
+                (
+                    pack_id,
+                    PackRequirementSource {
+                        source_id: format!("direct:{pack_id}"),
+                        kind: PackRequirementKind::Direct,
+                        label: "direct subscription".to_owned(),
+                        team_namespace_id: None,
+                    },
+                )
+            })
+            .collect::<Vec<_>>(),
+            SubscriptionSubject::User(user_id) => {
+                let direct = sqlx::query_scalar::<_, Uuid>(
+                    "SELECT s.resource_id FROM account_subscriptions s JOIN resources r ON r.id=s.resource_id \
+                     JOIN users u ON u.id=s.user_id WHERE s.user_id=$1 AND r.kind='pack' AND r.deleted_at IS NULL \
+                     AND (r.visibility='public' OR r.owner_namespace_id=u.namespace_id OR EXISTS( \
+                       SELECT 1 FROM team_memberships tm WHERE tm.team_namespace_id=r.owner_namespace_id AND tm.user_id=s.user_id \
+                     )) ORDER BY r.id",
+                )
+                .bind(user_id)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(internal_api_error)?;
+                let assigned = sqlx::query_as::<_, (Uuid, Uuid, String)>(
+                    "SELECT a.pack_resource_id,a.team_namespace_id,n.slug \
+                     FROM team_pack_assignments a \
+                     JOIN team_memberships tm ON tm.team_namespace_id=a.team_namespace_id AND tm.user_id=$1 \
+                     JOIN namespaces n ON n.id=a.team_namespace_id \
+                     JOIN resources p ON p.id=a.pack_resource_id AND p.kind='pack' AND p.deleted_at IS NULL \
+                     WHERE p.visibility='public' OR p.owner_namespace_id=a.team_namespace_id \
+                     ORDER BY n.slug,a.team_namespace_id,a.pack_resource_id",
+                )
+                .bind(user_id)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(internal_api_error)?;
+                let mut requirements = direct
+                    .into_iter()
+                    .map(|pack_id| {
+                        (
+                            pack_id,
+                            PackRequirementSource {
+                                source_id: format!("direct:{pack_id}"),
+                                kind: PackRequirementKind::Direct,
+                                label: "direct subscription".to_owned(),
+                                team_namespace_id: None,
+                            },
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                requirements.extend(assigned.into_iter().map(|(pack_id, team_id, team)| {
+                    (
+                        pack_id,
+                        PackRequirementSource {
+                            source_id: format!("team:{team_id}:pack:{pack_id}"),
+                            kind: PackRequirementKind::TeamAssignment,
+                            label: format!("@{team}"),
+                            team_namespace_id: Some(team_id.to_string()),
+                        },
+                    )
+                }));
+                requirements
+            }
         };
-        let mut packs = Vec::with_capacity(ids.len());
-        for id in ids {
+        let mut packs = Vec::with_capacity(requirements.len());
+        for (id, source) in requirements {
             let locator = sqlx::query_as::<_, (String, String)>(
                 "SELECT n.slug,r.slug FROM resources r JOIN namespaces n ON n.id=r.owner_namespace_id WHERE r.id=$1",
             )
@@ -627,10 +705,12 @@ impl Registry {
             .fetch_one(&self.pool)
             .await
             .map_err(internal_api_error)?;
-            packs.push(
-                self.pack_detail(Some(bearer), &format!("@{}/packs/{}", locator.0, locator.1))
+            packs.push(PackRequirement {
+                source,
+                pack: self
+                    .pack_detail(Some(bearer), &format!("@{}/packs/{}", locator.0, locator.1))
                     .await?,
-            );
+            });
         }
         Ok(PackSubscriptionCatalog { packs })
     }

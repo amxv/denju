@@ -301,3 +301,79 @@ UPDATE owned_skills SET workspace_generation=resource_generation;
 PRAGMA user_version = 11;
 COMMIT;
 "#;
+
+pub(super) const MIGRATION_V12: &str = r#"
+BEGIN IMMEDIATE;
+
+-- Relationship state and active local projection ownership are separate concerns. A stronger
+-- desired source (notably an enforced team assignment) suppresses a weaker source without
+-- deleting the weaker relationship, so removing policy can reactivate it deterministically.
+CREATE TABLE desired_source_suppressions (
+    source_kind TEXT NOT NULL CHECK (source_kind IN ('subscription','owned')),
+    resource_id TEXT NOT NULL,
+    enforcing_source_id TEXT NOT NULL,
+    updated_at_unix_ms INTEGER NOT NULL,
+    PRIMARY KEY (source_kind, resource_id)
+);
+
+ALTER TABLE pack_source_conflicts RENAME COLUMN source_pack_ids_json TO source_ids_json;
+ALTER TABLE pack_source_conflicts ADD COLUMN source_labels_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(source_labels_json));
+ALTER TABLE pack_materialized_skills ADD COLUMN desired_root_tree_id TEXT NOT NULL DEFAULT '';
+
+-- Phase-12 pack tables keyed subscriptions by pack resource, which could not represent the
+-- same pack being required directly and by one or more teams. Catalog rows are disposable
+-- remote cache; materialized state/journals remain intact while this cache is rebuilt.
+DROP TABLE pack_skill_sources;
+DROP TABLE pack_subscriptions;
+
+CREATE TABLE pack_subscriptions (
+    source_id TEXT PRIMARY KEY,
+    source_kind TEXT NOT NULL CHECK (source_kind IN ('direct','team_assignment')),
+    source_label TEXT NOT NULL,
+    source_team_id TEXT,
+    enforced INTEGER NOT NULL CHECK (enforced IN (0,1)),
+    pack_resource_id TEXT NOT NULL,
+    locator TEXT NOT NULL,
+    resource_generation INTEGER NOT NULL CHECK (resource_generation >= 0),
+    pack_version INTEGER NOT NULL CHECK (pack_version > 0),
+    degraded INTEGER NOT NULL DEFAULT 0 CHECK (degraded IN (0,1)),
+    updated_at_unix_ms INTEGER NOT NULL,
+    CHECK ((source_kind='team_assignment') = (source_team_id IS NOT NULL)),
+    CHECK ((source_kind='team_assignment') = (enforced=1))
+);
+
+CREATE INDEX pack_subscriptions_pack_idx
+    ON pack_subscriptions(pack_resource_id, source_id);
+
+CREATE TABLE pack_skill_sources (
+    source_id TEXT NOT NULL REFERENCES pack_subscriptions(source_id) ON DELETE CASCADE,
+    pack_resource_id TEXT NOT NULL,
+    resource_id TEXT NOT NULL,
+    locator TEXT NOT NULL,
+    owner TEXT NOT NULL,
+    skill_name TEXT NOT NULL,
+    resource_generation INTEGER NOT NULL CHECK (resource_generation >= 0),
+    desired_revision_id TEXT NOT NULL,
+    unavailable_reason TEXT,
+    updated_at_unix_ms INTEGER NOT NULL,
+    PRIMARY KEY (source_id, resource_id)
+);
+
+CREATE INDEX pack_skill_sources_resource_idx
+    ON pack_skill_sources(resource_id, source_id);
+
+PRAGMA user_version = 12;
+COMMIT;
+"#;
+
+pub(super) const MIGRATION_V13: &str = r#"
+BEGIN IMMEDIATE;
+
+-- Automatic forks created from edited direct subscriptions consume that subscription when they
+-- are promoted. Enforced-team edits are different: policy remains active and any weaker personal
+-- relationship must survive, so their fork promotion must never request subscription replacement.
+ALTER TABLE local_forks ADD COLUMN replace_subscription INTEGER NOT NULL DEFAULT 1 CHECK (replace_subscription IN (0,1));
+
+PRAGMA user_version = 13;
+COMMIT;
+"#;

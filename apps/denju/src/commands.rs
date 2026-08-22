@@ -252,6 +252,29 @@ pub(crate) enum TeamCommand {
         #[arg(long, action = ArgAction::Set)]
         members_can_publish: bool,
     },
+    Assign {
+        team: String,
+        pack: String,
+    },
+    Unassign {
+        team: String,
+        pack: String,
+    },
+    Leave {
+        team: String,
+    },
+    TransferOwner {
+        team: String,
+        member: String,
+    },
+    AcceptOwner {
+        code: String,
+    },
+    Delete {
+        team: String,
+        #[arg(long, action = ArgAction::SetTrue)]
+        yes: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]

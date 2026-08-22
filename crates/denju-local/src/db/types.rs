@@ -60,6 +60,7 @@ pub struct LocalForkRecord {
     pub sync_base_revision_id: String,
     pub desired_name: String,
     pub state: String,
+    pub replace_subscription: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -96,6 +97,11 @@ pub struct ManagedSkillRecord {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PackSubscriptionRecord {
+    pub source_id: String,
+    pub source_kind: String,
+    pub source_label: String,
+    pub source_team_id: Option<String>,
+    pub enforced: bool,
     pub pack_resource_id: String,
     pub locator: String,
     pub resource_generation: i64,
@@ -105,6 +111,7 @@ pub struct PackSubscriptionRecord {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PackSkillSourceRecord {
+    pub source_id: String,
     pub pack_resource_id: String,
     pub resource_id: String,
     pub locator: String,
@@ -123,6 +130,7 @@ pub struct PackMaterializedSkillRecord {
     pub skill_name: String,
     pub resource_generation: i64,
     pub desired_revision_id: String,
+    pub desired_root_tree_id: String,
     pub harness_name: Option<String>,
     pub materialized_revision_id: String,
 }
@@ -130,7 +138,8 @@ pub struct PackMaterializedSkillRecord {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PackSourceConflictRecord {
     pub resource_id: String,
-    pub source_pack_ids: Vec<String>,
+    pub source_ids: Vec<String>,
+    pub source_labels: Vec<String>,
     pub revision_ids: Vec<String>,
     pub message: String,
 }

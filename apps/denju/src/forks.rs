@@ -22,7 +22,20 @@ pub(crate) async fn protect_subscription_edits(
 ) -> Result<(usize, Vec<RuntimeError>), RuntimeError> {
     let mut forked = 0;
     let mut blockers = Vec::new();
+    let mut policy_suppressed = db
+        .source_suppressions("subscription")
+        .await
+        .map_err(local_error)?
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    // The suppression table is resolver output and can legitimately lag one crash boundary
+    // behind relationship writes. Cached enforced pack sources are durable authority too, so
+    // never misclassify their canonical bytes as a user's direct-subscription edit.
+    policy_suppressed.extend(db.enforced_pack_resource_ids().await.map_err(local_error)?);
     for subscription in db.subscriptions().await.map_err(local_error)? {
+        if policy_suppressed.contains(&subscription.resource_id) {
+            continue;
+        }
         let canonical = paths
             .skills
             .join(&subscription.owner)
@@ -73,22 +86,131 @@ pub(crate) async fn protect_subscription_edits(
             continue;
         }
 
-        create_local_fork(paths, db, roots, &subscription, &desired_name, &snapshot).await?;
+        let upstream = ForkUpstream {
+            resource_id: &subscription.resource_id,
+            locator: &subscription.locator,
+            revision_id: &subscription.desired_revision_id,
+        };
+        create_local_fork(
+            paths,
+            db,
+            roots,
+            upstream,
+            &desired_name,
+            &snapshot,
+            Some(&subscription),
+        )
+        .await?;
         forked += 1;
     }
     Ok((forked, blockers))
+}
+
+pub(crate) async fn protect_enforced_pack_edits(
+    paths: &LocalPaths,
+    db: &LocalDatabase,
+    roots: &ResolvedHarnessRoots,
+) -> Result<usize, RuntimeError> {
+    let enforced_resources = db
+        .enforced_pack_resource_ids()
+        .await
+        .map_err(local_error)?
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    if enforced_resources.is_empty() {
+        return Ok(0);
+    }
+    let mut forked = 0;
+    for record in db.pack_materialized_skills().await.map_err(local_error)? {
+        if !enforced_resources.contains(&record.resource_id)
+            || record.desired_root_tree_id.is_empty()
+        {
+            continue;
+        }
+        let canonical = paths.skills.join(&record.owner).join(&record.skill_name);
+        if !canonical.exists() {
+            continue;
+        }
+        let working = fs::canonicalize(&canonical).map_err(local_error)?;
+        let entries = read_skill_source(&working).map_err(local_error)?;
+        let skill_md = entries.iter().find_map(|entry| match entry {
+            denju_core::OwnedSkillEntry::File { path, bytes, .. } if path == "SKILL.md" => {
+                Some(bytes.as_slice())
+            }
+            _ => None,
+        });
+        let desired_name = skill_md
+            .ok_or_else(|| {
+                RuntimeError::new(
+                    CliErrorCode::ContentVerification,
+                    format!(
+                        "edited enforced skill {} is missing SKILL.md",
+                        record.locator
+                    ),
+                )
+            })
+            .and_then(|bytes| {
+                skill_document_declared_name(bytes).map_err(|error| {
+                    RuntimeError::new(CliErrorCode::ContentVerification, error.to_string())
+                })
+            })?;
+        let snapshot =
+            build_deterministic_skill_snapshot(&desired_name, &entries).map_err(|error| {
+                RuntimeError::new(CliErrorCode::ContentVerification, error.to_string())
+            })?;
+        if snapshot.manifest().root_tree().to_string() == record.desired_root_tree_id {
+            continue;
+        }
+        let upstream = ForkUpstream {
+            resource_id: &record.resource_id,
+            locator: &record.locator,
+            revision_id: &record.desired_revision_id,
+        };
+        create_local_fork(paths, db, roots, upstream, &desired_name, &snapshot, None).await?;
+        // The generation backing the enforced projection was edited in place. Detach that
+        // writable generation through the same recoverable lifecycle journal used by every
+        // other managed removal, but delete only the disposable pack-materialization row. The
+        // durable team requirement remains in pack source state, so normal pack apply later in
+        // this sync can safely rebuild the now-inactive dirty generation from approved bytes.
+        journaled_remove_managed_skill(
+            paths,
+            db,
+            roots,
+            &ManagedSkillRecord {
+                resource_id: record.resource_id,
+                locator: record.locator,
+                owner: record.owner,
+                skill_name: record.skill_name,
+                harness_name: record.harness_name,
+                materialized_revision_id: Some(record.materialized_revision_id),
+            },
+            ManagedDesiredKind::Pack,
+        )
+        .await
+        .map_err(local_error)?;
+        forked += 1;
+    }
+    Ok(forked)
+}
+
+#[derive(Clone, Copy)]
+struct ForkUpstream<'a> {
+    resource_id: &'a str,
+    locator: &'a str,
+    revision_id: &'a str,
 }
 
 async fn create_local_fork(
     paths: &LocalPaths,
     db: &LocalDatabase,
     roots: &ResolvedHarnessRoots,
-    subscription: &denju_local::SubscriptionRecord,
+    upstream_source: ForkUpstream<'_>,
     desired_name: &str,
     snapshot: &denju_core::DeterministicSkillSnapshot,
+    subscription_to_remove: Option<&denju_local::SubscriptionRecord>,
 ) -> Result<(), RuntimeError> {
     let author = current_local_author(db).await?;
-    let upstream = RevisionId::from_str(&subscription.desired_revision_id).map_err(local_error)?;
+    let upstream = RevisionId::from_str(upstream_source.revision_id).map_err(local_error)?;
     let operation = OperationId::from_uuid(Uuid::now_v7()).map_err(local_error)?;
     let revision = Revision::new(
         snapshot.manifest().root_tree(),
@@ -148,8 +270,8 @@ async fn create_local_fork(
             operation_id: operation.to_string(),
             resource_id: resource_id.to_string(),
             revision_id: revision.id().to_string(),
-            expected_head_revision_id: subscription.desired_revision_id.clone(),
-            parent_revision_ids: vec![subscription.desired_revision_id.clone()],
+            expected_head_revision_id: upstream_source.revision_id.to_owned(),
+            parent_revision_ids: vec![upstream_source.revision_id.to_owned()],
             expected_generation: 1,
             root_tree_id: snapshot.manifest().root_tree().to_string(),
             manifest_json: serde_json::to_string(&PublicSkillManifest::from_core(
@@ -165,40 +287,43 @@ async fn create_local_fork(
     db.save_local_fork(
         LocalForkRecord {
             resource_id: resource_id.to_string(),
-            upstream_resource_id: subscription.resource_id.clone(),
-            upstream_locator: subscription.locator.clone(),
-            created_from_revision_id: subscription.desired_revision_id.clone(),
-            sync_base_revision_id: subscription.desired_revision_id.clone(),
+            upstream_resource_id: upstream_source.resource_id.to_owned(),
+            upstream_locator: upstream_source.locator.to_owned(),
+            created_from_revision_id: upstream_source.revision_id.to_owned(),
+            sync_base_revision_id: upstream_source.revision_id.to_owned(),
             desired_name: desired_name.to_owned(),
             state: "local".to_owned(),
+            replace_subscription: subscription_to_remove.is_some(),
         },
         now,
     )
     .await
     .map_err(local_error)?;
 
-    journaled_remove_managed_skill(
-        paths,
-        db,
-        roots,
-        &ManagedSkillRecord {
-            resource_id: subscription.resource_id.clone(),
-            locator: subscription.locator.clone(),
-            owner: subscription.owner.clone(),
-            skill_name: subscription.skill_name.clone(),
-            harness_name: subscription.harness_name.clone(),
-            materialized_revision_id: subscription.materialized_revision_id.clone(),
-        },
-        ManagedDesiredKind::Subscription,
-    )
-    .await
-    .map_err(local_error)?;
-    db.clear_subscription_edit_lock(subscription.resource_id.clone())
+    if let Some(subscription) = subscription_to_remove {
+        journaled_remove_managed_skill(
+            paths,
+            db,
+            roots,
+            &ManagedSkillRecord {
+                resource_id: subscription.resource_id.clone(),
+                locator: subscription.locator.clone(),
+                owner: subscription.owner.clone(),
+                skill_name: subscription.skill_name.clone(),
+                harness_name: subscription.harness_name.clone(),
+                materialized_revision_id: subscription.materialized_revision_id.clone(),
+            },
+            ManagedDesiredKind::Subscription,
+        )
         .await
         .map_err(local_error)?;
-    reconcile_harness_projections(paths, db, roots)
-        .await
-        .map_err(local_error)?;
+        db.clear_subscription_edit_lock(subscription.resource_id.clone())
+            .await
+            .map_err(local_error)?;
+        reconcile_harness_projections(paths, db, roots)
+            .await
+            .map_err(local_error)?;
+    }
     Ok(())
 }
 

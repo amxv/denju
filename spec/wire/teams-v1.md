@@ -12,7 +12,7 @@ Every team has exactly one `owner` membership and zero or more `maintainer` or `
 
 Owners and maintainers may publish into the team namespace. A member may publish only when the team's `members_can_publish` setting is enabled. That switch is team-wide; v1 does not add per-skill team ACLs.
 
-Only the owner may change member roles, remove members, or change `members_can_publish`. Maintainers may invite new members but may not invite maintainers. The owner may invite either maintainers or members. The owner membership cannot be removed or changed through the role endpoint; ownership succession is a separate lifecycle operation outside this phase.
+Only the owner may change member roles, remove members, change `members_can_publish`, assign team packs, initiate ownership succession, or delete the team. Maintainers may invite new members but may not invite maintainers. The owner may invite either maintainers or members. The owner membership cannot be removed or changed through the ordinary role/removal endpoints.
 
 ## Team endpoints
 
@@ -25,6 +25,12 @@ Only the owner may change member roles, remove members, or change `members_can_p
 - `POST /v1/teams/members/role` changes a non-owner membership role.
 - `POST /v1/teams/members/remove` removes a non-owner membership.
 - `POST /v1/teams/settings` changes `members_can_publish`.
+- `POST /v1/teams/packs/assign` adds one enforced pack requirement for all current/future members.
+- `POST /v1/teams/packs/unassign` removes one enforced pack requirement.
+- `POST /v1/teams/leave` removes the authenticated non-owner's membership.
+- `POST /v1/teams/owner-transfer` creates a pending owner handoff to an existing member using only a hash of the client-generated acceptance code.
+- `POST /v1/teams/owner-transfer/accept` atomically accepts that handoff as the nominated authenticated member.
+- `POST /v1/teams/delete` owner/password-confirms complete team deletion.
 - `POST /v1/resources/transfer` moves one personally owned skill or pack into a team while preserving stable resource identity.
 
 Every team mutation and transfer uses UUIDv7 operation identity plus an endpoint-domain canonical request hash. A committed exact retry replays its stored response. Reusing an operation ID with different intent is rejected.
@@ -68,6 +74,18 @@ For a team-private pack, a private member is therefore valid only when it is a r
 
 Transferring a personal pack into a team re-resolves all authored pack member intent against the destination team's full audience before moving ownership. If any member would become unreadable, the transfer fails without changing owner, locator, redirects, or transfer-operation state.
 
+### Assigned/enforced packs
+
+`team_pack_assignments` is normalized team policy keyed by stable team namespace ID plus stable pack resource ID. Assignment accepts a pack owned by that team or a currently public pack. The assignment itself is not copied into per-user subscription rows.
+
+The authenticated pack-requirement catalog returns each active requirement with a stable source identity. Team assignments use `team:<team-id>:pack:<pack-id>` and `kind=team_assignment`; ordinary pack subscriptions use `kind=direct`. A current team membership is what activates the assigned requirement for that user, so the same query naturally covers users who join after assignment and removes policy after leave/removal.
+
+An external public pack that becomes private is omitted from the active requirement catalog while its stable assignment remains authored; making the same pack resource readable again can reactivate it. Deleting a pack removes assignment roots entirely, so locator reuse cannot inherit team policy.
+
+Local desired-state resolution is by immutable skill resource ID. `team_assignment` outranks owned/personal direct and personal-pack sources but suppresses rather than deletes weaker intent. Two team assignments have equal authority: matching exact revisions collapse to one selected state; incompatible revisions produce a conflict and never last-write-win. The client preserves the exact last valid projection when one exists, exposes nothing for a first-install conflict, and records source IDs/labels so status can provide exact `denju team unassign <team> <pack>` recovery commands.
+
+Editing an enforced materialization creates a personal fork without replacing the authoritative assignment. The edited bytes move to the fork; the required upstream generation is rebuilt/restored and both independent resources participate in the ordinary collision-safe projection allocator.
+
 ## Stable personal-to-team transfer
 
 `POST /v1/resources/transfer` accepts only an active resource currently owned by the caller's personal namespace and a destination namespace in which the caller has team publish authority. The transfer keeps the existing resource UUID and all relationships keyed by it, including immutable history, releases, subscriptions, shares, fork provenance, proposals, pack references, and other resource-ID relationships.
@@ -87,6 +105,12 @@ Collision, audience, quota, or reachability failures roll the entire transaction
 
 For a transferred skill, the transferor's current personal workspace becomes that same user's private team workspace without copying or publishing it. Other authorized publishers can provision their own workspace only from a team release.
 
-## Deferred team lifecycle
+## Ownership succession, leave, and deletion
 
-Team ownership succession, team deletion, assigned/enforced packs, and the owner-renewal/delete lifecycle are intentionally outside this contract. Team-owned skill and pack deletion remains blocked until those owner-only lifecycle rules land.
+V1 has exactly one owner. `owner-transfer` nominates an existing member and stores only the hash of a client-generated 128-bit acceptance code. Creating the transfer does not alter authority. `owner-transfer/accept` is restricted to the nominated authenticated member and atomically changes the target to `owner` and the former owner to `maintainer`; that acceptance is the authority-change wake boundary.
+
+An owner cannot use the ordinary leave path and cannot delete their account while they still own any team. A non-owner leave or owner-driven member removal deletes that user's team workspace/conflict state, team-private direct subscription authority for that team, and membership. Team-assigned requirements disappear because membership no longer activates them; unrelated public direct subscriptions and personal forks are not deleted.
+
+Team deletion is owner-only and password-confirmed. It tombstones every active team resource using the ordinary stable-resource deletion semantics, removes team assignment/subscription policy, deletes namespace-scoped mutation/replay state, and then deletes the team namespace itself. The team name is immediately reusable, but a replacement team receives a fresh internal namespace ID and therefore inherits no memberships, assignments, resources, or other stable-ID relationships.
+
+The delete operation keeps only its actor-scoped idempotent result after the namespace disappears. Namespace-scoped import/revision/transfer operation rows cascade with team deletion so historical mutation journals cannot pin an otherwise deleted namespace.

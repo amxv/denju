@@ -287,6 +287,92 @@ async fn interrupted_removal_recovers_without_reintroducing_desired_state() {
     assert!(db.local_lifecycle_journals().await.unwrap().is_empty());
 }
 
+#[tokio::test]
+async fn pack_detach_preserves_captured_edit_then_allows_authoritative_rebuild() {
+    let home = tempdir().unwrap();
+    let paths = LocalPaths::from_home(home.path().to_owned());
+    ensure_local_layout(&paths).unwrap();
+    let roots = roots(home.path());
+    prepare_harness_roots(&roots).unwrap();
+    let db = LocalDatabase::open(&paths.state_db).await.unwrap();
+    let resource_id = ResourceId::from_str("01890f47-6a1f-7cc2-98c1-5f6c1ed8a3a1").unwrap();
+    let revision = RevisionId::from_bytes([6; 32]);
+    let snapshot = skill_snapshot("review");
+    let resource_id_text = resource_id.to_string();
+    let revision_text = revision.to_string();
+    let root_tree = snapshot.manifest().root_tree().to_string();
+    db.call({
+        let resource_id_text = resource_id_text.clone();
+        let revision_text = revision_text.clone();
+        let root_tree = root_tree.clone();
+        move |connection| {
+            connection.execute(
+                "INSERT INTO pack_materialized_skills \
+                 (resource_id,locator,owner,skill_name,resource_generation,desired_revision_id,desired_root_tree_id,harness_name,materialized_revision_id,updated_at_unix_ms) \
+                 VALUES (?1,'@alice/review','alice','review',1,?2,?3,NULL,?2,1)",
+                rusqlite::params![resource_id_text, revision_text, root_tree],
+            )?;
+            Ok(())
+        }
+    })
+    .await
+    .unwrap();
+    let generation = materialize_skill_snapshot(
+        &paths,
+        &db,
+        &DesiredSkillMaterialization {
+            resource_id,
+            owner: "alice".to_owned(),
+            skill_name: "review".to_owned(),
+            revision_id: revision,
+            manifest: snapshot.manifest().clone(),
+        },
+        snapshot.bytes(),
+    )
+    .await
+    .unwrap();
+    reconcile_harness_projections(&paths, &db, &roots)
+        .await
+        .unwrap();
+    fs::write(generation.join("notes.txt"), b"captured enforced edit\n").unwrap();
+    let record = db
+        .managed_skills()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|record| record.resource_id == resource_id_text)
+        .unwrap();
+
+    journaled_remove_managed_skill(&paths, &db, &roots, &record, ManagedDesiredKind::Pack)
+        .await
+        .unwrap();
+    assert!(!paths.skills.join("alice/review").exists());
+    assert!(db.pack_materialized_skills().await.unwrap().is_empty());
+    assert_eq!(
+        fs::read(generation.join("notes.txt")).unwrap(),
+        b"captured enforced edit\n"
+    );
+
+    let rebuilt = stage_skill_generation(
+        &paths,
+        &DesiredSkillMaterialization {
+            resource_id,
+            owner: "alice".to_owned(),
+            skill_name: "review".to_owned(),
+            revision_id: revision,
+            manifest: snapshot.manifest().clone(),
+        },
+        snapshot.bytes(),
+        OperationId::from_uuid(Uuid::now_v7()).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(rebuilt, generation);
+    assert_eq!(
+        fs::read(rebuilt.join("notes.txt")).unwrap(),
+        b"durable user bytes\n"
+    );
+}
+
 fn remove_link(path: &std::path::Path) {
     if fs::symlink_metadata(path).is_err() {
         return;

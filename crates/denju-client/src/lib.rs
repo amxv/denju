@@ -25,8 +25,11 @@ use denju_wire::{
     SkillProposalList, SkillRevisionDetail, SnapshotDownload, StagedBlobUpload,
     SubscriptionCatalog, SubscriptionMutationRequest, SubscriptionMutationResponse,
     SubscriptionTarget, SyncHint, SyncReconcileRequest, SyncReconcileResponse, TeamCreateRequest,
-    TeamDetail, TeamInviteRequest, TeamInviteResponse, TeamInviteRevokeRequest, TeamJoinRequest,
-    TeamList, TeamMemberRemoveRequest, TeamMemberRoleRequest, TeamMutationResponse,
+    TeamDeleteRequest, TeamDeleteResponse, TeamDetail, TeamInviteRequest, TeamInviteResponse,
+    TeamInviteRevokeRequest, TeamJoinRequest, TeamLeaveRequest, TeamLeaveResponse, TeamList,
+    TeamMemberRemoveRequest, TeamMemberRoleRequest, TeamMutationResponse,
+    TeamOwnerTransferAcceptRequest, TeamOwnerTransferRequest, TeamOwnerTransferResponse,
+    TeamPackAssignmentMutationKind, TeamPackAssignmentRequest, TeamPackAssignmentResponse,
     TeamSettingsRequest, UnpublishSkillResponse, UsageResponse,
 };
 use futures_util::StreamExt;
@@ -229,6 +232,50 @@ impl RegistryClient {
         request: &TeamSettingsRequest,
     ) -> Result<TeamMutationResponse, ClientError> {
         self.authenticated_post_json("v1/teams/settings", request)
+            .await
+    }
+
+    pub async fn mutate_team_pack_assignment(
+        &self,
+        kind: TeamPackAssignmentMutationKind,
+        request: &TeamPackAssignmentRequest,
+    ) -> Result<TeamPackAssignmentResponse, ClientError> {
+        let path = match kind {
+            TeamPackAssignmentMutationKind::Assign => "v1/teams/packs/assign",
+            TeamPackAssignmentMutationKind::Unassign => "v1/teams/packs/unassign",
+        };
+        self.authenticated_post_json(path, request).await
+    }
+
+    pub async fn leave_team(
+        &self,
+        request: &TeamLeaveRequest,
+    ) -> Result<TeamLeaveResponse, ClientError> {
+        self.authenticated_post_json("v1/teams/leave", request)
+            .await
+    }
+
+    pub async fn create_team_owner_transfer(
+        &self,
+        request: &TeamOwnerTransferRequest,
+    ) -> Result<TeamOwnerTransferResponse, ClientError> {
+        self.authenticated_post_json("v1/teams/owner-transfer", request)
+            .await
+    }
+
+    pub async fn accept_team_owner_transfer(
+        &self,
+        request: &TeamOwnerTransferAcceptRequest,
+    ) -> Result<TeamOwnerTransferResponse, ClientError> {
+        self.authenticated_post_json("v1/teams/owner-transfer/accept", request)
+            .await
+    }
+
+    pub async fn delete_team(
+        &self,
+        request: &TeamDeleteRequest,
+    ) -> Result<TeamDeleteResponse, ClientError> {
+        self.authenticated_post_json("v1/teams/delete", request)
             .await
     }
 

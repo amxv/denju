@@ -4,6 +4,93 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use denju_core::ResourceId;
 
+/// One independently durable reason a skill should exist on this device. The priority is
+/// deliberately part of the pure sync model so local SQLite/network code cannot accidentally
+/// invent its own precedence rules.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum DesiredSourceKind {
+    PersonalPack,
+    DirectSubscription,
+    OwnedWorkspace,
+    TeamAssignment,
+}
+
+impl DesiredSourceKind {
+    pub const fn is_enforced(self) -> bool {
+        matches!(self, Self::TeamAssignment)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DesiredSource {
+    pub resource_id: String,
+    pub revision_id: String,
+    /// Stable source identity, for example `direct:<resource-id>` or
+    /// `team:<team-id>:pack:<pack-id>`.
+    pub source_id: String,
+    /// Human-readable source locator used by status/recovery guidance.
+    pub source_label: String,
+    pub kind: DesiredSourceKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResolvedDesiredState {
+    Absent,
+    Selected {
+        source: DesiredSource,
+        suppressed_sources: Vec<DesiredSource>,
+    },
+    Conflict {
+        sources: Vec<DesiredSource>,
+        /// A conflict never chooses a winner. If the resource was already visible, callers
+        /// preserve that exact last-good revision until the conflict is resolved.
+        last_valid_revision_id: Option<String>,
+    },
+}
+
+/// Resolve all current requirements for one immutable skill resource.
+///
+/// Only the strongest authority level participates in winner/conflict selection. Lower-priority
+/// requirements remain returned as suppressed state so removing policy naturally reactivates
+/// them rather than deleting user intent. Equal-authority disagreement never last-write-wins.
+pub fn resolve_desired_sources(
+    mut sources: Vec<DesiredSource>,
+    last_valid_revision_id: Option<&str>,
+) -> ResolvedDesiredState {
+    if sources.is_empty() {
+        return ResolvedDesiredState::Absent;
+    }
+    sources.sort_by(|left, right| {
+        right
+            .kind
+            .cmp(&left.kind)
+            .then_with(|| left.source_id.cmp(&right.source_id))
+            .then_with(|| left.revision_id.cmp(&right.revision_id))
+    });
+    let strongest = sources[0].kind;
+    let split = sources.partition_point(|source| source.kind == strongest);
+    let mut active = sources[..split].to_vec();
+    let suppressed = sources[split..].to_vec();
+    let revisions = active
+        .iter()
+        .map(|source| source.revision_id.as_str())
+        .collect::<BTreeSet<_>>();
+    if revisions.len() > 1 {
+        active.sort_by(|left, right| left.source_id.cmp(&right.source_id));
+        return ResolvedDesiredState::Conflict {
+            sources: active,
+            last_valid_revision_id: last_valid_revision_id.map(str::to_owned),
+        };
+    }
+    let source = active.remove(0);
+    let mut suppressed_sources = active;
+    suppressed_sources.extend(suppressed);
+    ResolvedDesiredState::Selected {
+        source,
+        suppressed_sources,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ManagedSkillName {
     pub resource_id: ResourceId,
@@ -142,5 +229,55 @@ mod tests {
         let assignment = allocate_projection_names(&[skill], &reserved);
         assert!(assignment[0].derived);
         assert_ne!(assignment[0].harness_name, "review");
+    }
+
+    fn source(kind: DesiredSourceKind, source_id: &str, revision: &str) -> DesiredSource {
+        DesiredSource {
+            resource_id: "skill-1".to_owned(),
+            revision_id: revision.to_owned(),
+            source_id: source_id.to_owned(),
+            source_label: source_id.to_owned(),
+            kind,
+        }
+    }
+
+    #[test]
+    fn enforced_team_assignment_suppresses_weaker_personal_intent_without_deleting_it() {
+        let direct = source(DesiredSourceKind::DirectSubscription, "direct", "personal");
+        let pack = source(DesiredSourceKind::PersonalPack, "pack", "pack-revision");
+        let enforced = source(DesiredSourceKind::TeamAssignment, "team:acme", "approved");
+        assert_eq!(
+            resolve_desired_sources(vec![direct.clone(), enforced.clone(), pack.clone()], None),
+            ResolvedDesiredState::Selected {
+                source: enforced,
+                suppressed_sources: vec![direct, pack],
+            }
+        );
+    }
+
+    #[test]
+    fn equal_team_assignments_conflict_and_preserve_only_the_last_good_visibility() {
+        let alpha = source(DesiredSourceKind::TeamAssignment, "team:alpha", "rev-a");
+        let beta = source(DesiredSourceKind::TeamAssignment, "team:beta", "rev-b");
+        assert_eq!(
+            resolve_desired_sources(vec![beta.clone(), alpha.clone()], Some("last-good")),
+            ResolvedDesiredState::Conflict {
+                sources: vec![alpha, beta],
+                last_valid_revision_id: Some("last-good".to_owned()),
+            }
+        );
+    }
+
+    #[test]
+    fn matching_equal_authority_sources_are_one_requirement_not_a_conflict() {
+        let alpha = source(DesiredSourceKind::TeamAssignment, "team:alpha", "same");
+        let beta = source(DesiredSourceKind::TeamAssignment, "team:beta", "same");
+        assert_eq!(
+            resolve_desired_sources(vec![beta.clone(), alpha.clone()], None),
+            ResolvedDesiredState::Selected {
+                source: alpha,
+                suppressed_sources: vec![beta],
+            }
+        );
     }
 }

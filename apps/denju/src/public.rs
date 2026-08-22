@@ -4,13 +4,12 @@ use denju_client::RegistryClient;
 use denju_core::{OperationId, ResourceId, RevisionId};
 use denju_local::{
     DesiredSkillMaterialization, LocalDatabase, LocalPaths, ManagedDesiredKind, ManagedSkillRecord,
-    OwnedSkillRecord, RegistryRenameState, SubscriptionRecord, WorkspaceStatus,
-    apply_registry_rename, journaled_remove_managed_skill, materialize_skill_snapshot,
+    SubscriptionRecord, journaled_remove_managed_skill, materialize_skill_snapshot,
     prepare_harness_roots, reconcile_canonical_links, reconcile_harness_projections,
     recover_local_lifecycle, recover_materializations, resolve_harness_roots,
 };
 use denju_wire::{
-    CliErrorCode, PrivateSkill, PublicSkillDetail, PublicSkillSearchResponse, SubscribedSkill,
+    CliErrorCode, PublicSkillDetail, PublicSkillSearchResponse, SubscribedSkill,
     SubscriptionContent, SubscriptionMutationKind, SubscriptionMutationRequest, SyncKnownResource,
     SyncReconcileRequest, subscription_request_hash,
 };
@@ -214,6 +213,8 @@ pub(crate) async fn sync_once() -> Result<SyncOutcome, RuntimeError> {
         let (_forked, fork_blockers) =
             crate::forks::protect_subscription_edits(&paths, &db, &roots).await?;
         blockers.extend(fork_blockers);
+        let _enforced_forks =
+            crate::forks::protect_enforced_pack_edits(&paths, &db, &roots).await?;
         let (_workspace_pass, local_blockers) =
             crate::workspace::capture_local_edits(&paths, &db, false).await?;
         blockers.extend(local_blockers);
@@ -264,9 +265,18 @@ pub(crate) async fn clear_local_managed_state() -> Result<usize, RuntimeError> {
         .into_iter()
         .map(|record| record.resource_id)
         .collect::<BTreeSet<_>>();
+    let packs = db
+        .pack_materialized_skills()
+        .await
+        .map_err(local_error)?
+        .into_iter()
+        .map(|record| record.resource_id)
+        .collect::<BTreeSet<_>>();
     for record in &managed {
         let kind = if owned.contains(&record.resource_id) {
             ManagedDesiredKind::Owned
+        } else if packs.contains(&record.resource_id) {
+            ManagedDesiredKind::Pack
         } else {
             ManagedDesiredKind::Subscription
         };
@@ -294,6 +304,29 @@ async fn sync_with_context(
         .await
         .map_err(local_error)?;
     crate::pack_sync::recover_incomplete_apply(&context).await?;
+    // Fetch policy-bearing pack requirements before touching ordinary desired sources. This
+    // lets a just-removed assignment reactivate a weaker source in this same sync, and prevents
+    // a just-added assignment from being briefly overwritten by direct/workspace materialization.
+    let mut pack_state = crate::pack_sync::refresh_catalog(&context).await?;
+    let policy_conflicted_ids = pack_state
+        .conflicts
+        .iter()
+        .map(|conflict| conflict.resource_id.clone())
+        .collect::<BTreeSet<_>>();
+    let policy_suppressed_subscriptions = context
+        .db
+        .source_suppressions("subscription")
+        .await
+        .map_err(local_error)?
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    let policy_suppressed_owned = context
+        .db
+        .source_suppressions("owned")
+        .await
+        .map_err(local_error)?
+        .into_iter()
+        .collect::<BTreeSet<_>>();
     let existing = context.db.subscriptions().await.map_err(local_error)?;
     let mut known = Vec::with_capacity(existing.len());
     for record in &existing {
@@ -333,6 +366,7 @@ async fn sync_with_context(
             .await
             .map_err(local_error)?,
     );
+    suppressed_subscription_ids.extend(policy_suppressed_subscriptions.iter().cloned());
     let removed_ids = reconcile
         .removed_resource_ids
         .iter()
@@ -341,6 +375,19 @@ async fn sync_with_context(
     let mut removed: usize = 0;
     for record in &existing {
         if !removed_ids.contains(record.resource_id.as_str()) {
+            continue;
+        }
+        if policy_conflicted_ids.contains(&record.resource_id) {
+            // The current local bytes are the last valid projection while equal policy sources
+            // disagree. Do not tear them down merely because this weaker relationship changed.
+            continue;
+        }
+        if policy_suppressed_subscriptions.contains(&record.resource_id) {
+            context
+                .db
+                .remove_subscription_record(record.resource_id.clone())
+                .await
+                .map_err(local_error)?;
             continue;
         }
         journaled_remove_managed_skill(
@@ -364,15 +411,32 @@ async fn sync_with_context(
 
     let mut materialized = 0;
     for remote in &reconcile.skills {
-        if suppressed_subscription_ids.contains(&remote.resource_id) {
-            continue;
-        }
         let mut existing = context
             .db
             .subscription(remote.resource_id.clone())
             .await
             .map_err(local_error)?;
-        if let Some(local) = existing.as_ref()
+        upsert_desired(&context.db, remote).await?;
+        // A relationship can be created remotely by the command that invoked this sync. Refresh
+        // source resolution after persisting that new weaker intent so an already-enforced team
+        // requirement suppresses it before any bytes or projection pointer can move.
+        pack_state = crate::pack_sync::refresh_catalog(&context).await?;
+        let currently_conflicted = pack_state
+            .conflicts
+            .iter()
+            .any(|conflict| conflict.resource_id == remote.resource_id);
+        let currently_policy_suppressed = context
+            .db
+            .source_suppressions("subscription")
+            .await
+            .map_err(local_error)?
+            .into_iter()
+            .any(|resource_id| resource_id == remote.resource_id);
+        if currently_conflicted {
+            continue;
+        }
+        if !currently_policy_suppressed
+            && let Some(local) = existing.as_ref()
             && (local.owner != remote.owner || local.skill_name != remote.name)
         {
             journaled_remove_managed_skill(
@@ -393,17 +457,21 @@ async fn sync_with_context(
             .map_err(local_error)?;
             existing = None;
         }
-        upsert_desired(&context.db, remote).await?;
+        if suppressed_subscription_ids.contains(&remote.resource_id) || currently_policy_suppressed
+        {
+            continue;
+        }
         let already_current = existing.as_ref().is_some_and(|record| {
             record.owner == remote.owner
                 && record.skill_name == remote.name
                 && record.materialized_revision_id.as_deref() == Some(remote.revision_id.as_str())
-                && context
-                    .paths
-                    .skills
-                    .join(&remote.owner)
-                    .join(&remote.name)
-                    .exists()
+                && canonical_targets_revision(
+                    &context,
+                    &remote.resource_id,
+                    &remote.owner,
+                    &remote.name,
+                    &remote.revision_id,
+                )
         });
         if already_current {
             continue;
@@ -475,6 +543,20 @@ async fn sync_with_context(
             {
                 continue;
             }
+            if policy_conflicted_ids.contains(&record.resource_id) {
+                continue;
+            }
+            if policy_suppressed_owned.contains(&record.resource_id) {
+                // The maintainer workspace relationship disappeared (for example a role
+                // downgrade) while team policy still owns the visible resource. Forget only
+                // the weaker workspace row; the enforced pack projection stays untouched.
+                context
+                    .db
+                    .remove_owned_skill(record.resource_id.clone())
+                    .await
+                    .map_err(local_error)?;
+                continue;
+            }
             let managed = context
                 .db
                 .managed_skills()
@@ -500,7 +582,26 @@ async fn sync_with_context(
             removed += 1;
         }
         for remote in &owned.skills {
-            match sync_owned_skill(&context, remote).await {
+            // Newly granted team workspaces are another weaker source that may first appear in
+            // the same sync as an enforced assignment. Persist only the relationship metadata,
+            // re-resolve authority, then materialize only if the workspace remains active.
+            crate::owned_sync::preseed_owned_desired_if_missing(&context, remote).await?;
+            pack_state = crate::pack_sync::refresh_catalog(&context).await?;
+            let currently_conflicted = pack_state
+                .conflicts
+                .iter()
+                .any(|conflict| conflict.resource_id == remote.resource_id);
+            let currently_policy_suppressed = context
+                .db
+                .source_suppressions("owned")
+                .await
+                .map_err(local_error)?
+                .into_iter()
+                .any(|resource_id| resource_id == remote.resource_id);
+            if currently_conflicted || currently_policy_suppressed {
+                continue;
+            }
+            match crate::owned_sync::sync_owned_skill(&context, remote).await {
                 Ok(count) => materialized += count,
                 Err(error) => {
                     let persisted_conflict = error.code == CliErrorCode::LocalState
@@ -520,7 +621,6 @@ async fn sync_with_context(
         }
     }
 
-    let pack_state = crate::pack_sync::refresh_catalog(&context).await?;
     let pack_apply = crate::pack_sync::apply_pack_only_state(&context, &pack_state).await?;
     materialized = materialized.saturating_add(pack_apply.materialized);
     removed = removed.saturating_add(pack_apply.removed);
@@ -540,9 +640,9 @@ async fn sync_with_context(
             RuntimeError::new(
                 CliErrorCode::LocalState,
                 format!(
-                    "{} (pack sources: {}; revisions: {})",
+                    "{} (sources: {}; revisions: {})",
                     conflict.message,
-                    conflict.source_pack_ids.join(", "),
+                    conflict.source_labels.join(", "),
                     conflict.revision_ids.join(", ")
                 ),
             )
@@ -601,271 +701,23 @@ async fn sync_with_context(
     ))
 }
 
-async fn sync_owned_skill(
+fn canonical_targets_revision(
     context: &InstalledContext,
-    remote: &PrivateSkill,
-) -> Result<usize, RuntimeError> {
-    let existing = context
-        .db
-        .owned_skills()
-        .await
-        .map_err(local_error)?
-        .into_iter()
-        .find(|record| record.resource_id == remote.resource_id);
-    let resource_generation = i64::try_from(remote.generation).map_err(|_| {
-        RuntimeError::new(
-            CliErrorCode::LocalState,
-            "owned resource generation exceeds local storage",
-        )
-    })?;
-    let workspace_generation = i64::try_from(remote.workspace_generation).map_err(|_| {
-        RuntimeError::new(
-            CliErrorCode::LocalState,
-            "owned workspace generation exceeds local storage",
-        )
-    })?;
-    if remote.conflicts.len() > 1 {
-        return Err(RuntimeError::new(
-            CliErrorCode::LocalState,
-            format!(
-                "{} has multiple unresolved workspace conflicts; registry state is inconsistent",
-                remote.locator
-            ),
-        )
-        .recovery("denju doctor"));
+    resource_id: &str,
+    owner: &str,
+    skill_name: &str,
+    revision_id: &str,
+) -> bool {
+    let canonical = context.paths.skills.join(owner).join(skill_name);
+    let expected = context
+        .paths
+        .generations
+        .join(resource_id)
+        .join(revision_id);
+    match (fs::canonicalize(canonical), fs::canonicalize(expected)) {
+        (Ok(canonical), Ok(expected)) => canonical == expected,
+        _ => false,
     }
-    if existing.is_some()
-        && let Some(conflict) = remote.conflicts.first()
-    {
-        return crate::workspace_merge::reconcile_workspace_conflict(context, remote, conflict)
-            .await;
-    }
-    if let Some(local) = existing.as_ref() {
-        crate::workspace_merge::settle_resolved_workspace_conflict(context, remote, local).await?;
-    }
-    if let Some(local) = existing.as_ref()
-        && (local.owner != remote.owner || local.skill_name != remote.name)
-    {
-        let workspace = context
-            .db
-            .workspace_state(remote.resource_id.clone())
-            .await
-            .map_err(local_error)?
-            .ok_or_else(|| {
-                RuntimeError::new(
-                    CliErrorCode::LocalState,
-                    format!("{} has no local workspace state", local.locator),
-                )
-                .recovery("denju doctor")
-            })?;
-        let preserve_working = workspace.status == WorkspaceStatus::PendingRename
-            && workspace.pending_rename.as_deref() == Some(remote.name.as_str());
-        if workspace.status != WorkspaceStatus::Clean && !preserve_working {
-            return Err(RuntimeError::new(
-                CliErrorCode::LocalState,
-                format!(
-                    "{} changed identity remotely while local work is unresolved",
-                    local.locator
-                ),
-            )
-            .recovery("denju sync"));
-        }
-        let manifest = remote
-            .manifest
-            .to_core()
-            .map_err(|error| RuntimeError::new(CliErrorCode::ContentVerification, error))?;
-        let authoritative = if preserve_working {
-            None
-        } else {
-            if remote.snapshot.size_bytes > context.limits.max_transfer_bytes {
-                return Err(RuntimeError::new(
-                    CliErrorCode::ContentVerification,
-                    format!(
-                        "snapshot for {} exceeds registry transfer limit",
-                        remote.locator
-                    ),
-                ));
-            }
-            Some(
-                context
-                    .client
-                    .download_snapshot(&remote.snapshot)
-                    .await
-                    .map_err(client_error)?,
-            )
-        };
-        apply_registry_rename(
-            &context.paths,
-            &context.db,
-            &context.roots,
-            &ManagedSkillRecord {
-                resource_id: local.resource_id.clone(),
-                locator: local.locator.clone(),
-                owner: local.owner.clone(),
-                skill_name: local.skill_name.clone(),
-                harness_name: local.harness_name.clone(),
-                materialized_revision_id: local.materialized_revision_id.clone(),
-            },
-            RegistryRenameState {
-                resource_id: remote.resource_id.clone(),
-                owner: remote.owner.clone(),
-                name: remote.name.clone(),
-                locator: remote.locator.clone(),
-                resource_generation,
-                workspace_generation,
-                revision_id: remote.revision_id.clone(),
-                root_tree_id: manifest.root_tree().to_string(),
-            },
-            preserve_working,
-            authoritative
-                .as_ref()
-                .map(|snapshot| (&manifest, snapshot.as_slice())),
-        )
-        .await
-        .map_err(local_error)?;
-        return Ok(usize::from(!preserve_working));
-    }
-    context
-        .db
-        .upsert_owned_skill_desired(
-            OwnedSkillRecord {
-                resource_id: remote.resource_id.clone(),
-                locator: remote.locator.clone(),
-                owner: remote.owner.clone(),
-                skill_name: remote.name.clone(),
-                resource_generation,
-                workspace_generation,
-                desired_revision_id: remote.revision_id.clone(),
-                harness_name: None,
-                materialized_revision_id: None,
-            },
-            now_unix_ms(),
-        )
-        .await
-        .map_err(local_error)?;
-    if let Some(state) = context
-        .db
-        .workspace_state(remote.resource_id.clone())
-        .await
-        .map_err(local_error)?
-        && state.status != WorkspaceStatus::Clean
-    {
-        return Ok(0);
-    }
-    let already_current = existing.as_ref().is_some_and(|record| {
-        record.materialized_revision_id.as_deref() == Some(remote.revision_id.as_str())
-            && context
-                .paths
-                .skills
-                .join(&remote.owner)
-                .join(&remote.name)
-                .exists()
-    });
-    if already_current {
-        let root_tree = remote
-            .manifest
-            .to_core()
-            .map_err(|error| RuntimeError::new(CliErrorCode::ContentVerification, error))?
-            .root_tree()
-            .to_string();
-        let working_generation =
-            fs::canonicalize(context.paths.skills.join(&remote.owner).join(&remote.name))
-                .map_err(local_error)?;
-        context
-            .db
-            .ensure_workspace_baseline(
-                remote.resource_id.clone(),
-                workspace_generation,
-                remote.revision_id.clone(),
-                root_tree.clone(),
-                working_generation.display().to_string(),
-                now_unix_ms(),
-            )
-            .await
-            .map_err(local_error)?;
-        // A publish advances the resource generation while intentionally retaining the same
-        // private workspace revision. Refresh the clean workspace CAS baseline even when no
-        // bytes need rematerialization, otherwise the next local edit falsely conflicts with
-        // the generation change caused by our own publish.
-        context
-            .db
-            .advance_clean_workspace_baseline(
-                remote.resource_id.clone(),
-                workspace_generation,
-                remote.revision_id.clone(),
-                root_tree,
-                working_generation.display().to_string(),
-                now_unix_ms(),
-            )
-            .await
-            .map_err(local_error)?;
-        return Ok(0);
-    }
-    if remote.snapshot.size_bytes > context.limits.max_transfer_bytes {
-        return Err(RuntimeError::new(
-            CliErrorCode::ContentVerification,
-            format!(
-                "snapshot for {} exceeds registry transfer limit",
-                remote.locator
-            ),
-        ));
-    }
-    let bytes = context
-        .client
-        .download_snapshot(&remote.snapshot)
-        .await
-        .map_err(client_error)?;
-    let desired = DesiredSkillMaterialization {
-        resource_id: ResourceId::from_str(&remote.resource_id).map_err(local_error)?,
-        owner: remote.owner.clone(),
-        skill_name: remote.name.clone(),
-        revision_id: RevisionId::from_str(&remote.revision_id).map_err(local_error)?,
-        manifest: remote
-            .manifest
-            .to_core()
-            .map_err(|error| RuntimeError::new(CliErrorCode::ContentVerification, error))?,
-    };
-    let generation = materialize_skill_snapshot(&context.paths, &context.db, &desired, &bytes)
-        .await
-        .map_err(|error| {
-            RuntimeError::new(CliErrorCode::ContentVerification, error.to_string())
-                .recovery("denju sync")
-        })?;
-    context
-        .db
-        .clear_workspace_file_index(remote.resource_id.clone())
-        .await
-        .map_err(local_error)?;
-    context
-        .db
-        .ensure_workspace_baseline(
-            remote.resource_id.clone(),
-            workspace_generation,
-            remote.revision_id.clone(),
-            desired.manifest.root_tree().to_string(),
-            generation.display().to_string(),
-            now_unix_ms(),
-        )
-        .await
-        .map_err(local_error)?;
-    context
-        .db
-        .advance_clean_workspace_baseline(
-            remote.resource_id.clone(),
-            workspace_generation,
-            remote.revision_id.clone(),
-            desired.manifest.root_tree().to_string(),
-            generation.display().to_string(),
-            now_unix_ms(),
-        )
-        .await
-        .map_err(local_error)?;
-    if let Some(conflict) = remote.conflicts.first() {
-        return crate::workspace_merge::reconcile_workspace_conflict(context, remote, conflict)
-            .await
-            .map(|merged| 1 + merged);
-    }
-    Ok(1)
 }
 
 async fn upsert_desired(db: &LocalDatabase, remote: &SubscribedSkill) -> Result<(), RuntimeError> {

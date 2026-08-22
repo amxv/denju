@@ -17,6 +17,7 @@ use crate::{
 pub enum ManagedDesiredKind {
     Subscription,
     Owned,
+    Pack,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -211,6 +212,10 @@ pub async fn recover_local_lifecycle(
                         }
                         ManagedDesiredKind::Owned => {
                             db.remove_owned_skill(resource_id.clone()).await?
+                        }
+                        ManagedDesiredKind::Pack => {
+                            db.remove_pack_materialized_record(resource_id.clone())
+                                .await?
                         }
                     }
                     db.advance_local_lifecycle(journal.operation_id, JournalState::Verified)

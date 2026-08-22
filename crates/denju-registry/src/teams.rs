@@ -165,6 +165,7 @@ impl Registry {
                 members_can_publish: row.2,
             },
             members,
+            assigned_packs: self.team_pack_assignments_for_team(row.0).await?,
         })
     }
 
@@ -437,6 +438,7 @@ impl Registry {
         )
         .await?;
         tx.commit().await.map_err(internal_api_error)?;
+        let _ = self.wake_tx.send(crate::RegistryWake::ResyncAll);
         Ok(outcome)
     }
 
@@ -531,6 +533,7 @@ impl Registry {
         )
         .await?;
         tx.commit().await.map_err(internal_api_error)?;
+        let _ = self.wake_tx.send(crate::RegistryWake::ResyncAll);
         Ok(outcome)
     }
 
@@ -587,6 +590,7 @@ impl Registry {
             ));
         }
         remove_team_workspaces_for_user(&mut tx, team_id, target).await?;
+        remove_team_membership_subscriptions(&mut tx, team_id, target).await?;
         sqlx::query("DELETE FROM team_memberships WHERE team_namespace_id=$1 AND user_id=$2")
             .bind(team_id)
             .bind(target)
@@ -605,6 +609,7 @@ impl Registry {
         )
         .await?;
         tx.commit().await.map_err(internal_api_error)?;
+        let _ = self.wake_tx.send(crate::RegistryWake::ResyncAll);
         Ok(outcome)
     }
 
@@ -686,11 +691,12 @@ impl Registry {
         )
         .await?;
         tx.commit().await.map_err(internal_api_error)?;
+        let _ = self.wake_tx.send(crate::RegistryWake::ResyncAll);
         Ok(outcome)
     }
 }
 
-async fn team_membership_for_update(
+pub(crate) async fn team_membership_for_update(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     user_id: Uuid,
     slug: &str,
@@ -709,7 +715,7 @@ async fn team_membership_for_update(
     Ok((row.0, parse_role(&row.1)?, row.2))
 }
 
-async fn user_by_slug(
+pub(crate) async fn user_by_slug(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     slug: &str,
 ) -> Result<Uuid, ApiError> {
@@ -750,6 +756,31 @@ pub(crate) async fn remove_team_workspaces_for_user(
     Ok(())
 }
 
+pub(crate) async fn remove_team_membership_subscriptions(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    team_id: Uuid,
+    user_id: Uuid,
+) -> Result<(), ApiError> {
+    // Leaving a team removes private subscriptions whose authority came from membership. Public
+    // direct subscriptions survive. A private skill share is an independent grant (including an
+    // inherited pre-transfer share), so preserve that relationship as well.
+    sqlx::query(
+        "DELETE FROM account_subscriptions s USING resources r \
+         WHERE s.user_id=$1 AND s.resource_id=r.id AND r.owner_namespace_id=$2 \
+           AND r.visibility='private' AND r.deleted_at IS NULL \
+           AND (r.kind='pack' OR NOT EXISTS ( \
+             SELECT 1 FROM private_skill_shares ps \
+             WHERE ps.resource_id=r.id AND ps.recipient_user_id=$1 \
+           ))",
+    )
+    .bind(user_id)
+    .bind(team_id)
+    .execute(&mut **tx)
+    .await
+    .map_err(internal_api_error)?;
+    Ok(())
+}
+
 fn team_mutation_summary(
     team_id: Uuid,
     slug: &str,
@@ -768,7 +799,7 @@ fn team_mutation_summary(
     }
 }
 
-async fn replay_team_operation<T: DeserializeOwned>(
+pub(crate) async fn replay_team_operation<T: DeserializeOwned>(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     user_id: Uuid,
     operation_id: OperationId,
@@ -798,7 +829,7 @@ async fn replay_team_operation<T: DeserializeOwned>(
         .map_err(|error| ApiError::new(ApiErrorCode::Internal, error.to_string()))
 }
 
-async fn record_team_operation<T: Serialize>(
+pub(crate) async fn record_team_operation<T: Serialize>(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     user_id: Uuid,
     operation_id: OperationId,
@@ -827,7 +858,7 @@ async fn record_team_operation<T: Serialize>(
     Ok(())
 }
 
-fn parse_namespace(value: &str) -> Result<String, ApiError> {
+pub(crate) fn parse_namespace(value: &str) -> Result<String, ApiError> {
     let slug = value.strip_prefix('@').unwrap_or(value);
     if slug.contains('/') || slug.is_empty() {
         return Err(ApiError::new(
@@ -841,7 +872,7 @@ fn parse_namespace(value: &str) -> Result<String, ApiError> {
     Ok(locator.owner().to_owned())
 }
 
-fn parse_role(value: &str) -> Result<TeamRole, ApiError> {
+pub(crate) fn parse_role(value: &str) -> Result<TeamRole, ApiError> {
     match value {
         "owner" => Ok(TeamRole::Owner),
         "maintainer" => Ok(TeamRole::Maintainer),
@@ -853,12 +884,12 @@ fn parse_role(value: &str) -> Result<TeamRole, ApiError> {
     }
 }
 
-fn parse_operation(value: &str) -> Result<OperationId, ApiError> {
+pub(crate) fn parse_operation(value: &str) -> Result<OperationId, ApiError> {
     OperationId::from_str(value)
         .map_err(|error| ApiError::new(ApiErrorCode::InvalidRequest, error.to_string()))
 }
 
-fn parse_hash(value: &str) -> Result<RequestHash, ApiError> {
+pub(crate) fn parse_hash(value: &str) -> Result<RequestHash, ApiError> {
     RequestHash::from_str(value)
         .map_err(|error| ApiError::new(ApiErrorCode::InvalidRequestHash, error.to_string()))
 }
@@ -874,7 +905,7 @@ fn decode_hash(value: &str, field: &str) -> Result<[u8; 32], ApiError> {
     })
 }
 
-fn ensure_hash(actual: RequestHash, expected: RequestHash) -> Result<(), ApiError> {
+pub(crate) fn ensure_hash(actual: RequestHash, expected: RequestHash) -> Result<(), ApiError> {
     if actual == expected {
         Ok(())
     } else {
@@ -885,6 +916,6 @@ fn ensure_hash(actual: RequestHash, expected: RequestHash) -> Result<(), ApiErro
     }
 }
 
-fn hash_error(error: impl std::fmt::Display) -> ApiError {
+pub(crate) fn hash_error(error: impl std::fmt::Display) -> ApiError {
     ApiError::new(ApiErrorCode::InvalidRequestHash, error.to_string())
 }

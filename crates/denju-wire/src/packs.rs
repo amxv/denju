@@ -143,9 +143,31 @@ pub struct PackSubscriptionResponse {
     pub version: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PackRequirementKind {
+    Direct,
+    TeamAssignment,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PackRequirementSource {
+    pub source_id: String,
+    pub kind: PackRequirementKind,
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team_namespace_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PackRequirement {
+    pub source: PackRequirementSource,
+    pub pack: PackDetail,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PackSubscriptionCatalog {
-    pub packs: Vec<PackDetail>,
+    pub packs: Vec<PackRequirement>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

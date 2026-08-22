@@ -50,6 +50,12 @@ A team does not have one shared writable branch. Every owner, maintainer, or pub
 
 When two publishers start from the same team release, their private heads may diverge safely. Publishing reconciles only the caller's private head with the latest team release. Non-overlapping changes merge deterministically; overlapping changes preserve both revisions and create conflict state scoped to that publisher. Another maintainer's private ref is never silently fast-forwarded or overwritten because somebody else published.
 
+## Editing enforced team content
+
+An enforced team-pack skill is deliberately different from an ordinary subscription. Editing it must not mutate or remove the team's required revision. Denju captures the edit into a personal fork, then restores the enforced upstream revision and keeps both resources projected with deterministic collision-safe harness names.
+
+The fork remains independent personal work. The team assignment remains authoritative until the team owner unassigns the pack or the user leaves/is removed from that team. For an ordinary non-enforced subscription, editing still performs the normal subscription-to-fork replacement.
+
 ## Collision-derived projections
 
 When two installed skills need the same Agent Skills invocation name, Denju exposes deterministic collision-safe derived projections. Those views are independently writable so an edit cannot mutate canonical bytes before Denju validates it.

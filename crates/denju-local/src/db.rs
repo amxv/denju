@@ -740,7 +740,7 @@ fn open_connection(path: &Path) -> Result<Connection, LocalDbError> {
         "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON;",
     )?;
     let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    if version > 11 {
+    if version > 13 {
         return Err(LocalDbError::UnsupportedSchema(version));
     }
     if version == 0 {
@@ -785,6 +785,14 @@ fn open_connection(path: &Path) -> Result<Connection, LocalDbError> {
     let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
     if version == 10 {
         connection.execute_batch(MIGRATION_V11)?;
+    }
+    let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version == 11 {
+        connection.execute_batch(MIGRATION_V12)?;
+    }
+    let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version == 12 {
+        connection.execute_batch(MIGRATION_V13)?;
     }
     Ok(connection)
 }

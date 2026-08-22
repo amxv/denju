@@ -185,37 +185,47 @@ pub(crate) async fn status() -> Result<StatusOutcome, RuntimeError> {
             }
         }
     }
-    let pack_locators = db
+    let pack_sources_by_id = db
         .pack_subscriptions()
         .await
         .map_err(local_error)?
         .into_iter()
-        .map(|pack| (pack.pack_resource_id, pack.locator))
+        .map(|pack| (pack.source_id.clone(), pack))
         .collect::<BTreeMap<_, _>>();
     let pack_sources = db.pack_skill_sources().await.map_err(local_error)?;
     let mut packs = Vec::new();
     for conflict in db.pack_source_conflicts().await.map_err(local_error)? {
-        let source_locators = conflict
-            .source_pack_ids
+        let source_records = conflict
+            .source_ids
             .iter()
-            .filter_map(|pack_id| pack_locators.get(pack_id).cloned())
+            .filter_map(|source_id| pack_sources_by_id.get(source_id).cloned())
             .collect::<Vec<_>>();
-        let locator = source_locators
+        let locator = conflict
+            .source_labels
             .first()
             .cloned()
             .unwrap_or_else(|| conflict.resource_id.clone());
-        let next_commands = source_locators
+        let next_commands = source_records
             .iter()
-            .map(|locator| format!("denju unsubscribe {locator}"))
+            .map(|source| {
+                if source.enforced {
+                    format!(
+                        "denju team unassign {} {}",
+                        source.source_label, source.locator
+                    )
+                } else {
+                    format!("denju unsubscribe {}", source.locator)
+                }
+            })
             .collect::<Vec<_>>();
         packs.push(PackStatus {
-            pack_resource_id: conflict.source_pack_ids.join(","),
+            pack_resource_id: conflict.source_ids.join(","),
             locator,
             state: "source_conflict",
             message: format!(
                 "{}; sources: {}; revisions: {}",
                 conflict.message,
-                source_locators.join(", "),
+                conflict.source_labels.join(", "),
                 conflict.revision_ids.join(", ")
             ),
             affected_resources: vec![conflict.resource_id],
@@ -232,9 +242,10 @@ pub(crate) async fn status() -> Result<StatusOutcome, RuntimeError> {
         }
     }
     for (pack_resource_id, unavailable) in unavailable_by_pack {
-        let locator = pack_locators
-            .get(&pack_resource_id)
-            .cloned()
+        let locator = pack_sources_by_id
+            .values()
+            .find(|source| source.pack_resource_id == pack_resource_id)
+            .map(|source| source.locator.clone())
             .unwrap_or_else(|| pack_resource_id.clone());
         let affected_resources = unavailable
             .iter()
@@ -323,10 +334,20 @@ pub(crate) async fn capture_local_edits(
         .into_iter()
         .map(|fork| fork.resource_id)
         .collect::<BTreeSet<_>>();
+    let mut policy_suppressed_owned = db
+        .source_suppressions("owned")
+        .await
+        .map_err(local_error)?
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    policy_suppressed_owned.extend(db.enforced_pack_resource_ids().await.map_err(local_error)?);
     let mut pass = WorkspacePass::default();
     let mut blockers = Vec::new();
 
     for record in db.owned_skills().await.map_err(local_error)? {
+        if policy_suppressed_owned.contains(&record.resource_id) {
+            continue;
+        }
         let local_only = local_fork_ids.contains(&record.resource_id);
         let author_text = user_author.as_ref().or({
             if local_only {

@@ -10,11 +10,13 @@ mod identity;
 mod lifecycle;
 mod output;
 mod owned;
+mod owned_sync;
 mod pack_commands;
 mod pack_sync;
 mod proposals;
 mod public;
 mod release;
+mod result;
 mod setup;
 mod sharing;
 mod team_commands;
@@ -28,254 +30,19 @@ use commands::{
     Cli, Command, DevicesCommand, ForkCommand, HistoryCommand, IdentityCommand, PackCommand,
     ProposalCommand, TokenCommand,
 };
-use denju_wire::{
-    AutomationTokenList, AutomationTokenRevokeResponse, CliEnvelope, CliError, CliErrorCode,
-    DeleteSkillResponse, DeprecateSkillResponse, DeviceList, DeviceRevokeResponse,
-    HistoryPruneResponse, IdentityInfo, PackCreateResponse, PackDetail, PackLifecycleResponse,
-    PackMutationResponse, PackSubscriptionResponse, PublicSkillDetail, PublicSkillSearchResponse,
-    PublishSkillResponse, RenameSkillResponse, ResourceTransferResponse, SkillHistoryResponse,
-    SkillProposal, SkillProposalDetail, SkillProposalList, TeamDetail, TeamList,
-    TeamMutationResponse, UnpublishSkillResponse,
-};
+use denju_wire::{CliEnvelope, CliError, CliErrorCode};
 use guidance::guidance_output;
 use help::HELP;
-use identity::{
-    AutomationTokenOutcome, BackupOutcome, ClaimOutcome, DeleteOutcome, LoginOutcome,
-    RecoveryOutcome,
-};
-use lifecycle::UsageOutcome;
 use output::{
     append_deprecation_notice, backup_text, claim_text, devices_text, diff_text, doctor_text,
     history_text, login_text, proposal_detail_text, proposal_text, proposals_text, recovery_text,
     search_text, setup_text, short_revision, show_text, status_text, sync_text, token_text,
     tokens_text, usage_text,
 };
-use owned::ImportOutcome;
-use public::{SubscribeOutcome, SyncOutcome, UnsubscribeOutcome};
-use release::{DiffOutcome, ExportOutcome, RestoreOutcome};
 use serde::Serialize;
-use setup::{DoctorOutcome, RuntimeError, SetupOutcome};
+use setup::RuntimeError;
 
-#[derive(Debug, Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub(crate) enum ResultPayload {
-    Guidance {
-        state: &'static str,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        next_command: Option<String>,
-    },
-    Setup {
-        #[serde(flatten)]
-        outcome: SetupOutcome,
-    },
-    Claim {
-        #[serde(flatten)]
-        outcome: ClaimOutcome,
-    },
-    Login {
-        #[serde(flatten)]
-        outcome: LoginOutcome,
-    },
-    Identity {
-        #[serde(flatten)]
-        outcome: IdentityInfo,
-    },
-    IdentityBackup {
-        #[serde(flatten)]
-        outcome: BackupOutcome,
-    },
-    IdentityRecovery {
-        #[serde(flatten)]
-        outcome: RecoveryOutcome,
-    },
-    IdentityDelete {
-        #[serde(flatten)]
-        outcome: DeleteOutcome,
-    },
-    Devices {
-        #[serde(flatten)]
-        outcome: DeviceList,
-    },
-    DeviceRevoke {
-        #[serde(flatten)]
-        outcome: DeviceRevokeResponse,
-    },
-    TokenCreate {
-        #[serde(flatten)]
-        outcome: AutomationTokenOutcome,
-    },
-    Tokens {
-        #[serde(flatten)]
-        outcome: AutomationTokenList,
-    },
-    TokenRevoke {
-        #[serde(flatten)]
-        outcome: AutomationTokenRevokeResponse,
-    },
-    Doctor {
-        #[serde(flatten)]
-        outcome: DoctorOutcome,
-    },
-    Search {
-        #[serde(flatten)]
-        outcome: PublicSkillSearchResponse,
-    },
-    Show {
-        #[serde(flatten)]
-        outcome: PublicSkillDetail,
-    },
-    PackShow {
-        #[serde(flatten)]
-        outcome: PackDetail,
-    },
-    PackCreate {
-        #[serde(flatten)]
-        outcome: PackCreateResponse,
-    },
-    PackMutation {
-        #[serde(flatten)]
-        outcome: PackMutationResponse,
-    },
-    PackLifecycle {
-        #[serde(flatten)]
-        outcome: PackLifecycleResponse,
-    },
-    PackSubscription {
-        #[serde(flatten)]
-        outcome: PackSubscriptionResponse,
-    },
-    Teams {
-        #[serde(flatten)]
-        outcome: TeamList,
-    },
-    Team {
-        #[serde(flatten)]
-        outcome: TeamDetail,
-    },
-    TeamMutation {
-        #[serde(flatten)]
-        outcome: TeamMutationResponse,
-    },
-    TeamInvite {
-        invite_id: String,
-        team: String,
-        role: denju_wire::TeamRole,
-        expires_at_unix_seconds: i64,
-        join_command: String,
-    },
-    Transfer {
-        #[serde(flatten)]
-        outcome: ResourceTransferResponse,
-    },
-    Import {
-        #[serde(flatten)]
-        outcome: ImportOutcome,
-    },
-    Publish {
-        #[serde(flatten)]
-        outcome: PublishSkillResponse,
-    },
-    Rename {
-        #[serde(flatten)]
-        outcome: RenameSkillResponse,
-    },
-    Unpublish {
-        #[serde(flatten)]
-        outcome: UnpublishSkillResponse,
-    },
-    Delete {
-        #[serde(flatten)]
-        outcome: DeleteSkillResponse,
-    },
-    Deprecate {
-        #[serde(flatten)]
-        outcome: DeprecateSkillResponse,
-    },
-    Usage {
-        #[serde(flatten)]
-        outcome: UsageOutcome,
-    },
-    History {
-        #[serde(flatten)]
-        outcome: SkillHistoryResponse,
-    },
-    HistoryPrune {
-        #[serde(flatten)]
-        outcome: HistoryPruneResponse,
-    },
-    Diff {
-        #[serde(flatten)]
-        outcome: DiffOutcome,
-    },
-    Restore {
-        #[serde(flatten)]
-        outcome: RestoreOutcome,
-    },
-    Export {
-        #[serde(flatten)]
-        outcome: ExportOutcome,
-    },
-    Subscribe {
-        #[serde(flatten)]
-        outcome: SubscribeOutcome,
-    },
-    Unsubscribe {
-        #[serde(flatten)]
-        outcome: UnsubscribeOutcome,
-    },
-    Share {
-        #[serde(flatten)]
-        outcome: denju_wire::ShareSkillResponse,
-    },
-    Unshare {
-        #[serde(flatten)]
-        outcome: denju_wire::ShareSkillResponse,
-    },
-    Fork {
-        #[serde(flatten)]
-        outcome: fork_ops::ForkOutcome,
-    },
-    ForkSync {
-        #[serde(flatten)]
-        outcome: fork_ops::ForkSyncOutcome,
-    },
-    ForkResolve {
-        #[serde(flatten)]
-        outcome: fork_ops::ForkResolveOutcome,
-    },
-    Proposal {
-        #[serde(flatten)]
-        outcome: SkillProposal,
-    },
-    Proposals {
-        #[serde(flatten)]
-        outcome: SkillProposalList,
-    },
-    ProposalDetail {
-        #[serde(flatten)]
-        outcome: SkillProposalDetail,
-    },
-    Status {
-        #[serde(flatten)]
-        outcome: workspace::StatusOutcome,
-    },
-    Sync {
-        #[serde(flatten)]
-        outcome: SyncOutcome,
-    },
-    Version {
-        version: &'static str,
-    },
-    Help {
-        text: &'static str,
-    },
-}
-
-pub(crate) struct CommandOutput {
-    pub(crate) payload: ResultPayload,
-    pub(crate) text: String,
-    pub(crate) exit: ExitCode,
-}
+pub(crate) use result::{CommandOutput, ResultPayload};
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -894,7 +661,7 @@ async fn run(args: impl IntoIterator<Item = OsString>) -> ExitCode {
                 payload: ResultPayload::PackMutation { outcome },
                 exit: ExitCode::SUCCESS,
             }),
-        Some(Command::Team { command }) => team_commands::dispatch(command).await,
+        Some(Command::Team { command }) => team_commands::dispatch(command, cli.json).await,
         Some(Command::Transfer { locator, team }) => {
             team_commands::dispatch_transfer(&locator, &team).await
         }

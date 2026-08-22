@@ -14,8 +14,11 @@ pub use pack_hash::{
 };
 pub use team_hash::{
     invite_code_hash, resource_transfer_request_hash, team_create_request_hash,
-    team_invite_request_hash, team_invite_revoke_request_hash, team_join_request_hash,
-    team_member_remove_request_hash, team_member_role_request_hash, team_settings_request_hash,
+    team_delete_request_hash, team_invite_request_hash, team_invite_revoke_request_hash,
+    team_join_request_hash, team_leave_request_hash, team_member_remove_request_hash,
+    team_member_role_request_hash, team_owner_transfer_accept_request_hash,
+    team_owner_transfer_code_hash, team_owner_transfer_request_hash,
+    team_pack_assignment_request_hash, team_settings_request_hash,
 };
 
 const CREATE_INSTALLATION_DOMAIN: &[u8] = b"denju:http:v1:create-installation\0";

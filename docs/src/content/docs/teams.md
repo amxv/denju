@@ -1,9 +1,9 @@
 ---
 title: Teams
-description: Create shared namespaces, invite members, publish through private maintainer refs, and transfer stable resources into team ownership.
+description: Create shared namespaces, enforce approved packs, publish through private maintainer refs, and manage team ownership safely.
 order: 7
 category: Start
-summary: Shared ownership without shared live drafts or a second per-skill ACL system.
+summary: Shared ownership, enforced pack policy, and explicit succession without shared live drafts.
 ---
 
 Teams use the same global namespace as users. A name such as `@acme` can belong to exactly one user or one team, and team-owned skills and packs use ordinary locators such as `@acme/review` and `@acme/packs/core`.
@@ -41,7 +41,40 @@ denju team role @acme @alice maintainer
 denju team remove @acme @alice
 ```
 
-Ownership succession and team deletion are intentionally separate lifecycle operations and are not available yet. Resource deletion is blocked for team-owned skills and packs until those owner-only rules exist.
+The owner cannot leave the team or delete their account while they still own it. Ownership succession is an explicit two-person handoff:
+
+```bash
+denju team transfer-owner @acme @alice
+# the recipient runs the printed one-time command
+denju team accept-owner <transfer-code>
+```
+
+The nominated existing member becomes owner only after accepting the code; the former owner becomes a maintainer. Creating the transfer does not change authority by itself.
+
+Non-owners can leave with `denju team leave @acme`. Removing or leaving a team immediately withdraws team-assigned pack requirements and private team subscriptions on reconciliation; unrelated public direct subscriptions and personal forks remain.
+
+Deleting the entire team is owner-only, always requires hidden password input, and applies normal tombstone semantics to all remaining team resources:
+
+```bash
+denju team delete @acme
+```
+
+The namespace becomes reusable only after deletion. Recreating `@acme` creates a new internal team ID and inherits no old memberships, assignments, resources, or other relationships.
+
+## Enforced packs
+
+Owners can make a pack required for every current and future team member:
+
+```bash
+denju team assign @acme @acme/packs/core
+denju team unassign @acme @acme/packs/core
+```
+
+An assigned pack may be team-owned or public. Assignment is team policy, not a subscription performed on behalf of each member: members cannot unsubscribe it locally, and joining the team applies the requirement on the same reconciliation path as existing members.
+
+Team policy is stronger than personal desired-state sources. If the same skill is also present through a direct subscription or personal pack, Denju keeps that weaker relationship intact but suppresses it while the enforced requirement exists. Removing the assignment or leaving the team automatically reactivates the personal source when it is still valid.
+
+Two teams are equally authoritative. If they require different exact revisions of the same skill, Denju does not choose a winner. It preserves the last valid visible revision, or exposes no revision on a first-install conflict, while `denju status` identifies the conflicting team/pack sources and the exact `denju team unassign ...` recovery commands. Unrelated skills continue synchronizing.
 
 ## Private maintainer refs
 

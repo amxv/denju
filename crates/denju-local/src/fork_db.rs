@@ -92,7 +92,7 @@ impl LocalDatabase {
         self.call(|connection| {
             let mut statement = connection.prepare(
                 "SELECT resource_id,upstream_resource_id,upstream_locator,created_from_revision_id, \
-                        sync_base_revision_id,desired_name,state FROM local_forks ORDER BY resource_id",
+                        sync_base_revision_id,desired_name,state,replace_subscription FROM local_forks ORDER BY resource_id",
             )?;
             let rows = statement.query_map([], local_fork_from_row)?;
             rows.collect::<Result<Vec<_>, _>>().map_err(LocalDbError::from)
@@ -108,7 +108,7 @@ impl LocalDatabase {
             connection
                 .query_row(
                     "SELECT resource_id,upstream_resource_id,upstream_locator,created_from_revision_id, \
-                            sync_base_revision_id,desired_name,state FROM local_forks WHERE upstream_resource_id=?1",
+                            sync_base_revision_id,desired_name,state,replace_subscription FROM local_forks WHERE upstream_resource_id=?1",
                     params![upstream_resource_id],
                     local_fork_from_row,
                 )
@@ -126,8 +126,8 @@ impl LocalDatabase {
         self.call(move |connection| {
             connection.execute(
                 "INSERT INTO local_forks \
-                 (resource_id,upstream_resource_id,upstream_locator,created_from_revision_id,sync_base_revision_id,desired_name,state,created_at_unix_ms,updated_at_unix_ms) \
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?8) \
+                 (resource_id,upstream_resource_id,upstream_locator,created_from_revision_id,sync_base_revision_id,desired_name,state,replace_subscription,created_at_unix_ms,updated_at_unix_ms) \
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?9) \
                  ON CONFLICT(resource_id) DO UPDATE SET sync_base_revision_id=excluded.sync_base_revision_id, \
                  desired_name=excluded.desired_name,state=excluded.state,updated_at_unix_ms=excluded.updated_at_unix_ms",
                 params![
@@ -138,6 +138,7 @@ impl LocalDatabase {
                     fork.sync_base_revision_id,
                     fork.desired_name,
                     fork.state,
+                    i64::from(fork.replace_subscription),
                     now_unix_ms,
                 ],
             )?;
@@ -294,5 +295,6 @@ fn local_fork_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<LocalForkRec
         sync_base_revision_id: row.get(4)?,
         desired_name: row.get(5)?,
         state: row.get(6)?,
+        replace_subscription: row.get::<_, i64>(7)? != 0,
     })
 }

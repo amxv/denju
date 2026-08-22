@@ -274,7 +274,7 @@ async fn promote_one(
             fork: ForkImportIntent {
                 upstream_resource_id: fork.upstream_resource_id.clone(),
                 upstream_revision_id: fork.created_from_revision_id.clone(),
-                replace_subscription: true,
+                replace_subscription: fork.replace_subscription,
                 promotion_head_revision_id: Some(promotion_head_revision_id),
                 historical_skill_name: (first_name != fork.desired_name).then_some(first_name),
             },

@@ -143,8 +143,8 @@ pub async fn guidance() -> Guidance {
             .and_then(|packs| {
                 packs
                     .into_iter()
-                    .find(|pack| conflict.source_pack_ids.contains(&pack.pack_resource_id))
-                    .map(|pack| pack.locator)
+                    .find(|pack| conflict.source_ids.contains(&pack.source_id))
+                    .map(|pack| pack.source_label)
             })
             .unwrap_or(conflict.resource_id);
         return Guidance::Conflict(locator);

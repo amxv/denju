@@ -84,6 +84,88 @@ pub struct TeamSettingsRequest {
     pub request_hash: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TeamPackAssignmentMutationKind {
+    Assign,
+    Unassign,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TeamPackAssignmentRequest {
+    pub operation_id: String,
+    pub team: String,
+    pub pack_resource_id: String,
+    pub request_hash: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TeamPackAssignment {
+    pub team_namespace_id: String,
+    pub team: String,
+    pub pack_resource_id: String,
+    pub pack_locator: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TeamPackAssignmentResponse {
+    pub assignment: TeamPackAssignment,
+    pub assigned: bool,
+    pub changed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TeamLeaveRequest {
+    pub operation_id: String,
+    pub team: String,
+    pub request_hash: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TeamLeaveResponse {
+    pub team: String,
+    pub left: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TeamOwnerTransferRequest {
+    pub operation_id: String,
+    pub team: String,
+    pub member: String,
+    pub transfer_code_hash: String,
+    pub request_hash: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TeamOwnerTransferAcceptRequest {
+    pub operation_id: String,
+    pub code: String,
+    pub request_hash: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TeamOwnerTransferResponse {
+    pub transfer_id: String,
+    pub team: String,
+    pub from_user_id: String,
+    pub to_user_id: String,
+    pub state: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TeamDeleteRequest {
+    pub operation_id: String,
+    pub team: String,
+    pub password: String,
+    pub request_hash: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TeamDeleteResponse {
+    pub team: String,
+    pub deleted: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TeamMember {
     pub user_id: String,
@@ -104,6 +186,7 @@ pub struct TeamDetail {
     #[serde(flatten)]
     pub team: TeamSummary,
     pub members: Vec<TeamMember>,
+    pub assigned_packs: Vec<TeamPackAssignment>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

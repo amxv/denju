@@ -11,7 +11,8 @@ use denju_local::{
     PackSubscriptionRecord, restore_skill_generation, stage_skill_generation,
     switch_staged_skill_generation,
 };
-use denju_wire::{CliErrorCode, SubscribedSkill};
+use denju_sync::{DesiredSource, DesiredSourceKind, ResolvedDesiredState, resolve_desired_sources};
+use denju_wire::{CliErrorCode, PackRequirementKind, SubscribedSkill};
 use uuid::Uuid;
 
 use crate::{
@@ -22,8 +23,14 @@ use crate::{
 
 #[derive(Debug, Clone)]
 pub(crate) struct PackCatalogState {
-    desired: BTreeMap<String, SubscribedSkill>,
-    conflicts: Vec<PackSourceConflictRecord>,
+    pub(crate) desired: BTreeMap<String, SubscribedSkill>,
+    pub(crate) conflicts: Vec<PackSourceConflictRecord>,
+}
+
+#[derive(Debug, Clone)]
+struct PackCandidate {
+    source: DesiredSource,
+    desired: Option<SubscribedSkill>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -76,9 +83,21 @@ pub(crate) async fn refresh_catalog(
     let now = now_unix_ms();
     let mut packs = Vec::with_capacity(catalog.packs.len());
     let mut sources = Vec::new();
-    let mut candidates: BTreeMap<String, Vec<(String, SubscribedSkill)>> = BTreeMap::new();
-    for pack in catalog.packs {
+    let mut candidates: BTreeMap<String, Vec<PackCandidate>> = BTreeMap::new();
+    for requirement in catalog.packs {
+        let source = requirement.source;
+        let pack = requirement.pack;
+        let enforced = source.kind == PackRequirementKind::TeamAssignment;
         packs.push(PackSubscriptionRecord {
+            source_id: source.source_id.clone(),
+            source_kind: match source.kind {
+                PackRequirementKind::Direct => "direct",
+                PackRequirementKind::TeamAssignment => "team_assignment",
+            }
+            .to_owned(),
+            source_label: source.label.clone(),
+            source_team_id: source.team_namespace_id.clone(),
+            enforced,
             pack_resource_id: pack.pack.resource_id.clone(),
             locator: pack.pack.locator.clone(),
             resource_generation: i64::try_from(pack.pack.generation)
@@ -95,6 +114,7 @@ pub(crate) async fn refresh_catalog(
                 .map(|desired| desired.generation)
                 .unwrap_or(0);
             sources.push(PackSkillSourceRecord {
+                source_id: source.source_id.clone(),
                 pack_resource_id: pack.pack.resource_id.clone(),
                 resource_id: member.resource_id.clone(),
                 locator: member.locator.clone(),
@@ -107,12 +127,23 @@ pub(crate) async fn refresh_catalog(
                     .unavailable_reason
                     .map(|reason| reason.as_str().to_owned()),
             });
-            if let Some(desired) = desired {
-                candidates
-                    .entry(member.resource_id)
-                    .or_default()
-                    .push((pack.pack.resource_id.clone(), desired));
-            }
+            candidates
+                .entry(member.resource_id.clone())
+                .or_default()
+                .push(PackCandidate {
+                    source: DesiredSource {
+                        resource_id: member.resource_id,
+                        revision_id: member.revision_id,
+                        source_id: source.source_id.clone(),
+                        source_label: format!("{} via {}", source.label, pack.pack.locator),
+                        kind: if enforced {
+                            DesiredSourceKind::TeamAssignment
+                        } else {
+                            DesiredSourceKind::PersonalPack
+                        },
+                    },
+                    desired,
+                });
         }
     }
     context
@@ -121,55 +152,256 @@ pub(crate) async fn refresh_catalog(
         .await
         .map_err(local_error)?;
 
-    let mut desired = BTreeMap::new();
-    let mut conflicts = Vec::new();
-    for (resource_id, requirements) in candidates {
-        let revisions = requirements
-            .iter()
-            .map(|(_, desired)| desired.revision_id.clone())
-            .collect::<BTreeSet<_>>();
-        if revisions.len() == 1 {
-            if let Some((_, value)) = requirements.into_iter().next() {
-                desired.insert(resource_id, value);
-            }
-        } else {
-            conflicts.push(PackSourceConflictRecord {
-                resource_id: resource_id.clone(),
-                source_pack_ids: requirements.iter().map(|(pack, _)| pack.clone()).collect(),
-                revision_ids: revisions.into_iter().collect(),
-                message: format!(
-                    "pack requirements disagree for resource {resource_id}; change or pin one pack source"
-                ),
-            });
+    let subscriptions = context
+        .db
+        .subscriptions()
+        .await
+        .map_err(local_error)?
+        .into_iter()
+        .map(|record| (record.resource_id.clone(), record))
+        .collect::<BTreeMap<_, _>>();
+    let owned = context
+        .db
+        .owned_skills()
+        .await
+        .map_err(local_error)?
+        .into_iter()
+        .map(|record| (record.resource_id.clone(), record))
+        .collect::<BTreeMap<_, _>>();
+    // Source overlap is expected during a resolver transition (for example, a direct
+    // subscription created while an enforced pack is already active). `managed_skills()`
+    // intentionally rejects two active owners, so derive the last-good revision from the
+    // canonical pointer itself before suppression has been reconciled.
+    let mut active = BTreeMap::new();
+    for record in subscriptions.values() {
+        if let Some(revision) = record.materialized_revision_id.as_deref()
+            && canonical_targets_revision(
+                context,
+                &record.resource_id,
+                &record.owner,
+                &record.skill_name,
+                revision,
+            )
+        {
+            active.insert(record.resource_id.clone(), revision.to_owned());
         }
     }
+    for record in owned.values() {
+        if let Some(revision) = record.materialized_revision_id.as_deref()
+            && canonical_targets_revision(
+                context,
+                &record.resource_id,
+                &record.owner,
+                &record.skill_name,
+                revision,
+            )
+        {
+            active.insert(record.resource_id.clone(), revision.to_owned());
+        }
+    }
+    for record in context
+        .db
+        .pack_materialized_skills()
+        .await
+        .map_err(local_error)?
+    {
+        if canonical_targets_revision(
+            context,
+            &record.resource_id,
+            &record.owner,
+            &record.skill_name,
+            &record.materialized_revision_id,
+        ) {
+            active.insert(record.resource_id, record.materialized_revision_id);
+        }
+    }
+
+    let mut desired = BTreeMap::new();
+    let mut conflicts = Vec::new();
+    let mut suppress_subscriptions = Vec::new();
+    let mut suppress_owned = Vec::new();
+    let mut preserve_suppressions = Vec::new();
+    for (resource_id, requirements) in candidates {
+        let mut all_sources = requirements
+            .iter()
+            .map(|candidate| candidate.source.clone())
+            .collect::<Vec<_>>();
+        if let Some(record) = subscriptions.get(&resource_id) {
+            all_sources.push(DesiredSource {
+                resource_id: resource_id.clone(),
+                revision_id: record.desired_revision_id.clone(),
+                source_id: format!("direct-skill:{resource_id}"),
+                source_label: format!("direct subscription {}", record.locator),
+                kind: DesiredSourceKind::DirectSubscription,
+            });
+        }
+        if let Some(record) = owned.get(&resource_id) {
+            all_sources.push(DesiredSource {
+                resource_id: resource_id.clone(),
+                revision_id: record.desired_revision_id.clone(),
+                source_id: format!("workspace:{resource_id}"),
+                source_label: format!("workspace {}", record.locator),
+                kind: DesiredSourceKind::OwnedWorkspace,
+            });
+        }
+        match resolve_desired_sources(all_sources, active.get(&resource_id).map(String::as_str)) {
+            ResolvedDesiredState::Selected { source, .. } => {
+                if source.kind == DesiredSourceKind::TeamAssignment {
+                    if subscriptions.contains_key(&resource_id) {
+                        suppress_subscriptions
+                            .push((resource_id.clone(), source.source_id.clone()));
+                    }
+                    if owned.contains_key(&resource_id) {
+                        suppress_owned.push((resource_id.clone(), source.source_id.clone()));
+                    }
+                }
+                if let Some(candidate) = requirements
+                    .into_iter()
+                    .find(|candidate| candidate.source.source_id == source.source_id)
+                    && let Some(value) = candidate.desired
+                {
+                    desired.insert(resource_id, value);
+                }
+            }
+            ResolvedDesiredState::Conflict { sources, .. } => {
+                preserve_suppressions.push(resource_id.clone());
+                conflicts.push(PackSourceConflictRecord {
+                    resource_id: resource_id.clone(),
+                    source_ids: sources.iter().map(|source| source.source_id.clone()).collect(),
+                    source_labels: sources
+                        .iter()
+                        .map(|source| source.source_label.clone())
+                        .collect(),
+                    revision_ids: sources
+                        .iter()
+                        .map(|source| source.revision_id.clone())
+                        .collect::<BTreeSet<_>>()
+                        .into_iter()
+                        .collect(),
+                    message: format!(
+                        "equal-authority desired sources disagree for resource {resource_id}; reconcile the team assignments instead of choosing a winner"
+                    ),
+                });
+            }
+            ResolvedDesiredState::Absent => {}
+        }
+    }
+    context
+        .db
+        .reconcile_source_suppressions(
+            suppress_subscriptions,
+            suppress_owned,
+            preserve_suppressions,
+            now,
+        )
+        .await
+        .map_err(local_error)?;
     Ok(PackCatalogState { desired, conflicts })
+}
+
+fn canonical_targets_revision(
+    context: &InstalledContext,
+    resource_id: &str,
+    owner: &str,
+    skill_name: &str,
+    revision_id: &str,
+) -> bool {
+    let canonical = context.paths.skills.join(owner).join(skill_name);
+    let expected = context
+        .paths
+        .generations
+        .join(resource_id)
+        .join(revision_id);
+    match (
+        std::fs::canonicalize(canonical),
+        std::fs::canonicalize(expected),
+    ) {
+        (Ok(canonical), Ok(expected)) => canonical == expected,
+        _ => false,
+    }
 }
 
 pub(crate) async fn apply_pack_only_state(
     context: &InstalledContext,
     state: &PackCatalogState,
 ) -> Result<PackApplyOutcome, RuntimeError> {
-    let direct_ids = context
+    let direct = context.db.subscriptions().await.map_err(local_error)?;
+    let direct_ids = direct
+        .iter()
+        .map(|record| record.resource_id.clone())
+        .collect::<BTreeSet<_>>();
+    let suppressed_direct = context
         .db
-        .subscriptions()
+        .source_suppressions("subscription")
         .await
         .map_err(local_error)?
         .into_iter()
-        .map(|record| record.resource_id)
         .collect::<BTreeSet<_>>();
-    let owned_ids = context
+    let owned = context.db.owned_skills().await.map_err(local_error)?;
+    let owned_ids = owned
+        .iter()
+        .map(|record| record.resource_id.clone())
+        .collect::<BTreeSet<_>>();
+    let suppressed_owned = context
         .db
-        .owned_skills()
+        .source_suppressions("owned")
         .await
         .map_err(local_error)?
         .into_iter()
-        .map(|record| record.resource_id)
         .collect::<BTreeSet<_>>();
-    let suppressed = direct_ids
-        .union(&owned_ids)
+    // These are active stronger local owners that suppress a personal pack source. Sources
+    // suppressed *by* team policy are intentionally excluded so the enforced pack can own the
+    // single visible projection without deleting the weaker relationship row.
+    let active_direct = direct_ids
+        .difference(&suppressed_direct)
         .cloned()
         .collect::<BTreeSet<_>>();
+    let active_owned = owned_ids
+        .difference(&suppressed_owned)
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let suppressed = active_direct
+        .union(&active_owned)
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    // A pack can relinquish a resource to an already-materialized stronger local source without
+    // the registry sending that unchanged source again. Keep the exact local revision/path that
+    // should become visible when the pack row disappears. Owned workspace authority is stronger
+    // than a direct subscription in the resolver and therefore deterministically overwrites the
+    // direct fallback if both somehow coexist during a transition.
+    let mut local_fallbacks = BTreeMap::new();
+    for record in &direct {
+        if suppressed_direct.contains(&record.resource_id) {
+            continue;
+        }
+        if let Some(revision_id) = record.materialized_revision_id.clone() {
+            local_fallbacks.insert(
+                record.resource_id.clone(),
+                PackApplySkillState {
+                    resource_id: record.resource_id.clone(),
+                    owner: record.owner.clone(),
+                    skill_name: record.skill_name.clone(),
+                    revision_id: Some(revision_id),
+                },
+            );
+        }
+    }
+    for record in &owned {
+        if suppressed_owned.contains(&record.resource_id) {
+            continue;
+        }
+        if let Some(revision_id) = record.materialized_revision_id.clone() {
+            local_fallbacks.insert(
+                record.resource_id.clone(),
+                PackApplySkillState {
+                    resource_id: record.resource_id.clone(),
+                    owner: record.owner.clone(),
+                    skill_name: record.skill_name.clone(),
+                    revision_id: Some(revision_id),
+                },
+            );
+        }
+    }
     let conflicted = state
         .conflicts
         .iter()
@@ -197,9 +429,16 @@ pub(crate) async fn apply_pack_only_state(
                 .get(resource_id)
                 .and_then(|record| record.harness_name.clone()),
         )?;
-        let unchanged = existing_by_id
-            .get(resource_id)
-            .is_some_and(|existing| existing.materialized_revision_id == desired.revision_id);
+        let unchanged = existing_by_id.get(resource_id).is_some_and(|existing| {
+            existing.materialized_revision_id == desired.revision_id
+                && canonical_targets_revision(
+                    context,
+                    resource_id,
+                    &desired.owner,
+                    &desired.name,
+                    &desired.revision_id,
+                )
+        });
         if !unchanged {
             let bytes = context
                 .client
@@ -229,7 +468,7 @@ pub(crate) async fn apply_pack_only_state(
     let mut touched = BTreeSet::new();
     touched.extend(staged.keys().cloned());
     for record in &existing {
-        if !desired_ids.contains(&record.resource_id) && !suppressed.contains(&record.resource_id) {
+        if !desired_ids.contains(&record.resource_id) {
             touched.insert(record.resource_id.clone());
         }
     }
@@ -270,8 +509,10 @@ pub(crate) async fn apply_pack_only_state(
         let new = desired_records
             .iter()
             .find(|record| &record.resource_id == resource_id);
+        let fallback = local_fallbacks.get(resource_id);
         let identity = new
             .map(|record| (&record.owner, &record.skill_name))
+            .or_else(|| fallback.map(|record| (&record.owner, &record.skill_name)))
             .or_else(|| old.map(|record| (&record.owner, &record.skill_name)))
             .ok_or_else(|| local("pack apply lost resource identity"))?;
         old_states.push(PackApplySkillState {
@@ -284,7 +525,9 @@ pub(crate) async fn apply_pack_only_state(
             resource_id: resource_id.clone(),
             owner: identity.0.clone(),
             skill_name: identity.1.clone(),
-            revision_id: new.map(|record| record.desired_revision_id.clone()),
+            revision_id: new
+                .map(|record| record.desired_revision_id.clone())
+                .or_else(|| fallback.and_then(|record| record.revision_id.clone())),
         });
     }
     context
@@ -305,19 +548,31 @@ pub(crate) async fn apply_pack_only_state(
             if let Some((desired, generation)) = staged.get(resource_id) {
                 switch_staged_skill_generation(&context.paths, desired, generation, operation_id)
                     .map_err(local_error)?;
-            } else if !desired_ids.contains(resource_id) && !suppressed.contains(resource_id) {
+            } else if !desired_ids.contains(resource_id) {
                 let old = existing_by_id
                     .get(resource_id)
                     .ok_or_else(|| local("pack removal lost materialized state"))?;
-                restore_skill_generation(
-                    &context.paths,
-                    &old.resource_id,
-                    &old.owner,
-                    &old.skill_name,
-                    None,
-                    operation_id,
-                )
-                .map_err(local_error)?;
+                if let Some(fallback) = local_fallbacks.get(resource_id) {
+                    restore_skill_generation(
+                        &context.paths,
+                        &fallback.resource_id,
+                        &fallback.owner,
+                        &fallback.skill_name,
+                        fallback.revision_id.as_deref(),
+                        operation_id,
+                    )
+                    .map_err(local_error)?;
+                } else {
+                    restore_skill_generation(
+                        &context.paths,
+                        &old.resource_id,
+                        &old.owner,
+                        &old.skill_name,
+                        None,
+                        operation_id,
+                    )
+                    .map_err(local_error)?;
+                }
             }
         }
         Ok(())
@@ -354,7 +609,9 @@ pub(crate) async fn apply_pack_only_state(
     let materialized = staged.len();
     let removed = touched
         .iter()
-        .filter(|resource_id| !desired_ids.contains(*resource_id))
+        .filter(|resource_id| {
+            !desired_ids.contains(*resource_id) && !local_fallbacks.contains_key(*resource_id)
+        })
         .count();
     Ok(PackApplyOutcome {
         materialized,
@@ -374,6 +631,7 @@ fn pack_record_from_desired(
         resource_generation: i64::try_from(desired.generation)
             .map_err(|_| local("pack skill generation exceeds local database range"))?,
         desired_revision_id: desired.revision_id.clone(),
+        desired_root_tree_id: desired.manifest.root_tree_id.clone(),
         harness_name,
         materialized_revision_id: desired.revision_id.clone(),
     })
@@ -452,6 +710,7 @@ mod tests {
             skill_name: "review".to_owned(),
             resource_generation: 1,
             desired_revision_id: revision_id.to_owned(),
+            desired_root_tree_id: "root-tree".to_owned(),
             harness_name: Some("review".to_owned()),
             materialized_revision_id: revision_id.to_owned(),
         }
@@ -470,6 +729,30 @@ mod tests {
         let existing_by_id = BTreeMap::from([(resource_id, existing.clone())]);
         preserve_conflicted_existing(&mut desired, &conflicted, &suppressed, &existing_by_id);
         assert_eq!(desired, vec![existing]);
+    }
+
+    #[test]
+    fn conflicted_resource_does_not_pause_unrelated_pack_member() {
+        let conflicted_id = "01890f47-6a1c-7cc2-98c1-5f6c1ed8a3a1".to_owned();
+        let unrelated_id = "01890f47-6a1d-7ad0-8f43-9a4d8c29f002".to_owned();
+        let old = materialized_record(&conflicted_id, &"11".repeat(32));
+        let unrelated = PackMaterializedSkillRecord {
+            locator: "@alice/write".to_owned(),
+            skill_name: "write".to_owned(),
+            harness_name: Some("write".to_owned()),
+            ..materialized_record(&unrelated_id, &"33".repeat(32))
+        };
+        let mut desired = vec![unrelated.clone()];
+        preserve_conflicted_existing(
+            &mut desired,
+            &BTreeSet::from([conflicted_id.clone()]),
+            &BTreeSet::new(),
+            &BTreeMap::from([(conflicted_id, old.clone())]),
+        );
+        desired.sort_by(|left, right| left.resource_id.cmp(&right.resource_id));
+        let mut expected = vec![old, unrelated];
+        expected.sort_by(|left, right| left.resource_id.cmp(&right.resource_id));
+        assert_eq!(desired, expected);
     }
 
     #[tokio::test]

@@ -68,8 +68,23 @@ pub fn stage_skill_generation(
     fs::create_dir_all(&resource_root)?;
     let generation_dir = resource_root.join(desired.revision_id.to_string());
     if generation_dir.is_dir() {
-        verify_generation(&generation_dir, &desired.skill_name, &desired.manifest)?;
-        return Ok(generation_dir);
+        match verify_generation(&generation_dir, &desired.skill_name, &desired.manifest) {
+            Ok(()) => return Ok(generation_dir),
+            Err(MaterializationError::ManifestMismatch) => {
+                let canonical_path = paths.skills.join(&desired.owner).join(&desired.skill_name);
+                if canonical_targets_generation(&canonical_path, &generation_dir)? {
+                    // The active generation is a writable working view. Never overwrite an edit
+                    // before higher-level fork protection has had a chance to capture it.
+                    return Err(MaterializationError::ManifestMismatch);
+                }
+                // Inactive generations are caches. A prior writable view may have dirtied this
+                // revision before a newer revision became active; rebuild it from authoritative
+                // bytes instead of letting atomic pack staging fail on stale local cache data.
+                fs::remove_dir_all(&generation_dir)?;
+                sync_parent(&resource_root)?;
+            }
+            Err(error) => return Err(error),
+        }
     }
 
     let stage_dir = resource_root.join(format!(".rename-stage-{operation_id}"));
@@ -837,6 +852,27 @@ mod tests {
             fs::canonicalize(canonical).unwrap(),
             fs::canonicalize(generation).unwrap()
         );
+    }
+
+    #[tokio::test]
+    async fn staging_rebuilds_inactive_dirty_generation_but_refuses_active_edit() {
+        let (_home, paths, db, desired, bytes) = fixture().await;
+        let generation = materialize_skill_snapshot(&paths, &db, &desired, &bytes)
+            .await
+            .unwrap();
+        let skill_md = generation.join("SKILL.md");
+        let edited = b"---\nname: review\ndescription: Reviews code.\n---\n# Review\nlocal edit\n";
+        fs::write(&skill_md, edited).unwrap();
+        let operation = OperationId::from_uuid(Uuid::now_v7()).unwrap();
+        let error = stage_skill_generation(&paths, &desired, &bytes, operation).unwrap_err();
+        assert!(matches!(error, MaterializationError::ManifestMismatch));
+        assert_eq!(fs::read(&skill_md).unwrap(), edited);
+
+        remove_canonical_skill(&paths, "alice", "review").unwrap();
+        let operation = OperationId::from_uuid(Uuid::now_v7()).unwrap();
+        let repaired = stage_skill_generation(&paths, &desired, &bytes, operation).unwrap();
+        assert_eq!(repaired, generation);
+        verify_generation(&repaired, &desired.skill_name, &desired.manifest).unwrap();
     }
 
     #[tokio::test]

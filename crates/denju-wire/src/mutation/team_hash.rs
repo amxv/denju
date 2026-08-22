@@ -10,9 +10,19 @@ const TEAM_JOIN_DOMAIN: &[u8] = b"denju:http:v1:team-join\0";
 const TEAM_MEMBER_ROLE_DOMAIN: &[u8] = b"denju:http:v1:team-member-role\0";
 const TEAM_MEMBER_REMOVE_DOMAIN: &[u8] = b"denju:http:v1:team-member-remove\0";
 const TEAM_SETTINGS_DOMAIN: &[u8] = b"denju:http:v1:team-settings\0";
+const TEAM_PACK_ASSIGN_DOMAIN: &[u8] = b"denju:http:v1:team-pack-assign\0";
+const TEAM_PACK_UNASSIGN_DOMAIN: &[u8] = b"denju:http:v1:team-pack-unassign\0";
+const TEAM_LEAVE_DOMAIN: &[u8] = b"denju:http:v1:team-leave\0";
+const TEAM_OWNER_TRANSFER_DOMAIN: &[u8] = b"denju:http:v1:team-owner-transfer\0";
+const TEAM_OWNER_TRANSFER_ACCEPT_DOMAIN: &[u8] = b"denju:http:v1:team-owner-transfer-accept\0";
+const TEAM_DELETE_DOMAIN: &[u8] = b"denju:http:v1:team-delete\0";
 const RESOURCE_TRANSFER_DOMAIN: &[u8] = b"denju:http:v1:resource-transfer\0";
 
 pub fn invite_code_hash(code: &str) -> RequestHash {
+    RequestHash::from_bytes(Sha256::digest(code.as_bytes()).into())
+}
+
+pub fn team_owner_transfer_code_hash(code: &str) -> RequestHash {
     RequestHash::from_bytes(Sha256::digest(code.as_bytes()).into())
 }
 
@@ -157,6 +167,99 @@ pub fn team_settings_request_hash(
     )
 }
 
+pub fn team_pack_assignment_request_hash(
+    kind: crate::TeamPackAssignmentMutationKind,
+    operation_id: &str,
+    team: &str,
+    pack_resource_id: &str,
+) -> Result<RequestHash, RequestHashError> {
+    #[derive(Serialize)]
+    struct Input<'a> {
+        operation_id: &'a str,
+        team: &'a str,
+        pack_resource_id: &'a str,
+    }
+    hash_payload(
+        match kind {
+            crate::TeamPackAssignmentMutationKind::Assign => TEAM_PACK_ASSIGN_DOMAIN,
+            crate::TeamPackAssignmentMutationKind::Unassign => TEAM_PACK_UNASSIGN_DOMAIN,
+        },
+        &Input {
+            operation_id,
+            team,
+            pack_resource_id,
+        },
+    )
+}
+
+pub fn team_leave_request_hash(
+    operation_id: &str,
+    team: &str,
+) -> Result<RequestHash, RequestHashError> {
+    #[derive(Serialize)]
+    struct Input<'a> {
+        operation_id: &'a str,
+        team: &'a str,
+    }
+    hash_payload(TEAM_LEAVE_DOMAIN, &Input { operation_id, team })
+}
+
+pub fn team_owner_transfer_request_hash(
+    operation_id: &str,
+    team: &str,
+    member: &str,
+    transfer_code_hash: &str,
+) -> Result<RequestHash, RequestHashError> {
+    #[derive(Serialize)]
+    struct Input<'a> {
+        operation_id: &'a str,
+        team: &'a str,
+        member: &'a str,
+        transfer_code_hash: &'a str,
+    }
+    hash_payload(
+        TEAM_OWNER_TRANSFER_DOMAIN,
+        &Input {
+            operation_id,
+            team,
+            member,
+            transfer_code_hash,
+        },
+    )
+}
+
+pub fn team_owner_transfer_accept_request_hash(
+    operation_id: &str,
+    code: &str,
+) -> Result<RequestHash, RequestHashError> {
+    #[derive(Serialize)]
+    struct Input<'a> {
+        operation_id: &'a str,
+        code_hash: String,
+    }
+    hash_payload(
+        TEAM_OWNER_TRANSFER_ACCEPT_DOMAIN,
+        &Input {
+            operation_id,
+            code_hash: team_owner_transfer_code_hash(code).to_string(),
+        },
+    )
+}
+
+pub fn team_delete_request_hash(
+    operation_id: &str,
+    team: &str,
+) -> Result<RequestHash, RequestHashError> {
+    #[derive(Serialize)]
+    struct Input<'a> {
+        operation_id: &'a str,
+        team: &'a str,
+    }
+    // Password is intentionally excluded from the fast request hash and is verified
+    // independently with Argon2 at the registry boundary.
+    hash_payload(TEAM_DELETE_DOMAIN, &Input { operation_id, team })
+}
+
 pub fn resource_transfer_request_hash(
     operation_id: &str,
     resource_id: &str,
@@ -201,5 +304,40 @@ mod tests {
         let acme = resource_transfer_request_hash(operation, resource, 4, "@acme").unwrap();
         let other = resource_transfer_request_hash(operation, resource, 4, "@other").unwrap();
         assert_ne!(acme, other);
+    }
+
+    #[test]
+    fn assignment_action_and_owner_transfer_secret_are_hash_bound() {
+        let operation = "01890f47-6a1c-7cc2-98c1-5f6c1ed8a3a1";
+        let pack = "01890f47-6a1d-7ad0-8f43-9a4d8c29f002";
+        let assign = team_pack_assignment_request_hash(
+            crate::TeamPackAssignmentMutationKind::Assign,
+            operation,
+            "@acme",
+            pack,
+        )
+        .unwrap();
+        let unassign = team_pack_assignment_request_hash(
+            crate::TeamPackAssignmentMutationKind::Unassign,
+            operation,
+            "@acme",
+            pack,
+        )
+        .unwrap();
+        assert_ne!(assign, unassign);
+
+        let first_code_hash = team_owner_transfer_code_hash("a1b2c3d4e5f6").to_string();
+        let second_code_hash = team_owner_transfer_code_hash("001122334455").to_string();
+        let first =
+            team_owner_transfer_request_hash(operation, "@acme", "@alice", &first_code_hash)
+                .unwrap();
+        let second =
+            team_owner_transfer_request_hash(operation, "@acme", "@alice", &second_code_hash)
+                .unwrap();
+        assert_ne!(first, second);
+        assert_ne!(
+            team_owner_transfer_accept_request_hash(operation, "a1b2c3d4e5f6").unwrap(),
+            team_owner_transfer_accept_request_hash(operation, "001122334455").unwrap()
+        );
     }
 }

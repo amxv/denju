@@ -53,7 +53,7 @@ async fn local_schema_converges_directly_to_current_version() {
         })
         .await
         .unwrap();
-    assert_eq!(version, 11);
+    assert_eq!(version, 13);
 }
 
 #[tokio::test]
@@ -67,6 +67,11 @@ async fn pack_catalog_and_apply_journal_commit_as_one_local_state_change() {
     let revision = "11".repeat(32);
     db.replace_pack_catalog(
         vec![PackSubscriptionRecord {
+            source_id: format!("direct:{pack_id}"),
+            source_kind: "direct".to_owned(),
+            source_label: "direct subscription".to_owned(),
+            source_team_id: None,
+            enforced: false,
             pack_resource_id: pack_id.clone(),
             locator: "@alice/packs/core".to_owned(),
             resource_generation: 2,
@@ -74,6 +79,7 @@ async fn pack_catalog_and_apply_journal_commit_as_one_local_state_change() {
             degraded: false,
         }],
         vec![PackSkillSourceRecord {
+            source_id: format!("direct:{pack_id}"),
             pack_resource_id: pack_id.clone(),
             resource_id: skill_id.clone(),
             locator: "@bob/review".to_owned(),
@@ -114,12 +120,14 @@ async fn pack_catalog_and_apply_journal_commit_as_one_local_state_change() {
         skill_name: "review".to_owned(),
         resource_generation: 7,
         desired_revision_id: revision.clone(),
+        desired_root_tree_id: "root-tree".to_owned(),
         harness_name: Some("review".to_owned()),
         materialized_revision_id: revision.clone(),
     };
     let conflict = PackSourceConflictRecord {
         resource_id: "01890f47-6a1e-72ce-88bf-ef23fc661004".to_owned(),
-        source_pack_ids: vec![pack_id],
+        source_ids: vec![format!("direct:{pack_id}")],
+        source_labels: vec!["direct subscription".to_owned()],
         revision_ids: vec!["22".repeat(32), "33".repeat(32)],
         message: "conflicting pack requirements".to_owned(),
     };
@@ -152,6 +160,11 @@ async fn invalid_pack_catalog_replacement_rolls_back_the_previous_catalog() {
         .await
         .unwrap();
     let pack = PackSubscriptionRecord {
+        source_id: "direct:01890f47-6a1c-7cc2-98c1-5f6c1ed8a3a1".to_owned(),
+        source_kind: "direct".to_owned(),
+        source_label: "direct subscription".to_owned(),
+        source_team_id: None,
+        enforced: false,
         pack_resource_id: "01890f47-6a1c-7cc2-98c1-5f6c1ed8a3a1".to_owned(),
         locator: "@alice/packs/core".to_owned(),
         resource_generation: 1,
@@ -163,6 +176,7 @@ async fn invalid_pack_catalog_replacement_rolls_back_the_previous_catalog() {
         .unwrap();
 
     let invalid = PackSkillSourceRecord {
+        source_id: "missing-source".to_owned(),
         pack_resource_id: "01890f47-ffff-7cc2-98c1-5f6c1ed8a3a1".to_owned(),
         resource_id: "01890f47-6a1d-7ad0-8f43-9a4d8c29f002".to_owned(),
         locator: "@bob/review".to_owned(),
@@ -425,6 +439,147 @@ async fn owned_skills_share_projection_state_without_becoming_subscriptions() {
 }
 
 #[tokio::test]
+async fn materialization_marks_only_sources_that_desire_the_switched_revision() {
+    let dir = tempdir().unwrap();
+    let db = LocalDatabase::open(dir.path().join("state.db"))
+        .await
+        .unwrap();
+    let resource_id = "01890f47-6a1c-7cc2-98c1-5f6c1ed8a3a1".to_owned();
+    let direct_revision = "22".repeat(32);
+    let enforced_revision = "11".repeat(32);
+    db.upsert_subscription_desired(
+        SubscriptionRecord {
+            resource_id: resource_id.clone(),
+            locator: "@alice/review".to_owned(),
+            owner: "alice".to_owned(),
+            skill_name: "review".to_owned(),
+            resource_generation: 1,
+            release_version: 2,
+            desired_revision_id: direct_revision.clone(),
+            harness_name: None,
+            materialized_revision_id: None,
+            retain_on_delete: false,
+            retained_after_delete: false,
+            live_private: false,
+            desired_root_tree_id: "aa".repeat(32),
+        },
+        1,
+    )
+    .await
+    .unwrap();
+    db.call({
+        let resource_id = resource_id.clone();
+        let enforced_revision = enforced_revision.clone();
+        move |connection| {
+            connection.execute(
+                "INSERT INTO pack_materialized_skills \
+                 (resource_id,locator,owner,skill_name,resource_generation,desired_revision_id,desired_root_tree_id,harness_name,materialized_revision_id,updated_at_unix_ms) \
+                 VALUES (?1,'@alice/review','alice','review',1,?2,'root',NULL,?3,1)",
+                rusqlite::params![resource_id, enforced_revision, "00".repeat(32)],
+            )?;
+            Ok(())
+        }
+    })
+    .await
+    .unwrap();
+
+    db.mark_skill_materialized(resource_id.clone(), enforced_revision.clone(), 2)
+        .await
+        .unwrap();
+    let subscription = db.subscription(resource_id.clone()).await.unwrap().unwrap();
+    assert_eq!(subscription.materialized_revision_id, None);
+    assert_eq!(
+        db.pack_materialized_skills().await.unwrap()[0].materialized_revision_id,
+        enforced_revision
+    );
+
+    db.mark_skill_materialized(resource_id.clone(), direct_revision.clone(), 3)
+        .await
+        .unwrap();
+    let subscription = db.subscription(resource_id).await.unwrap().unwrap();
+    assert_eq!(
+        subscription.materialized_revision_id.as_deref(),
+        Some(direct_revision.as_str())
+    );
+    assert_eq!(
+        db.pack_materialized_skills().await.unwrap()[0].materialized_revision_id,
+        "11".repeat(32)
+    );
+}
+
+#[tokio::test]
+async fn enforced_source_suppression_preserves_weaker_relationships_and_reactivates_them() {
+    let dir = tempdir().unwrap();
+    let db = LocalDatabase::open(dir.path().join("state.db"))
+        .await
+        .unwrap();
+    let subscription_id = "01890f47-6a1c-7cc2-98c1-5f6c1ed8a3a1".to_owned();
+    let owned_id = "01890f47-6a1d-7ad0-8f43-9a4d8c29f002".to_owned();
+    db.upsert_subscription_desired(
+        SubscriptionRecord {
+            resource_id: subscription_id.clone(),
+            locator: "@alice/review".to_owned(),
+            owner: "alice".to_owned(),
+            skill_name: "review".to_owned(),
+            resource_generation: 1,
+            release_version: 1,
+            desired_revision_id: "11".repeat(32),
+            harness_name: None,
+            materialized_revision_id: Some("11".repeat(32)),
+            retain_on_delete: false,
+            retained_after_delete: false,
+            live_private: false,
+            desired_root_tree_id: "aa".repeat(32),
+        },
+        1,
+    )
+    .await
+    .unwrap();
+    db.upsert_owned_skill_desired(
+        OwnedSkillRecord {
+            resource_id: owned_id.clone(),
+            locator: "@bob/write".to_owned(),
+            owner: "bob".to_owned(),
+            skill_name: "write".to_owned(),
+            resource_generation: 1,
+            workspace_generation: 1,
+            desired_revision_id: "22".repeat(32),
+            harness_name: None,
+            materialized_revision_id: Some("22".repeat(32)),
+        },
+        1,
+    )
+    .await
+    .unwrap();
+    assert_eq!(db.managed_skills().await.unwrap().len(), 2);
+
+    db.reconcile_source_suppressions(
+        vec![(subscription_id.clone(), "team:alpha".to_owned())],
+        vec![(owned_id.clone(), "team:alpha".to_owned())],
+        Vec::new(),
+        2,
+    )
+    .await
+    .unwrap();
+    assert_eq!(db.subscriptions().await.unwrap().len(), 1);
+    assert_eq!(db.owned_skills().await.unwrap().len(), 1);
+    assert!(db.managed_skills().await.unwrap().is_empty());
+    assert_eq!(
+        db.source_suppressions("subscription").await.unwrap(),
+        vec![subscription_id]
+    );
+    assert_eq!(
+        db.source_suppressions("owned").await.unwrap(),
+        vec![owned_id]
+    );
+
+    db.reconcile_source_suppressions(Vec::new(), Vec::new(), Vec::new(), 3)
+        .await
+        .unwrap();
+    assert_eq!(db.managed_skills().await.unwrap().len(), 2);
+}
+
+#[tokio::test]
 async fn local_fork_provenance_is_immutable_and_cascades_with_owned_skill() {
     let dir = tempdir().unwrap();
     let db = LocalDatabase::open(dir.path().join("state.db"))
@@ -456,6 +611,7 @@ async fn local_fork_provenance_is_immutable_and_cascades_with_owned_skill() {
             sync_base_revision_id: "22".repeat(32),
             desired_name: "review".to_owned(),
             state: "local".to_owned(),
+            replace_subscription: true,
         },
         2,
     )
@@ -472,6 +628,7 @@ async fn local_fork_provenance_is_immutable_and_cascades_with_owned_skill() {
             sync_base_revision_id: "33".repeat(32),
             desired_name: "review-local".to_owned(),
             state: "name_conflict".to_owned(),
+            replace_subscription: false,
         },
         3,
     )
@@ -483,6 +640,7 @@ async fn local_fork_provenance_is_immutable_and_cascades_with_owned_skill() {
         .unwrap()
         .unwrap();
     assert_eq!(fork.upstream_locator, "@alice/review");
+    assert!(fork.replace_subscription);
     assert_eq!(fork.created_from_revision_id, "22".repeat(32));
     assert_eq!(fork.sync_base_revision_id, "33".repeat(32));
     assert_eq!(fork.desired_name, "review-local");
