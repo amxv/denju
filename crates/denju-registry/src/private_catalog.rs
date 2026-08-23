@@ -47,8 +47,8 @@ impl Registry {
         // members-can-publish policy explicitly grants them maintainer-equivalent write access.
         sqlx::query(
             "INSERT INTO skill_private_workspaces \
-             (resource_id,workspace_user_id,description,revision_id,generation,manifest_json,snapshot_key,snapshot_sha256,snapshot_size) \
-             SELECT r.id,$1,r.description,sr.revision_id,r.generation,rrs.manifest_json,rrs.snapshot_key,rrs.snapshot_sha256,rrs.snapshot_size \
+             (resource_id,workspace_user_id,description,license,compatibility,revision_id,generation,manifest_json,snapshot_key,snapshot_sha256,snapshot_size) \
+             SELECT r.id,$1,r.description,r.license,r.compatibility,sr.revision_id,r.generation,rrs.manifest_json,rrs.snapshot_key,rrs.snapshot_sha256,rrs.snapshot_size \
              FROM resources r JOIN namespaces n ON n.id=r.owner_namespace_id AND n.kind='team' \
              JOIN teams t ON t.namespace_id=r.owner_namespace_id \
              JOIN team_memberships tm ON tm.team_namespace_id=r.owner_namespace_id AND tm.user_id=$1 \

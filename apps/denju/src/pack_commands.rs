@@ -1,6 +1,6 @@
 use denju_core::{OperationId, ResourceKind, ResourceLocator};
 use denju_wire::{
-    CliErrorCode, PackCreateRequest, PackCreateResponse, PackDetail, PackLifecycleRequest,
+    CliErrorCode, PackCreateRequest, PackCreateResponse, PackLifecycleRequest,
     PackLifecycleResponse, PackMemberTarget, PackMutationKind, PackMutationRequest,
     PackMutationResponse, PackPublishRequest, PackRenameRequest, PackSubscriptionMutationKind,
     PackSubscriptionRequest, PackSubscriptionResponse, pack_create_request_hash,
@@ -80,16 +80,6 @@ pub(crate) async fn mutate(
         .map_err(client_error)?;
     crate::public::sync_once().await?;
     Ok(outcome)
-}
-
-pub(crate) async fn show(locator: &str) -> Result<PackDetail, RuntimeError> {
-    pack_locator(locator)?;
-    let context = installed_context(true).await?;
-    context
-        .client
-        .pack_detail(locator)
-        .await
-        .map_err(client_error)
 }
 
 pub(crate) async fn publish(

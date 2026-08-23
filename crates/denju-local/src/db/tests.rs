@@ -53,7 +53,7 @@ async fn local_schema_converges_directly_to_current_version() {
         })
         .await
         .unwrap();
-    assert_eq!(version, 13);
+    assert_eq!(version, 14);
 }
 
 #[tokio::test]

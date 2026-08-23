@@ -47,9 +47,53 @@ pub(crate) enum Command {
     },
     Search {
         query: String,
+        #[arg(long, value_enum, default_value_t = SearchSortArg::Relevance)]
+        sort: SearchSortArg,
+        #[arg(long, action = ArgAction::SetTrue)]
+        following: bool,
+        #[arg(long)]
+        topic: Option<String>,
+        #[arg(long, default_value_t = 20)]
+        limit: u32,
+        #[arg(long)]
+        cursor: Option<String>,
+    },
+    Top {
+        #[arg(long)]
+        topic: Option<String>,
+        #[arg(long, default_value_t = 20)]
+        limit: u32,
+        #[arg(long)]
+        cursor: Option<String>,
     },
     Show {
         locator: String,
+        #[arg(long)]
+        followers_cursor: Option<String>,
+        #[arg(long)]
+        following_cursor: Option<String>,
+    },
+    Follow {
+        username: String,
+    },
+    Unfollow {
+        username: String,
+    },
+    Star {
+        locator: String,
+    },
+    Unstar {
+        locator: String,
+    },
+    Topics {
+        locator: String,
+        #[arg(value_name = "TOPIC")]
+        topics: Vec<String>,
+    },
+    Report {
+        locator: String,
+        #[arg(long)]
+        reason: String,
     },
     Import {
         path: PathBuf,
@@ -157,6 +201,16 @@ pub(crate) enum Command {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum IdentityCommand {
+    Update {
+        #[arg(long)]
+        bio: Option<String>,
+        #[arg(long, action = ArgAction::SetTrue, conflicts_with = "bio")]
+        clear_bio: bool,
+        #[arg(long, value_name = "BOOL")]
+        followers_visible: Option<bool>,
+        #[arg(long, value_name = "BOOL")]
+        following_visible: Option<bool>,
+    },
     Backup,
     Recover {
         username: String,
@@ -165,6 +219,21 @@ pub(crate) enum IdentityCommand {
         #[arg(long, action = ArgAction::SetTrue)]
         yes: bool,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum SearchSortArg {
+    Relevance,
+    Stars,
+}
+
+impl SearchSortArg {
+    pub(crate) const fn to_wire(self) -> denju_wire::SearchSort {
+        match self {
+            Self::Relevance => denju_wire::SearchSort::Relevance,
+            Self::Stars => denju_wire::SearchSort::Stars,
+        }
+    }
 }
 
 #[derive(Debug, Subcommand)]
@@ -308,4 +377,87 @@ pub(crate) enum TokenCommand {
     Revoke {
         token_id: String,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn discovery_commands_expose_stable_filters_and_cursors() {
+        let cli = Cli::try_parse_from([
+            "denju",
+            "search",
+            "rust agents",
+            "--sort",
+            "stars",
+            "--following",
+            "--topic",
+            "rust",
+            "--limit",
+            "7",
+            "--cursor",
+            "abc",
+        ])
+        .unwrap();
+        let Some(Command::Search {
+            sort,
+            following,
+            topic,
+            limit,
+            cursor,
+            ..
+        }) = cli.command
+        else {
+            panic!("expected search command");
+        };
+        assert_eq!(sort, SearchSortArg::Stars);
+        assert!(following);
+        assert_eq!(topic.as_deref(), Some("rust"));
+        assert_eq!(limit, 7);
+        assert_eq!(cursor.as_deref(), Some("abc"));
+
+        let cli = Cli::try_parse_from([
+            "denju",
+            "show",
+            "@alice",
+            "--followers-cursor",
+            "f",
+            "--following-cursor",
+            "g",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Show {
+                followers_cursor: Some(ref followers),
+                following_cursor: Some(ref following),
+                ..
+            }) if followers == "f" && following == "g"
+        ));
+    }
+
+    #[test]
+    fn profile_update_is_part_of_identity_without_a_second_profile_command() {
+        let cli = Cli::try_parse_from([
+            "denju",
+            "identity",
+            "update",
+            "--bio",
+            "agent builder",
+            "--followers-visible",
+            "false",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Identity {
+                command: Some(IdentityCommand::Update {
+                    bio: Some(ref bio),
+                    followers_visible: Some(false),
+                    ..
+                }),
+            }) if bio == "agent builder"
+        ));
+    }
 }

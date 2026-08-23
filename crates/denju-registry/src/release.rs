@@ -36,6 +36,8 @@ struct ReleaseWorkspaceRow {
     owner: String,
     name: String,
     description: String,
+    license: Option<String>,
+    compatibility: Option<String>,
     visibility: String,
     generation: i64,
     workspace_generation: i64,
@@ -189,7 +191,7 @@ impl Registry {
         let resource_authority =
             authorize_resource_publish(&mut tx, &authority, resource_id.as_uuid()).await?;
         let current = sqlx::query_as::<_, ReleaseWorkspaceRow>(
-            "SELECT r.owner_namespace_id,n.slug AS owner,r.slug AS name,w.description,r.visibility,r.generation, \
+            "SELECT r.owner_namespace_id,n.slug AS owner,r.slug AS name,w.description,w.license,w.compatibility,r.visibility,r.generation, \
                     w.generation AS workspace_generation, \
                     r.latest_release_version,w.revision_id,w.manifest_json,w.snapshot_key,w.snapshot_sha256,w.snapshot_size, \
                     r.deprecated_at IS NOT NULL AS deprecated,replacement.id AS replacement_id, \
@@ -390,12 +392,14 @@ impl Registry {
             .map_err(internal_api_error)?;
         }
         sqlx::query(
-            "UPDATE resources SET visibility=$1,latest_release_version=$2,generation=$3,description=$4 WHERE id=$5",
+            "UPDATE resources SET visibility=$1,latest_release_version=$2,generation=$3,description=$4,license=$5,compatibility=$6 WHERE id=$7",
         )
         .bind(if publish_public { "public" } else { "private" })
         .bind(version)
         .bind(next_generation)
         .bind(&current.description)
+        .bind(&current.license)
+        .bind(&current.compatibility)
         .bind(resource_id.as_uuid())
         .execute(&mut *tx)
         .await
@@ -573,11 +577,11 @@ impl Registry {
                     "stored revision is missing SKILL.md",
                 )
             })?;
-        let description = parse_skill_document(&slug, skill_md)
-            .map_err(|error| ApiError::new(ApiErrorCode::Internal, error.to_string()))?
-            .frontmatter()
-            .description()
-            .to_owned();
+        let document = parse_skill_document(&slug, skill_md)
+            .map_err(|error| ApiError::new(ApiErrorCode::Internal, error.to_string()))?;
+        let description = document.frontmatter().description().to_owned();
+        let license = document.frontmatter().license().map(str::to_owned);
+        let compatibility = document.frontmatter().compatibility().map(str::to_owned);
 
         let mut tx = self.pool.begin().await.map_err(internal_api_error)?;
         let resource_authority =
@@ -688,19 +692,23 @@ impl Registry {
         .bind(snapshot_size)
         .execute(&mut *tx).await.map_err(internal_api_error)?;
         if !resource_authority.is_team {
-            sqlx::query("UPDATE resources SET generation=$1,description=$2 WHERE id=$3")
+            sqlx::query(
+                "UPDATE resources SET generation=$1,description=$2,license=$3,compatibility=$4 WHERE id=$5",
+            )
                 .bind(next_resource_generation)
                 .bind(&description)
+                .bind(&license)
+                .bind(&compatibility)
                 .bind(resource_id.as_uuid())
                 .execute(&mut *tx)
                 .await
                 .map_err(internal_api_error)?;
         }
         sqlx::query(
-            "UPDATE skill_private_workspaces SET revision_id=$1,generation=$2,description=$3,manifest_json=$4,snapshot_key=$5,snapshot_sha256=$6,snapshot_size=$7,updated_at=now() \
-             WHERE resource_id=$8 AND workspace_user_id=$9",
+            "UPDATE skill_private_workspaces SET revision_id=$1,generation=$2,description=$3,license=$4,compatibility=$5,manifest_json=$6,snapshot_key=$7,snapshot_sha256=$8,snapshot_size=$9,updated_at=now() \
+             WHERE resource_id=$10 AND workspace_user_id=$11",
         )
-        .bind(new_revision.as_bytes().as_slice()).bind(next_workspace_generation).bind(&description)
+        .bind(new_revision.as_bytes().as_slice()).bind(next_workspace_generation).bind(&description).bind(&license).bind(&compatibility)
         .bind(serde_json::to_value(&manifest_wire).map_err(|error| ApiError::new(ApiErrorCode::Internal, error.to_string()))?)
         .bind(&snapshot_key).bind(&snapshot_sha).bind(snapshot_size).bind(resource_id.as_uuid()).bind(authority.user_id)
         .execute(&mut *tx).await.map_err(internal_api_error)?;

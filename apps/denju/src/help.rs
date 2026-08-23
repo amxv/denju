@@ -6,11 +6,18 @@ Commands:\n\
   setup   Set up this machine without creating an account\n\
   claim   Claim a Denju identity for this installation\n\
   login   Log this installation into an existing identity\n\
-  identity  Show, recover, back up, or delete identity state\n\
+  identity  Show or update profile/identity state, recover, back up, or delete it\n\
   devices List or revoke authenticated devices\n\
   tokens  List, create, or revoke scoped automation credentials\n\
-  search  Search public and explicitly shared Agent Skills\n\
-  show    Show one accessible skill or pack\n\
+  search  Search the merged local, private, team, and public catalog\n\
+  top     Rank public skills by all-time stars\n\
+  show    Show a profile, accessible skill, or pack; profile lists support cursor continuation\n\
+  follow  Follow a user for discovery\n\
+  unfollow  Stop following a user\n\
+  star    Star a public skill\n\
+  unstar  Remove your star from a skill\n\
+  topics  Set discovery topics for an owned resource\n\
+  report  Privately report a public resource to registry operators\n\
   import  Transfer a local skill into your private Denju workspace\n\
   publish Publish a skill release or make an owned pack public\n\
   rename  Rename an owned skill or pack while preserving its stable resource ID\n\

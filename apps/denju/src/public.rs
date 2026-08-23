@@ -9,9 +9,9 @@ use denju_local::{
     recover_local_lifecycle, recover_materializations, resolve_harness_roots,
 };
 use denju_wire::{
-    CliErrorCode, PublicSkillDetail, PublicSkillSearchResponse, SubscribedSkill,
-    SubscriptionContent, SubscriptionMutationKind, SubscriptionMutationRequest, SyncKnownResource,
-    SyncReconcileRequest, subscription_request_hash,
+    CliErrorCode, SubscribedSkill, SubscriptionContent, SubscriptionMutationKind,
+    SubscriptionMutationRequest, SyncKnownResource, SyncReconcileRequest,
+    subscription_request_hash,
 };
 use serde::Serialize;
 use uuid::Uuid;
@@ -54,25 +54,7 @@ pub struct ProjectionOutcome {
     pub harness_name: String,
 }
 
-pub async fn search(query: &str) -> Result<PublicSkillSearchResponse, RuntimeError> {
-    let context = catalog_context().await?;
-    context
-        .client
-        .search_public_skills(query, 20, None)
-        .await
-        .map_err(client_error)
-}
-
-pub async fn show(locator: &str) -> Result<PublicSkillDetail, RuntimeError> {
-    let context = catalog_context().await?;
-    context
-        .client
-        .show_public_skill(locator)
-        .await
-        .map_err(client_error)
-}
-
-async fn catalog_context() -> Result<InstalledContext, RuntimeError> {
+pub(crate) async fn catalog_context() -> Result<InstalledContext, RuntimeError> {
     let context = installed_context(false).await?;
     let has_session = context
         .db

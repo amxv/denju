@@ -377,3 +377,28 @@ ALTER TABLE local_forks ADD COLUMN replace_subscription INTEGER NOT NULL DEFAULT
 PRAGMA user_version = 13;
 COMMIT;
 "#;
+
+pub(super) const MIGRATION_V14: &str = r#"
+BEGIN IMMEDIATE;
+
+-- Discovery metadata is extracted while Denju already validates a workspace. Search never needs
+-- to scan SKILL.md bodies, and the table intentionally contains no body/script bytes.
+CREATE TABLE skill_discovery_metadata (
+    resource_id TEXT PRIMARY KEY REFERENCES owned_skills(resource_id) ON DELETE CASCADE,
+    description TEXT NOT NULL,
+    license TEXT,
+    compatibility TEXT,
+    updated_at_unix_ms INTEGER NOT NULL
+);
+
+-- Anonymous follows are local intent bound to the registry's stable user ID. Claim/login may
+-- transfer them into the account without ever involving desired-state or projection tables.
+CREATE TABLE anonymous_follows (
+    user_id TEXT PRIMARY KEY,
+    username TEXT NOT NULL UNIQUE,
+    updated_at_unix_ms INTEGER NOT NULL
+);
+
+PRAGMA user_version = 14;
+COMMIT;
+"#;

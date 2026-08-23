@@ -244,11 +244,11 @@ impl Registry {
             .ok_or_else(|| {
                 ApiError::new(ApiErrorCode::Internal, "renamed skill has no SKILL.md")
             })?;
-        let description = parse_skill_document(&request.new_name, document)
-            .map_err(|error| ApiError::new(ApiErrorCode::Internal, error.to_string()))?
-            .frontmatter()
-            .description()
-            .to_owned();
+        let parsed = parse_skill_document(&request.new_name, document)
+            .map_err(|error| ApiError::new(ApiErrorCode::Internal, error.to_string()))?;
+        let description = parsed.frontmatter().description().to_owned();
+        let license = parsed.frontmatter().license().map(str::to_owned);
+        let compatibility = parsed.frontmatter().compatibility().map(str::to_owned);
         let parent = RevisionId::from_bytes(decode_32(&source.revision_id, "stored revision ID")?);
         let author = AuthorPrincipalId::from_uuid(authority.author_principal_id)
             .map_err(|error| ApiError::new(ApiErrorCode::Internal, error.to_string()))?;
@@ -369,10 +369,12 @@ impl Registry {
         };
         let latest_release_version = release_version.or(locked.latest_release_version);
         sqlx::query(
-            "UPDATE resources SET slug=$1,description=$2,generation=$3,latest_release_version=$4 WHERE id=$5",
+            "UPDATE resources SET slug=$1,description=$2,license=$3,compatibility=$4,generation=$5,latest_release_version=$6 WHERE id=$7",
         )
         .bind(&request.new_name)
         .bind(&description)
+        .bind(&license)
+        .bind(&compatibility)
         .bind(next_generation)
         .bind(latest_release_version)
         .bind(resource_id.as_uuid())
@@ -380,11 +382,14 @@ impl Registry {
         .await
         .map_err(internal_api_error)?;
         sqlx::query(
-            "UPDATE skill_private_workspaces SET revision_id=$1,generation=$2,manifest_json=$3, \
-             snapshot_key=$4,snapshot_sha256=$5,snapshot_size=$6,updated_at=now() WHERE resource_id=$7",
+            "UPDATE skill_private_workspaces SET revision_id=$1,generation=$2,description=$3,license=$4,compatibility=$5,manifest_json=$6, \
+             snapshot_key=$7,snapshot_sha256=$8,snapshot_size=$9,updated_at=now() WHERE resource_id=$10",
         )
         .bind(revision_id.as_bytes().as_slice())
         .bind(next_generation)
+        .bind(&description)
+        .bind(&license)
+        .bind(&compatibility)
         .bind(serde_json::to_value(&new_manifest_wire).map_err(internal_serialization_error)?)
         .bind(&snapshot_key)
         .bind(snapshot_sha.as_bytes().as_slice())

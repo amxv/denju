@@ -456,6 +456,8 @@ impl Registry {
         let document = parse_skill_document(validation_name, skill_md)
             .map_err(|error| ApiError::new(ApiErrorCode::InvalidRequest, error.to_string()))?;
         let description = document.frontmatter().description().to_owned();
+        let license = document.frontmatter().license().map(str::to_owned);
+        let compatibility = document.frontmatter().compatibility().map(str::to_owned);
 
         for blob in staging.keys() {
             let bytes = bytes_by_blob.get(blob).ok_or_else(|| {
@@ -604,13 +606,15 @@ impl Registry {
         .map_err(internal_api_error)?;
         sqlx::query(
             "INSERT INTO resources \
-             (id,owner_namespace_id,slug,kind,visibility,description,generation,latest_release_version) \
-             VALUES ($1,$2,$3,'skill','private',$4,1,NULL)",
+             (id,owner_namespace_id,slug,kind,visibility,description,license,compatibility,generation,latest_release_version) \
+             VALUES ($1,$2,$3,'skill','private',$4,$5,$6,1,NULL)",
         )
         .bind(operation.resource_id)
         .bind(operation.namespace_id)
         .bind(&operation.slug)
         .bind(&description)
+        .bind(&license)
+        .bind(&compatibility)
         .execute(&mut *tx)
         .await
         .map_err(internal_api_error)?;
@@ -644,12 +648,14 @@ impl Registry {
         }
         sqlx::query(
             "INSERT INTO skill_private_workspaces \
-             (resource_id,workspace_user_id,description,revision_id,generation,manifest_json,snapshot_key,snapshot_sha256,snapshot_size) \
-             VALUES ($1,$2,$3,$4,1,$5,$6,$7,$8)",
+             (resource_id,workspace_user_id,description,license,compatibility,revision_id,generation,manifest_json,snapshot_key,snapshot_sha256,snapshot_size) \
+             VALUES ($1,$2,$3,$4,$5,$6,1,$7,$8,$9,$10)",
         )
         .bind(operation.resource_id)
         .bind(authority.user_id)
         .bind(&description)
+        .bind(&license)
+        .bind(&compatibility)
         .bind(revision_id.as_slice())
         .bind(serde_json::to_value(&manifest_wire).map_err(|error| {
             ApiError::new(ApiErrorCode::Internal, error.to_string())

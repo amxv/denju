@@ -24,19 +24,20 @@ use denju_wire::{
     PrivateRevisionCommitResponse, PrivateRevisionPrepareResponse, PrivateRevisionRequest,
     PrivateSkillCatalog, PrivateSkillImportCommitRequest, PrivateSkillImportPrepareResponse,
     PrivateSkillImportRequest, PrivateSkillImportResponse, ProposalAcceptRequest,
-    ProposalCloseRequest, ProposalCreateRequest, PublicSkillDetail, PublicSkillSearchResponse,
-    PublishSkillRequest, PublishSkillResponse, RecoveryResetRequest, RegistryCapabilities,
-    RenameSkillRequest, RenameSkillResponse, ResourceLifecycleRequest, RestoreSkillRequest,
-    RestoreSkillResponse, ShareMutationKind, ShareSkillRequest, ShareSkillResponse,
-    SkillHistoryResponse, SkillProposal, SkillProposalDetail, SkillProposalList,
-    SkillRevisionDetail, SubscriptionCatalog, SubscriptionMutationKind,
-    SubscriptionMutationRequest, SubscriptionMutationResponse, SubscriptionTarget, SyncHint,
-    SyncReconcileRequest, SyncReconcileResponse, UnpublishSkillResponse, UsageResponse,
+    ProposalCloseRequest, ProposalCreateRequest, PublicSkillDetail, PublishSkillRequest,
+    PublishSkillResponse, RecoveryResetRequest, RegistryCapabilities, RenameSkillRequest,
+    RenameSkillResponse, ResourceLifecycleRequest, RestoreSkillRequest, RestoreSkillResponse,
+    ShareMutationKind, ShareSkillRequest, ShareSkillResponse, SkillHistoryResponse, SkillProposal,
+    SkillProposalDetail, SkillProposalList, SkillRevisionDetail, SubscriptionCatalog,
+    SubscriptionMutationKind, SubscriptionMutationRequest, SubscriptionMutationResponse,
+    SubscriptionTarget, SyncHint, SyncReconcileRequest, SyncReconcileResponse,
+    UnpublishSkillResponse, UsageResponse,
 };
 use futures_util::stream;
 use serde::Deserialize;
 
 mod auth;
+mod discovery_routes;
 mod team_routes;
 
 use auth::{bearer_token, optional_bearer_token, recovery_bearer_token};
@@ -60,8 +61,8 @@ pub(super) fn router(registry: Arc<Registry>) -> Router {
         )
         .route("/v1/tokens/revoke", post(revoke_automation_token))
         .route("/v1/account/delete", post(delete_account))
+        .merge(discovery_routes::router())
         .merge(team_routes::router())
-        .route("/v1/search", get(search_public_skills))
         .route("/v1/skills/show", get(show_public_skill))
         .route("/v1/skills/publish", post(publish_skill))
         .route("/v1/skills/history", get(skill_history))
@@ -119,31 +120,6 @@ pub(super) fn router(registry: Arc<Registry>) -> Router {
         .route("/v1/sync/reconcile", post(sync_reconcile))
         .route("/v1/events", get(events))
         .with_state(registry)
-}
-
-#[derive(Debug, Deserialize)]
-struct SearchQuery {
-    #[serde(default)]
-    q: String,
-    limit: Option<u32>,
-    cursor: Option<String>,
-}
-
-async fn search_public_skills(
-    State(registry): State<Arc<Registry>>,
-    headers: HeaderMap,
-    Query(query): Query<SearchQuery>,
-) -> Result<Json<PublicSkillSearchResponse>, ApiResponseError> {
-    registry
-        .search_public_skills(
-            optional_bearer_token(&headers),
-            &query.q,
-            query.limit.unwrap_or(20),
-            query.cursor.as_deref(),
-        )
-        .await
-        .map(Json)
-        .map_err(ApiResponseError)
 }
 
 async fn claim_identity(

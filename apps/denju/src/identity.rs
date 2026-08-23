@@ -115,6 +115,7 @@ pub async fn claim(username: &str, json: bool) -> Result<ClaimOutcome, RuntimeEr
         .await
         .map_err(client_error)?;
     persist_session(&context, &response, &session).await?;
+    crate::discovery::adopt_anonymous_follows().await?;
     let sync = public::sync_once().await?;
     Ok(ClaimOutcome {
         state: "claimed",
@@ -151,6 +152,7 @@ pub async fn login(username: &str, json: bool) -> Result<LoginOutcome, RuntimeEr
         .await
         .map_err(client_error)?;
     persist_session(&context, &response, &session).await?;
+    crate::discovery::adopt_anonymous_follows().await?;
     let sync = public::sync_once().await?;
     Ok(LoginOutcome {
         state: "logged_in",
@@ -199,6 +201,7 @@ pub async fn recover(username: &str, json: bool) -> Result<RecoveryOutcome, Runt
         .await
         .map_err(client_error)?;
     persist_session(&context, &response, &session).await?;
+    crate::discovery::adopt_anonymous_follows().await?;
     let sync = public::sync_once().await?;
     Ok(RecoveryOutcome {
         state: "recovered",

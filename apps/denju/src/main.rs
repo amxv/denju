@@ -1,5 +1,6 @@
 mod commands;
 mod context;
+mod discovery;
 mod fork_ops;
 mod fork_resolve;
 mod fork_sync;
@@ -113,6 +114,21 @@ async fn run(args: impl IntoIterator<Item = OsString>) -> ExitCode {
             })
         }
         Some(Command::Identity {
+            command:
+                Some(IdentityCommand::Update {
+                    bio,
+                    clear_bio,
+                    followers_visible,
+                    following_visible,
+                }),
+        }) => discovery::update_profile(bio, clear_bio, followers_visible, following_visible)
+            .await
+            .map(|outcome| CommandOutput {
+                text: format!("Updated {} profile.", outcome.username),
+                payload: ResultPayload::ProfileUpdate { outcome },
+                exit: ExitCode::SUCCESS,
+            }),
+        Some(Command::Identity {
             command: Some(IdentityCommand::Backup),
         }) => identity::backup(cli.json)
             .await
@@ -202,36 +218,124 @@ async fn run(args: impl IntoIterator<Item = OsString>) -> ExitCode {
                 payload: ResultPayload::TokenRevoke { outcome },
                 exit: ExitCode::SUCCESS,
             }),
-        Some(Command::Search { query }) => {
-            public::search(&query).await.map(|outcome| CommandOutput {
+        Some(Command::Search {
+            query,
+            sort,
+            following,
+            topic,
+            limit,
+            cursor,
+        }) => discovery::search(
+            &query,
+            sort.to_wire(),
+            following,
+            topic.as_deref(),
+            limit,
+            cursor.as_deref(),
+        )
+        .await
+        .map(|outcome| CommandOutput {
+            text: search_text(&outcome),
+            payload: ResultPayload::Search { outcome },
+            exit: ExitCode::SUCCESS,
+        }),
+        Some(Command::Top {
+            topic,
+            limit,
+            cursor,
+        }) => discovery::top(topic.as_deref(), limit, cursor.as_deref())
+            .await
+            .map(|outcome| CommandOutput {
                 text: search_text(&outcome),
-                payload: ResultPayload::Search { outcome },
+                payload: ResultPayload::Top { outcome },
                 exit: ExitCode::SUCCESS,
-            })
-        }
-        Some(Command::Show { locator }) => {
-            if pack_commands::is_pack_locator(&locator) {
-                pack_commands::show(&locator)
-                    .await
-                    .map(|outcome| CommandOutput {
-                        text: format!(
-                            "{} v{} ({} members, {})",
-                            outcome.pack.locator,
-                            outcome.pack.version,
-                            outcome.pack.member_count,
-                            outcome.pack.visibility
-                        ),
-                        payload: ResultPayload::PackShow { outcome },
-                        exit: ExitCode::SUCCESS,
-                    })
-            } else {
-                public::show(&locator).await.map(|outcome| CommandOutput {
-                    text: show_text(&outcome),
-                    payload: ResultPayload::Show { outcome },
+            }),
+        Some(Command::Show {
+            locator,
+            followers_cursor,
+            following_cursor,
+        }) => discovery::show(
+            &locator,
+            followers_cursor.as_deref(),
+            following_cursor.as_deref(),
+        )
+        .await
+        .map(|outcome| CommandOutput {
+            text: show_text(&outcome),
+            payload: ResultPayload::Show { outcome },
+            exit: ExitCode::SUCCESS,
+        }),
+        Some(Command::Follow { username }) => {
+            discovery::follow(&username)
+                .await
+                .map(|outcome| CommandOutput {
+                    text: if outcome.synchronized {
+                        format!("Following {}.", outcome.username)
+                    } else {
+                        format!(
+                            "Following {} locally; it will sync after identity claim.",
+                            outcome.username
+                        )
+                    },
+                    payload: ResultPayload::Follow { outcome },
                     exit: ExitCode::SUCCESS,
                 })
-            }
         }
+        Some(Command::Unfollow { username }) => {
+            discovery::unfollow(&username)
+                .await
+                .map(|outcome| CommandOutput {
+                    text: format!("Not following {}.", outcome.username),
+                    payload: ResultPayload::Follow { outcome },
+                    exit: ExitCode::SUCCESS,
+                })
+        }
+        Some(Command::Star { locator }) => {
+            discovery::star(&locator)
+                .await
+                .map(|outcome| CommandOutput {
+                    text: format!(
+                        "Starred {} ({} stars).",
+                        outcome.locator, outcome.star_count
+                    ),
+                    payload: ResultPayload::Star { outcome },
+                    exit: ExitCode::SUCCESS,
+                })
+        }
+        Some(Command::Unstar { locator }) => {
+            discovery::unstar(&locator)
+                .await
+                .map(|outcome| CommandOutput {
+                    text: format!(
+                        "Unstarred {} ({} stars).",
+                        outcome.locator, outcome.star_count
+                    ),
+                    payload: ResultPayload::Star { outcome },
+                    exit: ExitCode::SUCCESS,
+                })
+        }
+        Some(Command::Topics { locator, topics }) => discovery::update_topics(&locator, topics)
+            .await
+            .map(|outcome| CommandOutput {
+                text: if outcome.topics.is_empty() {
+                    format!("Cleared discovery topics for {}.", outcome.locator)
+                } else {
+                    format!(
+                        "Topics for {}: {}",
+                        outcome.locator,
+                        outcome.topics.join(", ")
+                    )
+                },
+                payload: ResultPayload::Topics { outcome },
+                exit: ExitCode::SUCCESS,
+            }),
+        Some(Command::Report { locator, reason }) => discovery::report(&locator, &reason)
+            .await
+            .map(|outcome| CommandOutput {
+                text: format!("Report {} accepted.", outcome.report_id),
+                payload: ResultPayload::Report { outcome },
+                exit: ExitCode::SUCCESS,
+            }),
         Some(Command::Import { path, to }) => {
             owned::import(&path, to.as_deref())
                 .await

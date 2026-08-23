@@ -1,7 +1,7 @@
 use denju_wire::{
-    AutomationTokenList, DeviceList, PublicSkillDetail, PublicSkillSearchResponse,
-    SkillDeprecation, SkillHistoryResponse, SkillProposal, SkillProposalDetail, SkillProposalList,
-    SkillProposalState,
+    AutomationTokenList, CatalogResource, CatalogSearchResponse, CatalogSource, CatalogVisibility,
+    DeviceList, PublicSkillDetail, SkillDeprecation, SkillHistoryResponse, SkillProposal,
+    SkillProposalDetail, SkillProposalList, SkillProposalState, UniversalShowResponse,
 };
 
 use crate::{
@@ -15,22 +15,97 @@ use crate::{
     workspace::StatusOutcome,
 };
 
-pub(crate) fn search_text(outcome: &PublicSkillSearchResponse) -> String {
+pub(crate) fn search_text(outcome: &CatalogSearchResponse) -> String {
     if outcome.items.is_empty() {
-        return "No public skills found.".to_owned();
+        return "No matching resources found.".to_owned();
     }
-    outcome
+    let mut lines = outcome
         .items
         .iter()
-        .map(|skill| {
-            let line = format!("{}  {}", skill.locator, skill.description);
-            append_deprecation_notice(line, skill.deprecation.as_ref()).replace('\n', "  ")
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+        .map(catalog_item_text)
+        .collect::<Vec<_>>();
+    if let Some(cursor) = outcome.next_cursor.as_deref() {
+        lines.push(format!("Next cursor: {cursor}"));
+    }
+    lines.join("\n")
 }
 
-pub(crate) fn show_text(outcome: &PublicSkillDetail) -> String {
+fn catalog_item_text(item: &CatalogResource) -> String {
+    let source = match item.source {
+        CatalogSource::Public => "public",
+        CatalogSource::Owned => "owned",
+        CatalogSource::PrivateShare => "shared",
+        CatalogSource::Team => "team",
+        CatalogSource::Local => "local",
+    };
+    let visibility = match item.visibility {
+        CatalogVisibility::Public => "public",
+        CatalogVisibility::Private => "private",
+        CatalogVisibility::Team => "team",
+    };
+    let mut line = format!(
+        "{}  [{source}/{visibility}]  {}",
+        item.locator, item.description
+    );
+    if item.star_count > 0 {
+        line.push_str(&format!("  {} stars", item.star_count));
+    }
+    if item.deprecated {
+        line.push_str("  Deprecated");
+    }
+    line
+}
+
+pub(crate) fn show_text(outcome: &UniversalShowResponse) -> String {
+    match outcome {
+        UniversalShowResponse::Profile(profile) => {
+            let mut lines = vec![profile.username.clone()];
+            if let Some(bio) = profile.bio.as_deref() {
+                lines.push(bio.to_owned());
+            }
+            lines.push(match profile.followers.as_ref() {
+                Some(followers) => format!("Followers: {}", followers.count),
+                None => "Followers: hidden".to_owned(),
+            });
+            lines.push(match profile.following.as_ref() {
+                Some(following) => format!("Following: {}", following.count),
+                None => "Following: hidden".to_owned(),
+            });
+            lines.push(format!(
+                "Public: {} skills, {} packs, {} forks",
+                profile.public_skills.len(),
+                profile.public_packs.len(),
+                profile.public_forks.len()
+            ));
+            if let Some(cursor) = profile
+                .followers
+                .as_ref()
+                .and_then(|connections| connections.next_cursor.as_deref())
+            {
+                lines.push(format!("Followers next cursor: {cursor}"));
+            }
+            if let Some(cursor) = profile
+                .following
+                .as_ref()
+                .and_then(|connections| connections.next_cursor.as_deref())
+            {
+                lines.push(format!("Following next cursor: {cursor}"));
+            }
+            lines.join("\n")
+        }
+        UniversalShowResponse::Skill(skill) => skill_show_text(skill),
+        UniversalShowResponse::Pack(pack) => {
+            let mut lines = vec![format!(
+                "{} v{} ({} members, {})",
+                pack.pack.locator, pack.pack.version, pack.pack.member_count, pack.pack.visibility
+            )];
+            lines.extend(pack.members.iter().map(|member| member.locator.clone()));
+            lines.join("\n")
+        }
+    }
+}
+
+fn skill_show_text(outcome: &PublicSkillDetail) -> String {
     let content = match outcome.skill.version {
         Some(version) => format!("Release: v{version} ({})", outcome.skill.revision_id),
         None if outcome.skill.live_private => {

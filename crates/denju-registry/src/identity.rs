@@ -786,6 +786,30 @@ impl Registry {
             .execute(&mut *tx)
             .await
             .map_err(internal_api_error)?;
+        sqlx::query("DELETE FROM user_follows WHERE follower_user_id=$1 OR followed_user_id=$1")
+            .bind(user_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(internal_api_error)?;
+        sqlx::query(
+            "WITH removed AS (DELETE FROM resource_stars WHERE user_id=$1 RETURNING resource_id) \
+             UPDATE resources r SET star_count=GREATEST(0,r.star_count-1) FROM removed \
+             WHERE r.id=removed.resource_id",
+        )
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(internal_api_error)?;
+        sqlx::query("UPDATE resource_reports SET reporter_user_id=NULL WHERE reporter_user_id=$1")
+            .bind(user_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(internal_api_error)?;
+        sqlx::query("DELETE FROM social_operations WHERE user_id=$1")
+            .bind(user_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(internal_api_error)?;
         sqlx::query("UPDATE sessions SET revoked_at=coalesce(revoked_at,now()) WHERE user_id=$1")
             .bind(user_id)
             .execute(&mut *tx)
@@ -824,7 +848,7 @@ impl Registry {
         .await
         .map_err(internal_api_error)?;
         sqlx::query(
-            "UPDATE users SET namespace_id=NULL,password_hash=NULL,recovery_secret_hash=NULL,deleted_at=now() WHERE id=$1",
+            "UPDATE users SET namespace_id=NULL,password_hash=NULL,recovery_secret_hash=NULL,bio=NULL,deleted_at=now() WHERE id=$1",
         )
         .bind(user_id)
         .execute(&mut *tx)

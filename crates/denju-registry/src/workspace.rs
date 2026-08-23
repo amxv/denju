@@ -512,6 +512,8 @@ impl Registry {
         let document = parse_skill_document(validation_name, skill_md)
             .map_err(|error| ApiError::new(ApiErrorCode::InvalidRequest, error.to_string()))?;
         let description = document.frontmatter().description().to_owned();
+        let license = document.frontmatter().license().map(str::to_owned);
+        let compatibility = document.frontmatter().compatibility().map(str::to_owned);
 
         for blob in staging.keys() {
             self.objects
@@ -689,21 +691,27 @@ impl Registry {
                 ApiError::new(ApiErrorCode::Internal, "workspace generation overflow")
             })?;
             if !resource_authority.is_team {
-                sqlx::query("UPDATE resources SET generation=$1,description=$2 WHERE id=$3")
+                sqlx::query(
+                    "UPDATE resources SET generation=$1,description=$2,license=$3,compatibility=$4 WHERE id=$5",
+                )
                     .bind(next_resource_generation)
                     .bind(&description)
+                    .bind(&license)
+                    .bind(&compatibility)
                     .bind(operation.resource_id)
                     .execute(&mut *tx)
                     .await
                     .map_err(internal_api_error)?;
             }
             sqlx::query(
-                "UPDATE skill_private_workspaces SET revision_id=$1,generation=$2,description=$3,manifest_json=$4,snapshot_key=$5,snapshot_sha256=$6,snapshot_size=$7,updated_at=now() \
-                 WHERE resource_id=$8 AND workspace_user_id=$9",
+                "UPDATE skill_private_workspaces SET revision_id=$1,generation=$2,description=$3,license=$4,compatibility=$5,manifest_json=$6,snapshot_key=$7,snapshot_sha256=$8,snapshot_size=$9,updated_at=now() \
+                 WHERE resource_id=$10 AND workspace_user_id=$11",
             )
             .bind(revision_id.as_slice())
             .bind(next_workspace_generation)
             .bind(&description)
+            .bind(&license)
+            .bind(&compatibility)
             .bind(serde_json::to_value(&manifest_wire).map_err(|error| {
                 ApiError::new(ApiErrorCode::Internal, error.to_string())
             })?)

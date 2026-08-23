@@ -1,6 +1,7 @@
 //! Registry use cases plus PostgreSQL and S3-compatible persistence boundaries.
 
 mod access;
+mod discovery;
 mod fork_sync;
 mod history;
 mod identity;
@@ -18,6 +19,7 @@ mod pack_lifecycle;
 mod pack_storage;
 mod packs;
 mod private_catalog;
+mod proposal_metadata;
 mod proposals;
 mod public_registry;
 mod public_seed;
@@ -27,6 +29,7 @@ mod release_validation;
 mod rename_content;
 mod revision_graph;
 mod sharing;
+mod social;
 mod subscription_access;
 mod team_access;
 mod team_policy;
@@ -60,7 +63,7 @@ use url::Url;
 use uuid::Uuid;
 
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
-const EXPECTED_SCHEMA_VERSION: i64 = 13;
+const EXPECTED_SCHEMA_VERSION: i64 = 14;
 const SNAPSHOT_URL_TTL: Duration = Duration::from_secs(5 * 60);
 const STAGING_URL_TTL: Duration = Duration::from_secs(10 * 60);
 

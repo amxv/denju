@@ -5,12 +5,17 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 mod pack_hash;
+mod social_hash;
 mod team_hash;
 
 pub use pack_hash::{
     pack_create_request_hash, pack_delete_request_hash, pack_mutation_request_hash,
     pack_publish_request_hash, pack_rename_request_hash, pack_subscription_request_hash,
     pack_unpublish_request_hash,
+};
+pub use social_hash::{
+    FollowMutationKind, StarMutationKind, follow_request_hash, profile_update_request_hash,
+    report_resource_request_hash, resource_topics_request_hash, star_request_hash,
 };
 pub use team_hash::{
     invite_code_hash, resource_transfer_request_hash, team_create_request_hash,

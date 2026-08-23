@@ -22,8 +22,6 @@ use crate::{
     team_access::{authorize_resource_publish, ensure_private_workspace_for_user},
 };
 
-const MAX_PROPOSAL_MESSAGE_CHARS: usize = 500;
-
 #[derive(Debug, FromRow)]
 struct ProposalRow {
     proposal_id: Uuid,
@@ -61,7 +59,7 @@ impl Registry {
         request: &ProposalCreateRequest,
     ) -> Result<SkillProposal, ApiError> {
         let authority = self.user_authority(bearer, "skills:write").await?;
-        validate_message(request.message.as_deref())?;
+        crate::proposal_metadata::validate_message(request.message.as_deref())?;
         let operation_id = OperationId::from_str(&request.operation_id)
             .map_err(|error| ApiError::new(ApiErrorCode::InvalidRequest, error.to_string()))?;
         let source_resource_id = ResourceId::from_str(&request.source_resource_id)
@@ -515,15 +513,12 @@ impl Registry {
             expected_revision.as_bytes(),
         )
         .await?;
-        let source_description = sqlx::query_scalar::<_, String>(
-            "SELECT description FROM skill_private_workspaces \
-             WHERE resource_id=$1 AND workspace_user_id=$2",
+        let source_metadata = crate::proposal_metadata::source_workspace_metadata(
+            &mut tx,
+            row.source_resource_id,
+            row.proposer_user_id,
         )
-        .bind(row.source_resource_id)
-        .bind(row.proposer_user_id)
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(internal_api_error)?;
+        .await?;
         let snapshot = sqlx::query_as::<_, (Value, String, Vec<u8>, i64)>(
             "SELECT manifest_json,snapshot_key,snapshot_sha256,snapshot_size FROM resource_revision_snapshots \
              WHERE resource_id=$1 AND revision_id=$2",
@@ -540,22 +535,28 @@ impl Registry {
             next_generation(row.target_generation)?
         };
         if !target_authority.is_team {
-            sqlx::query("UPDATE resources SET generation=$1,description=$2 WHERE id=$3")
+            sqlx::query(
+                "UPDATE resources SET generation=$1,description=$2,license=$3,compatibility=$4 WHERE id=$5",
+            )
                 .bind(target_resource_next)
-                .bind(&source_description)
+                .bind(&source_metadata.0)
+                .bind(&source_metadata.1)
+                .bind(&source_metadata.2)
                 .bind(row.target_resource_id)
                 .execute(&mut *tx)
                 .await
                 .map_err(internal_api_error)?;
         }
         sqlx::query(
-            "UPDATE skill_private_workspaces SET revision_id=$1,generation=$2,description=$3,manifest_json=$4, \
-             snapshot_key=$5,snapshot_sha256=$6,snapshot_size=$7,updated_at=now() \
-             WHERE resource_id=$8 AND workspace_user_id=$9",
+            "UPDATE skill_private_workspaces SET revision_id=$1,generation=$2,description=$3,license=$4,compatibility=$5,manifest_json=$6, \
+             snapshot_key=$7,snapshot_sha256=$8,snapshot_size=$9,updated_at=now() \
+             WHERE resource_id=$10 AND workspace_user_id=$11",
         )
         .bind(expected_revision.as_bytes().as_slice())
         .bind(target_workspace_next)
-        .bind(source_description)
+        .bind(&source_metadata.0)
+        .bind(&source_metadata.1)
+        .bind(&source_metadata.2)
         .bind(snapshot.0)
         .bind(snapshot.1)
         .bind(snapshot.2)
@@ -942,16 +943,6 @@ async fn record_operation<T: Serialize>(
     .execute(&mut **tx)
     .await
     .map_err(internal_api_error)?;
-    Ok(())
-}
-
-fn validate_message(message: Option<&str>) -> Result<(), ApiError> {
-    if message.is_some_and(|message| message.chars().count() > MAX_PROPOSAL_MESSAGE_CHARS) {
-        return Err(ApiError::new(
-            ApiErrorCode::InvalidRequest,
-            format!("proposal message exceeds {MAX_PROPOSAL_MESSAGE_CHARS} characters"),
-        ));
-    }
     Ok(())
 }
 

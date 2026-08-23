@@ -17,25 +17,26 @@ use denju_wire::{
     PrivateRevisionPrepareResponse, PrivateRevisionRequest, PrivateSkillCatalog,
     PrivateSkillImportCommitRequest, PrivateSkillImportPrepareResponse, PrivateSkillImportRequest,
     PrivateSkillImportResponse, ProposalAcceptRequest, ProposalCloseRequest, ProposalCreateRequest,
-    PublicSkillDetail, PublicSkillSearchResponse, PublishSkillRequest, PublishSkillResponse,
-    RecoveryResetRequest, RegistryCapabilities, RenameSkillRequest, RenameSkillResponse,
-    ResourceLifecycleRequest, ResourceTransferRequest, ResourceTransferResponse,
-    RestoreSkillRequest, RestoreSkillResponse, ShareMutationKind, ShareSkillRequest,
-    ShareSkillResponse, SkillHistoryResponse, SkillProposal, SkillProposalDetail,
-    SkillProposalList, SkillRevisionDetail, SnapshotDownload, StagedBlobUpload,
-    SubscriptionCatalog, SubscriptionMutationRequest, SubscriptionMutationResponse,
-    SubscriptionTarget, SyncHint, SyncReconcileRequest, SyncReconcileResponse, TeamCreateRequest,
-    TeamDeleteRequest, TeamDeleteResponse, TeamDetail, TeamInviteRequest, TeamInviteResponse,
-    TeamInviteRevokeRequest, TeamJoinRequest, TeamLeaveRequest, TeamLeaveResponse, TeamList,
-    TeamMemberRemoveRequest, TeamMemberRoleRequest, TeamMutationResponse,
-    TeamOwnerTransferAcceptRequest, TeamOwnerTransferRequest, TeamOwnerTransferResponse,
-    TeamPackAssignmentMutationKind, TeamPackAssignmentRequest, TeamPackAssignmentResponse,
-    TeamSettingsRequest, UnpublishSkillResponse, UsageResponse,
+    PublicSkillDetail, PublishSkillRequest, PublishSkillResponse, RecoveryResetRequest,
+    RegistryCapabilities, RenameSkillRequest, RenameSkillResponse, ResourceLifecycleRequest,
+    ResourceTransferRequest, ResourceTransferResponse, RestoreSkillRequest, RestoreSkillResponse,
+    ShareMutationKind, ShareSkillRequest, ShareSkillResponse, SkillHistoryResponse, SkillProposal,
+    SkillProposalDetail, SkillProposalList, SkillRevisionDetail, SnapshotDownload,
+    StagedBlobUpload, SubscriptionCatalog, SubscriptionMutationRequest,
+    SubscriptionMutationResponse, SubscriptionTarget, SyncHint, SyncReconcileRequest,
+    SyncReconcileResponse, TeamCreateRequest, TeamDeleteRequest, TeamDeleteResponse, TeamDetail,
+    TeamInviteRequest, TeamInviteResponse, TeamInviteRevokeRequest, TeamJoinRequest,
+    TeamLeaveRequest, TeamLeaveResponse, TeamList, TeamMemberRemoveRequest, TeamMemberRoleRequest,
+    TeamMutationResponse, TeamOwnerTransferAcceptRequest, TeamOwnerTransferRequest,
+    TeamOwnerTransferResponse, TeamPackAssignmentMutationKind, TeamPackAssignmentRequest,
+    TeamPackAssignmentResponse, TeamSettingsRequest, UnpublishSkillResponse, UsageResponse,
 };
 use futures_util::StreamExt;
 use reqwest::{Client, RequestBuilder, StatusCode};
 use thiserror::Error;
 use url::Url;
+
+mod discovery;
 
 #[derive(Clone)]
 pub struct RegistryClient {
@@ -285,27 +286,6 @@ impl RegistryClient {
     ) -> Result<ResourceTransferResponse, ClientError> {
         self.authenticated_post_json("v1/resources/transfer", request)
             .await
-    }
-
-    pub async fn search_public_skills(
-        &self,
-        query: &str,
-        limit: u32,
-        cursor: Option<&str>,
-    ) -> Result<PublicSkillSearchResponse, ClientError> {
-        let mut request = self
-            .http
-            .get(self.endpoint("v1/search")?)
-            .query(&[("q", query), ("limit", &limit.to_string())]);
-        if let Some(cursor) = cursor {
-            request = request.query(&[("cursor", cursor)]);
-        }
-        let request = if self.bearer.is_some() {
-            self.with_auth(request)?
-        } else {
-            request
-        };
-        decode_response(request.send().await?).await
     }
 
     pub async fn show_public_skill(&self, locator: &str) -> Result<PublicSkillDetail, ClientError> {

@@ -1,18 +1,19 @@
 use std::process::ExitCode;
 
 use denju_wire::{
-    AutomationTokenList, AutomationTokenRevokeResponse, DeleteSkillResponse,
+    AutomationTokenList, AutomationTokenRevokeResponse, CatalogSearchResponse, DeleteSkillResponse,
     DeprecateSkillResponse, DeviceList, DeviceRevokeResponse, HistoryPruneResponse, IdentityInfo,
-    PackCreateResponse, PackDetail, PackLifecycleResponse, PackMutationResponse,
-    PackSubscriptionResponse, PublicSkillDetail, PublicSkillSearchResponse, PublishSkillResponse,
-    RenameSkillResponse, ResourceTransferResponse, SkillHistoryResponse, SkillProposal,
-    SkillProposalDetail, SkillProposalList, TeamDeleteResponse, TeamDetail, TeamLeaveResponse,
-    TeamList, TeamMutationResponse, TeamOwnerTransferResponse, TeamPackAssignmentResponse,
-    UnpublishSkillResponse,
+    PackCreateResponse, PackLifecycleResponse, PackMutationResponse, PackSubscriptionResponse,
+    ProfileUpdateResponse, PublishSkillResponse, RenameSkillResponse, ReportResourceResponse,
+    ResourceTopicsResponse, ResourceTransferResponse, SkillHistoryResponse, SkillProposal,
+    SkillProposalDetail, SkillProposalList, StarMutationResponse, TeamDeleteResponse, TeamDetail,
+    TeamLeaveResponse, TeamList, TeamMutationResponse, TeamOwnerTransferResponse,
+    TeamPackAssignmentResponse, UniversalShowResponse, UnpublishSkillResponse,
 };
 use serde::Serialize;
 
 use crate::{
+    discovery::FollowOutcome,
     fork_ops,
     identity::{
         AutomationTokenOutcome, BackupOutcome, ClaimOutcome, DeleteOutcome, LoginOutcome,
@@ -88,15 +89,34 @@ pub(crate) enum ResultPayload {
     },
     Search {
         #[serde(flatten)]
-        outcome: PublicSkillSearchResponse,
+        outcome: CatalogSearchResponse,
+    },
+    Top {
+        #[serde(flatten)]
+        outcome: CatalogSearchResponse,
     },
     Show {
-        #[serde(flatten)]
-        outcome: PublicSkillDetail,
+        outcome: UniversalShowResponse,
     },
-    PackShow {
+    Follow {
         #[serde(flatten)]
-        outcome: PackDetail,
+        outcome: FollowOutcome,
+    },
+    Star {
+        #[serde(flatten)]
+        outcome: StarMutationResponse,
+    },
+    Topics {
+        #[serde(flatten)]
+        outcome: ResourceTopicsResponse,
+    },
+    Report {
+        #[serde(flatten)]
+        outcome: ReportResourceResponse,
+    },
+    ProfileUpdate {
+        #[serde(flatten)]
+        outcome: ProfileUpdateResponse,
     },
     PackCreate {
         #[serde(flatten)]
