@@ -40,7 +40,7 @@ impl Registry {
             ));
         }
 
-        let mut tx = self.pool.begin().await.map_err(internal_api_error)?;
+        let mut tx = self.begin_actor_tx(authority.user_id).await?;
         if let Some((stored_hash, stored_resource, outcome)) =
             sqlx::query_as::<_, (Vec<u8>, Uuid, serde_json::Value)>(
                 "SELECT request_hash,resource_id,outcome_json FROM resource_transfer_operations \

@@ -49,13 +49,14 @@ impl Registry {
         authority: &UserAuthority,
         expectation: PreparedRenameExpectation<'_>,
     ) -> Result<PreparedRenameContent, ApiError> {
+        let mut tx = self.begin_actor_tx(authority.user_id).await?;
         let operation = sqlx::query_as::<_, PreparedRevisionRow>(
             "SELECT namespace_id,resource_id,expected_generation,expected_head_revision_id,manifest_json,state \
              FROM private_revision_operations WHERE user_id=$1 AND operation_id=$2",
         )
         .bind(authority.user_id)
         .bind(expectation.operation_id)
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *tx)
         .await
         .map_err(internal_api_error)?
         .ok_or_else(|| {
@@ -90,7 +91,7 @@ impl Registry {
         )
         .bind(authority.user_id)
         .bind(expectation.operation_id)
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *tx)
         .await
         .map_err(internal_api_error)?;
         let mut staging = BTreeMap::new();
@@ -108,6 +109,37 @@ impl Registry {
             staging.insert(blob, (size, row.staging_key));
         }
 
+        let mut canonical = BTreeMap::<BlobId, (i64, String)>::new();
+        for (blob, expected_size) in &expected_blobs {
+            if staging.contains_key(blob) {
+                continue;
+            }
+            let row = sqlx::query_as::<_, (i64, String)>(
+                "SELECT cb.size_bytes,cb.object_key FROM namespace_blob_reachability nbr \
+                 JOIN canonical_blobs cb ON cb.blob_id=nbr.blob_id \
+                 WHERE nbr.namespace_id=$1 AND nbr.blob_id=$2",
+            )
+            .bind(expectation.namespace_id)
+            .bind(blob.as_bytes().as_slice())
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(internal_api_error)?
+            .ok_or_else(|| {
+                ApiError::new(
+                    ApiErrorCode::InvalidRequest,
+                    "prepared rename object proof is missing; retry the rename",
+                )
+            })?;
+            if u64::try_from(row.0).ok() != Some(*expected_size) {
+                return Err(ApiError::new(
+                    ApiErrorCode::Internal,
+                    "canonical object size is invalid",
+                ));
+            }
+            canonical.insert(*blob, row);
+        }
+        tx.commit().await.map_err(internal_api_error)?;
+
         let mut bytes_by_blob = BTreeMap::<BlobId, Vec<u8>>::new();
         for (blob, expected_size) in &expected_blobs {
             let bytes = if let Some((staged_size, key)) = staging.get(blob) {
@@ -122,28 +154,9 @@ impl Registry {
                     .await
                     .map_err(object_store_api_error)?
             } else {
-                let row = sqlx::query_as::<_, (i64, String)>(
-                    "SELECT cb.size_bytes,cb.object_key FROM namespace_blob_reachability nbr \
-                     JOIN canonical_blobs cb ON cb.blob_id=nbr.blob_id \
-                     WHERE nbr.namespace_id=$1 AND nbr.blob_id=$2",
-                )
-                .bind(expectation.namespace_id)
-                .bind(blob.as_bytes().as_slice())
-                .fetch_optional(&self.pool)
-                .await
-                .map_err(internal_api_error)?
-                .ok_or_else(|| {
-                    ApiError::new(
-                        ApiErrorCode::InvalidRequest,
-                        "prepared rename object proof is missing; retry the rename",
-                    )
+                let row = canonical.get(blob).ok_or_else(|| {
+                    ApiError::new(ApiErrorCode::Internal, "canonical object proof disappeared")
                 })?;
-                if u64::try_from(row.0).ok() != Some(*expected_size) {
-                    return Err(ApiError::new(
-                        ApiErrorCode::Internal,
-                        "canonical object size is invalid",
-                    ));
-                }
                 self.objects
                     .get(&row.1)
                     .await

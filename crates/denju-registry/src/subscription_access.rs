@@ -9,8 +9,8 @@ use sqlx::Row;
 use uuid::Uuid;
 
 use crate::{
-    Registry, identity_support::SubscriptionSubject, internal_api_error,
-    team_access::user_is_team_member,
+    Registry, admin::active_quarantine, identity_support::SubscriptionSubject, internal_api_error,
+    lifecycle::resolve_active_skill_locator_tx,
 };
 
 impl Registry {
@@ -20,7 +20,8 @@ impl Registry {
         locator: &ResourceLocator,
     ) -> Result<Option<PublicSkillDetail>, ApiError> {
         let authority = self.user_authority(bearer, "skills:read").await?;
-        let resolved = self.resolve_active_skill_locator(locator).await?;
+        let mut tx = self.begin_actor_tx(authority.user_id).await?;
+        let resolved = resolve_active_skill_locator_tx(&mut tx, locator).await?;
         let row = sqlx::query(
             "SELECT r.id,n.slug,r.slug,COALESCE(w.description,r.description),r.generation, \
                     CASE WHEN w.resource_id IS NOT NULL THEN NULL::bigint ELSE sr.version END, \
@@ -42,22 +43,30 @@ impl Registry {
         )
         .bind(resolved.resource_id)
         .bind(authority.user_id)
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *tx)
         .await
         .map_err(internal_api_error)?;
+        tx.commit().await.map_err(internal_api_error)?;
         let Some(row) = row else {
             return Ok(None);
         };
+        let live_private = row.get::<bool, _>(12);
+        let version = row.get::<Option<i64>, _>(5);
+        if active_quarantine(
+            &self.pool,
+            resolved.resource_id,
+            if live_private { None } else { version },
+        )
+        .await?
+        .is_some()
+        {
+            return Ok(None);
+        }
         let generation = u64::try_from(row.get::<i64, _>(4))
             .map_err(|_| ApiError::new(ApiErrorCode::Internal, "stored generation is invalid"))?;
-        let live_private = row.get::<bool, _>(12);
-        let version = row
-            .get::<Option<i64>, _>(5)
-            .map(u64::try_from)
-            .transpose()
-            .map_err(|_| {
-                ApiError::new(ApiErrorCode::Internal, "stored release version is invalid")
-            })?;
+        let version = version.map(u64::try_from).transpose().map_err(|_| {
+            ApiError::new(ApiErrorCode::Internal, "stored release version is invalid")
+        })?;
         let revision = crate::ingest::decode_32(&row.get::<Vec<u8>, _>(6), "stored revision ID")?;
         let deprecation = row.get::<bool, _>(8).then(|| SkillDeprecation {
             replacement_resource_id: row.get::<Option<Uuid>, _>(9).map(|id| id.to_string()),
@@ -97,7 +106,13 @@ impl Registry {
         let subject = self.subscription_subject(bearer).await?;
         let parsed = ResourceLocator::from_str(locator)
             .map_err(|error| ApiError::new(ApiErrorCode::InvalidRequest, error.to_string()))?;
-        let resolved = self.resolve_active_skill_locator(&parsed).await?;
+        let mut tx = match subject {
+            SubscriptionSubject::Installation(installation_id) => {
+                self.begin_installation_actor_tx(installation_id).await?
+            }
+            SubscriptionSubject::User(user_id) => self.begin_actor_tx(user_id).await?,
+        };
+        let resolved = resolve_active_skill_locator_tx(&mut tx, &parsed).await?;
         let row = sqlx::query_as::<
             _,
             (
@@ -120,7 +135,7 @@ impl Registry {
              WHERE r.id=$1 AND r.kind='skill' AND r.deleted_at IS NULL",
         )
         .bind(resolved.resource_id)
-        .fetch_one(&self.pool)
+        .fetch_one(&mut *tx)
         .await
         .map_err(internal_api_error)?;
         let shared = match subject {
@@ -130,14 +145,22 @@ impl Registry {
             )
             .bind(user_id)
             .bind(resolved.resource_id)
-            .fetch_one(&self.pool)
+            .fetch_one(&mut *tx)
             .await
             .map_err(internal_api_error)?,
         };
         let personal_live_share = shared && row.8 == "user";
         let team_release = match subject {
             SubscriptionSubject::User(user_id) if row.8 == "team" && row.7.is_some() => {
-                shared || user_is_team_member(&self.pool, user_id, row.6).await?
+                shared
+                    || sqlx::query_scalar::<_, bool>(
+                        "SELECT EXISTS(SELECT 1 FROM team_memberships WHERE team_namespace_id=$1 AND user_id=$2)",
+                    )
+                    .bind(row.6)
+                    .bind(user_id)
+                    .fetch_one(&mut *tx)
+                    .await
+                    .map_err(internal_api_error)?
             }
             _ => false,
         };
@@ -154,18 +177,19 @@ impl Registry {
                 .zip(row.5)
                 .map(|(owner, name)| format!("@{owner}/{name}")),
         });
+        let description =
+            sqlx::query_scalar::<_, String>("SELECT description FROM resources WHERE id=$1")
+                .bind(resolved.resource_id)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(internal_api_error)?;
+        tx.commit().await.map_err(internal_api_error)?;
         Ok(SubscriptionTarget {
             resource_id: resolved.resource_id.to_string(),
             locator: format!("@{}/{}", resolved.owner, resolved.name),
             owner: resolved.owner,
             name: resolved.name,
-            description: sqlx::query_scalar::<_, String>(
-                "SELECT description FROM resources WHERE id=$1",
-            )
-            .bind(resolved.resource_id)
-            .fetch_one(&self.pool)
-            .await
-            .map_err(internal_api_error)?,
+            description,
             generation: u64::try_from(row.1)
                 .map_err(|_| ApiError::new(ApiErrorCode::Internal, "generation is invalid"))?,
             live_private: personal_live_share,

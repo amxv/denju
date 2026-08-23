@@ -179,6 +179,8 @@ pub enum SubscriptionContent {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SubscriptionCatalog {
     pub skills: Vec<SubscribedSkill>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub quarantined: Vec<crate::QuarantinedResource>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

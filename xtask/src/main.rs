@@ -78,6 +78,7 @@ fn dev() -> Result<(), String> {
     if !migration.success() {
         return Err(format!("denju-server migrate exited with {migration}"));
     }
+    configure_dev_database_roles(&root)?;
 
     println!("registry: http://127.0.0.1:7788");
     println!("postgres: postgresql://denju@127.0.0.1:55432/denju");
@@ -117,10 +118,18 @@ fn dev_server_env() -> Vec<(&'static str, &'static str)> {
         ("DENJU_PUBLIC_URL", "http://127.0.0.1:7788"),
         (
             "DENJU_DATABASE_URL",
-            "postgresql://denju:denju-dev-only@127.0.0.1:55432/denju",
+            "postgresql://denju_app:denju-app-dev-only@127.0.0.1:55432/denju",
+        ),
+        (
+            "DENJU_DATABASE_WORKER_URL",
+            "postgresql://denju_worker:denju-worker-dev-only@127.0.0.1:55432/denju",
         ),
         (
             "DENJU_DATABASE_DIRECT_URL",
+            "postgresql://denju_app:denju-app-dev-only@127.0.0.1:55432/denju",
+        ),
+        (
+            "DENJU_DATABASE_MIGRATION_URL",
             "postgresql://denju:denju-dev-only@127.0.0.1:55432/denju",
         ),
         ("DENJU_S3_BUCKET", "denju-dev"),
@@ -133,6 +142,38 @@ fn dev_server_env() -> Vec<(&'static str, &'static str)> {
         ),
         ("DENJU_S3_FORCE_PATH_STYLE", "true"),
     ]
+}
+
+fn configure_dev_database_roles(root: &Path) -> Result<(), String> {
+    eprintln!("+ configure restricted PostgreSQL development roles");
+    let status = Command::new("docker")
+        .args([
+            "compose",
+            "-f",
+            "deploy/dev.compose.yml",
+            "exec",
+            "-T",
+            "postgres",
+            "psql",
+            "-U",
+            "denju",
+            "-d",
+            "denju",
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-c",
+            "ALTER ROLE denju_app PASSWORD 'denju-app-dev-only'; ALTER ROLE denju_worker PASSWORD 'denju-worker-dev-only';",
+        ])
+        .current_dir(root)
+        .status()
+        .map_err(|error| format!("failed to configure development database roles: {error}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "development database role configuration exited with {status}"
+        ))
+    }
 }
 
 fn wait_for_tcp(name: &str, address: SocketAddr) -> Result<(), String> {

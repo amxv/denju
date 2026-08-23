@@ -1,9 +1,13 @@
 use std::{fs, path::PathBuf, str::FromStr};
 
-use denju_core::{OperationId, ResourceId, RevisionId, SkillManifest};
+use denju_core::{
+    OperationId, PortableEntry, PortableEntryKind, ResourceId, RevisionId, SkillManifest,
+    validate_portable_tree,
+};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
+use walkdir::WalkDir;
 
 use crate::{
     DesiredSkillMaterialization, JournalState, LocalDatabase, LocalDbError, LocalPaths,
@@ -101,6 +105,194 @@ pub async fn journaled_remove_managed_skill(
     )
     .await?;
     recover_local_lifecycle(paths, db, roots).await
+}
+
+pub fn preserve_quarantined_managed_skill(
+    paths: &LocalPaths,
+    record: &ManagedSkillRecord,
+) -> Result<PathBuf, LocalLifecycleError> {
+    preserve_quarantined_managed_skill_for(paths, record, &record.resource_id)
+}
+
+fn preserve_quarantined_managed_skill_for(
+    paths: &LocalPaths,
+    record: &ManagedSkillRecord,
+    quarantine_resource_id: &str,
+) -> Result<PathBuf, LocalLifecycleError> {
+    ResourceId::from_str(quarantine_resource_id).map_err(|error| {
+        LocalLifecycleError::Corrupt(format!("invalid quarantine resource id: {error}"))
+    })?;
+    let revision_id = record.materialized_revision_id.as_deref().ok_or_else(|| {
+        LocalLifecycleError::Corrupt(format!(
+            "{} has no materialized revision to quarantine",
+            record.locator
+        ))
+    })?;
+    let source = paths
+        .generations
+        .join(&record.resource_id)
+        .join(revision_id);
+    let destination = paths
+        .quarantine
+        .join(quarantine_resource_id)
+        .join(revision_id);
+    if destination.exists() {
+        let destination = fs::canonicalize(&destination)?;
+        let quarantine_root = fs::canonicalize(&paths.quarantine)?;
+        if !destination.starts_with(&quarantine_root) {
+            return Err(LocalLifecycleError::Corrupt(
+                "quarantined generation escaped the Denju quarantine root".to_owned(),
+            ));
+        }
+        return Ok(destination);
+    }
+    let source = fs::canonicalize(&source).map_err(|error| {
+        LocalLifecycleError::Corrupt(format!(
+            "{} materialized generation is unavailable for quarantine: {error}",
+            record.locator
+        ))
+    })?;
+    let generations_root = fs::canonicalize(&paths.generations)?;
+    if !source.starts_with(&generations_root) {
+        return Err(LocalLifecycleError::Corrupt(
+            "materialized generation escaped the Denju generations root".to_owned(),
+        ));
+    }
+    if let Some(parent) = destination.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    if fs::symlink_metadata(&destination).is_ok() {
+        return Err(LocalLifecycleError::Corrupt(format!(
+            "quarantine destination already exists unexpectedly: {}",
+            destination.display()
+        )));
+    }
+    let stage = destination
+        .parent()
+        .expect("quarantine revision has a resource parent")
+        .join(format!(".stage-{}", Uuid::now_v7()));
+    copy_quarantine_tree(&source, &stage)?;
+    fs::rename(&stage, &destination)?;
+    Ok(fs::canonicalize(destination)?)
+}
+
+fn copy_quarantine_tree(
+    source: &PathBuf,
+    destination: &PathBuf,
+) -> Result<(), LocalLifecycleError> {
+    validate_quarantine_source(source)?;
+    fs::create_dir(destination)?;
+    let result = (|| {
+        for entry in WalkDir::new(source).follow_links(false).min_depth(1) {
+            let entry = entry.map_err(|error| LocalLifecycleError::Corrupt(error.to_string()))?;
+            let relative = entry.path().strip_prefix(source).map_err(|error| {
+                LocalLifecycleError::Corrupt(format!("quarantine copy escaped source: {error}"))
+            })?;
+            let target = destination.join(relative);
+            if entry.file_type().is_dir() {
+                fs::create_dir(&target)?;
+                continue;
+            }
+            if let Some(parent) = target.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            if entry.file_type().is_file() {
+                fs::copy(entry.path(), &target)?;
+                fs::set_permissions(&target, fs::metadata(entry.path())?.permissions())?;
+                continue;
+            }
+            if entry.file_type().is_symlink() {
+                let link_target = fs::read_link(entry.path())?;
+                if link_target.is_absolute() {
+                    return Err(LocalLifecycleError::Corrupt(
+                        "quarantined generation contains an absolute symlink".to_owned(),
+                    ));
+                }
+                create_quarantine_symlink(&link_target, &target)?;
+                continue;
+            }
+            return Err(LocalLifecycleError::Corrupt(format!(
+                "unsupported entry in quarantined generation: {}",
+                entry.path().display()
+            )));
+        }
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_dir_all(destination);
+    }
+    result
+}
+
+fn validate_quarantine_source(source: &std::path::Path) -> Result<(), LocalLifecycleError> {
+    let mut portable = Vec::new();
+    for entry in WalkDir::new(source).follow_links(false).min_depth(1) {
+        let entry = entry.map_err(|error| LocalLifecycleError::Corrupt(error.to_string()))?;
+        let relative = entry.path().strip_prefix(source).map_err(|error| {
+            LocalLifecycleError::Corrupt(format!("quarantine validation escaped source: {error}"))
+        })?;
+        let path = relative
+            .components()
+            .map(|component| component.as_os_str().to_str())
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| {
+                LocalLifecycleError::Corrupt(
+                    "quarantined generation contains a non-UTF-8 path".to_owned(),
+                )
+            })?
+            .join("/");
+        let kind = if entry.file_type().is_dir() {
+            PortableEntryKind::Directory
+        } else if entry.file_type().is_file() {
+            PortableEntryKind::File { executable: false }
+        } else if entry.file_type().is_symlink() {
+            let target = fs::read_link(entry.path())?;
+            let target = target.to_str().ok_or_else(|| {
+                LocalLifecycleError::Corrupt(
+                    "quarantined generation contains a non-UTF-8 symlink target".to_owned(),
+                )
+            })?;
+            PortableEntryKind::Symlink {
+                target: target.to_owned(),
+            }
+        } else {
+            return Err(LocalLifecycleError::Corrupt(format!(
+                "unsupported entry in quarantined generation: {}",
+                entry.path().display()
+            )));
+        };
+        portable.push(PortableEntry::new(&path, kind).map_err(|error| {
+            LocalLifecycleError::Corrupt(format!("invalid quarantined path {path}: {error}"))
+        })?);
+    }
+    validate_portable_tree(portable).map_err(|error| {
+        LocalLifecycleError::Corrupt(format!("unsafe quarantined generation: {error}"))
+    })?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn create_quarantine_symlink(
+    target: &std::path::Path,
+    link: &std::path::Path,
+) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(target, link)
+}
+
+#[cfg(windows)]
+fn create_quarantine_symlink(
+    target: &std::path::Path,
+    link: &std::path::Path,
+) -> std::io::Result<()> {
+    let resolved = link
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join(target);
+    if resolved.is_dir() {
+        std::os::windows::fs::symlink_dir(target, link)
+    } else {
+        std::os::windows::fs::symlink_file(target, link)
+    }
 }
 
 pub async fn apply_registry_rename(

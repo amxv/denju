@@ -6,10 +6,10 @@ use std::{
 
 use denju_core::{OperationId, ResourceId, RevisionId};
 use denju_local::{
-    DesiredSkillMaterialization, PackApplyJournalPayload, PackApplySkillState,
+    DesiredSkillMaterialization, ManagedSkillRecord, PackApplyJournalPayload, PackApplySkillState,
     PackMaterializedSkillRecord, PackSkillSourceRecord, PackSourceConflictRecord,
-    PackSubscriptionRecord, restore_skill_generation, stage_skill_generation,
-    switch_staged_skill_generation,
+    PackSubscriptionRecord, preserve_quarantined_managed_skill, restore_skill_generation,
+    stage_skill_generation, switch_staged_skill_generation,
 };
 use denju_sync::{DesiredSource, DesiredSourceKind, ResolvedDesiredState, resolve_desired_sources};
 use denju_wire::{CliErrorCode, PackRequirementKind, SubscribedSkill};
@@ -416,6 +416,15 @@ pub(crate) async fn apply_pack_only_state(
         .iter()
         .map(|record| (record.resource_id.clone(), record.clone()))
         .collect::<BTreeMap<_, _>>();
+    let mut quarantined_revisions: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for source in context.db.pack_skill_sources().await.map_err(local_error)? {
+        if source.unavailable_reason.as_deref() == Some("quarantined") {
+            quarantined_revisions
+                .entry(source.resource_id)
+                .or_default()
+                .insert(source.desired_revision_id);
+        }
+    }
 
     let mut desired_records = Vec::new();
     let mut staged: BTreeMap<String, (DesiredSkillMaterialization, PathBuf)> = BTreeMap::new();
@@ -552,6 +561,23 @@ pub(crate) async fn apply_pack_only_state(
                 let old = existing_by_id
                     .get(resource_id)
                     .ok_or_else(|| local("pack removal lost materialized state"))?;
+                if quarantined_revisions
+                    .get(resource_id)
+                    .is_some_and(|revisions| revisions.contains(&old.materialized_revision_id))
+                {
+                    preserve_quarantined_managed_skill(
+                        &context.paths,
+                        &ManagedSkillRecord {
+                            resource_id: old.resource_id.clone(),
+                            locator: old.locator.clone(),
+                            owner: old.owner.clone(),
+                            skill_name: old.skill_name.clone(),
+                            harness_name: old.harness_name.clone(),
+                            materialized_revision_id: Some(old.materialized_revision_id.clone()),
+                        },
+                    )
+                    .map_err(local_error)?;
+                }
                 if let Some(fallback) = local_fallbacks.get(resource_id) {
                     restore_skill_generation(
                         &context.paths,

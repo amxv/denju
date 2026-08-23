@@ -1,4 +1,4 @@
-use std::str::FromStr;
+use std::{str::FromStr, sync::OnceLock};
 
 use argon2::{
     Argon2,
@@ -380,6 +380,30 @@ pub(crate) fn verify_password(password: &str, encoded: &str) -> Result<(), ApiEr
     Argon2::default()
         .verify_password(password.as_bytes(), &parsed)
         .map_err(|_| invalid_credentials())
+}
+
+pub(crate) fn verify_password_with_dummy(
+    password: &str,
+    encoded: Option<&str>,
+) -> Result<(), ApiError> {
+    static DUMMY_PASSWORD_HASH: OnceLock<Result<String, String>> = OnceLock::new();
+    let dummy = DUMMY_PASSWORD_HASH.get_or_init(|| {
+        hash_password("denju-invalid-identity-probe").map_err(|error| {
+            format!(
+                "failed to initialize identity timing verifier: {}",
+                error.message
+            )
+        })
+    });
+    let dummy = dummy
+        .as_ref()
+        .map_err(|message| ApiError::new(ApiErrorCode::Internal, message.clone()))?;
+    let valid = verify_password(password, encoded.unwrap_or(dummy)).is_ok();
+    if encoded.is_some() && valid {
+        Ok(())
+    } else {
+        Err(invalid_credentials())
+    }
 }
 
 pub(crate) fn decode_secret_hash(value: &str, field: &str) -> Result<[u8; 32], ApiError> {

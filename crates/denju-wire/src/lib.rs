@@ -1,5 +1,6 @@
 //! Versioned Denju wire and structured-output contracts.
 
+mod admin;
 mod api;
 mod cli;
 mod discovery;
@@ -15,6 +16,11 @@ mod sharing;
 mod teams;
 mod workspace;
 
+pub use admin::{
+    AdminOperatorCredential, AdminOperatorRevokeResponse, AdminQuarantineRequest,
+    AdminQuarantineResponse, AdminReport, AdminReportList, AdminResourceTarget,
+    QuarantinedResource,
+};
 pub use api::{
     ApiError, ApiErrorCode, CreateInstallationRequest, CreateInstallationResponse,
     RegistryCapabilities, RegistryLimits,
@@ -45,9 +51,10 @@ pub use lifecycle::{
     UsageResponse,
 };
 pub use mutation::{
-    FollowMutationKind, IdentityMutationDomain, PackMutationKind, PackSubscriptionMutationKind,
-    PrivateRevisionRequestHashInput, PrivateSkillImportRequestHashInput, RequestHash,
-    RequestHashError, StarMutationKind, SubscriptionMutationKind, create_installation_request_hash,
+    AdminQuarantineMutationKind, FollowMutationKind, IdentityMutationDomain, PackMutationKind,
+    PackSubscriptionMutationKind, PrivateRevisionRequestHashInput,
+    PrivateSkillImportRequestHashInput, RequestHash, RequestHashError, StarMutationKind,
+    SubscriptionMutationKind, admin_quarantine_request_hash, create_installation_request_hash,
     delete_skill_request_hash, deprecate_skill_request_hash, follow_request_hash,
     history_prune_request_hash, identity_mutation_request_hash, invite_code_hash,
     pack_create_request_hash, pack_delete_request_hash, pack_mutation_request_hash,

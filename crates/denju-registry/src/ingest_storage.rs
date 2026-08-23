@@ -127,24 +127,15 @@ pub(crate) async fn persist_canonical_blobs(
             ApiError::new(ApiErrorCode::Internal, "blob size exceeds database range")
         })?;
         let key = canonical_blob_key(*blob);
-        sqlx::query(
-            "INSERT INTO canonical_blobs (blob_id,size_bytes,object_key) VALUES ($1,$2,$3) \
-             ON CONFLICT(blob_id) DO NOTHING",
-        )
-        .bind(blob.as_bytes().as_slice())
-        .bind(size)
-        .bind(&key)
-        .execute(&mut **tx)
-        .await
-        .map_err(internal_api_error)?;
-        let stored = sqlx::query_as::<_, (i64, String)>(
-            "SELECT size_bytes,object_key FROM canonical_blobs WHERE blob_id=$1",
-        )
-        .bind(blob.as_bytes().as_slice())
-        .fetch_one(&mut **tx)
-        .await
-        .map_err(internal_api_error)?;
-        if stored != (size, key) {
+        let consistent =
+            sqlx::query_scalar::<_, bool>("SELECT denju_persist_canonical_blob($1,$2,$3)")
+                .bind(blob.as_bytes().as_slice())
+                .bind(size)
+                .bind(&key)
+                .fetch_one(&mut **tx)
+                .await
+                .map_err(internal_api_error)?;
+        if !consistent {
             return Err(ApiError::new(
                 ApiErrorCode::Internal,
                 "canonical blob metadata conflicts with its content identity",
@@ -169,44 +160,83 @@ pub(crate) async fn persist_trees(
         for entry in tree.entries() {
             match entry.kind() {
                 TreeEntryKind::File { blob, executable } => {
-                    sqlx::query(
-                        "INSERT INTO tree_entries (tree_id,name,kind,blob_id,executable) \
-                         VALUES ($1,$2,'file',$3,$4) ON CONFLICT(tree_id,name) DO NOTHING",
+                    let consistent = sqlx::query_scalar::<_, bool>(
+                        "SELECT denju_persist_tree_entry($1,$2,'file',$3,NULL,$4,NULL)",
                     )
                     .bind(tree.id().as_bytes().as_slice())
                     .bind(entry.name())
                     .bind(blob.as_bytes().as_slice())
                     .bind(*executable)
-                    .execute(&mut **tx)
+                    .fetch_one(&mut **tx)
                     .await
                     .map_err(internal_api_error)?;
+                    if !consistent {
+                        return Err(ApiError::new(
+                            ApiErrorCode::Internal,
+                            "stored Merkle tree entry conflicts with its semantic tree identity",
+                        ));
+                    }
                 }
                 TreeEntryKind::Directory { tree: child } => {
-                    sqlx::query(
-                        "INSERT INTO tree_entries (tree_id,name,kind,child_tree_id) \
-                         VALUES ($1,$2,'directory',$3) ON CONFLICT(tree_id,name) DO NOTHING",
+                    let consistent = sqlx::query_scalar::<_, bool>(
+                        "SELECT denju_persist_tree_entry($1,$2,'directory',NULL,$3,NULL,NULL)",
                     )
                     .bind(tree.id().as_bytes().as_slice())
                     .bind(entry.name())
                     .bind(child.as_bytes().as_slice())
-                    .execute(&mut **tx)
+                    .fetch_one(&mut **tx)
                     .await
                     .map_err(internal_api_error)?;
+                    if !consistent {
+                        return Err(ApiError::new(
+                            ApiErrorCode::Internal,
+                            "stored Merkle tree entry conflicts with its semantic tree identity",
+                        ));
+                    }
                 }
                 TreeEntryKind::Symlink { target } => {
-                    sqlx::query(
-                        "INSERT INTO tree_entries (tree_id,name,kind,symlink_target) \
-                         VALUES ($1,$2,'symlink',$3) ON CONFLICT(tree_id,name) DO NOTHING",
+                    let consistent = sqlx::query_scalar::<_, bool>(
+                        "SELECT denju_persist_tree_entry($1,$2,'symlink',NULL,NULL,NULL,$3)",
                     )
                     .bind(tree.id().as_bytes().as_slice())
                     .bind(entry.name())
                     .bind(target)
-                    .execute(&mut **tx)
+                    .fetch_one(&mut **tx)
                     .await
                     .map_err(internal_api_error)?;
+                    if !consistent {
+                        return Err(ApiError::new(
+                            ApiErrorCode::Internal,
+                            "stored Merkle tree entry conflicts with its semantic tree identity",
+                        ));
+                    }
                 }
             }
         }
+    }
+    Ok(())
+}
+
+pub(crate) async fn persist_revision(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    revision_id: &[u8; 32],
+    root_tree_id: &[u8; 32],
+    author_principal_id: Uuid,
+    operation_id: Uuid,
+) -> Result<(), ApiError> {
+    let consistent = sqlx::query_scalar::<_, bool>("SELECT denju_persist_revision($1,$2,$3,$4)")
+        .bind(revision_id.as_slice())
+        .bind(root_tree_id.as_slice())
+        .bind(author_principal_id)
+        .bind(operation_id)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(internal_api_error)?;
+    if !consistent {
+        return Err(ApiError::new(
+            ApiErrorCode::Internal,
+            "stored revision conflicts with its semantic revision identity",
+        ));
     }
     Ok(())
 }

@@ -28,7 +28,7 @@ impl SkillAccess {
 }
 
 pub(crate) async fn skill_access_for_user(
-    pool: &sqlx::PgPool,
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     user_id: Uuid,
     namespace_id: Uuid,
     resource_id: Uuid,
@@ -43,7 +43,7 @@ pub(crate) async fn skill_access_for_user(
     )
     .bind(resource_id)
     .bind(user_id)
-    .fetch_optional(pool)
+    .fetch_optional(&mut **tx)
     .await
     .map_err(internal_api_error)?
     .ok_or_else(|| ApiError::new(ApiErrorCode::NotFound, "skill not found"))?;
@@ -59,7 +59,7 @@ pub(crate) async fn skill_access_for_user(
 }
 
 pub(crate) async fn user_can_read_revision(
-    pool: &sqlx::PgPool,
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     access: &SkillAccess,
     resource_id: Uuid,
     revision_id: &[u8; 32],
@@ -70,7 +70,7 @@ pub(crate) async fn user_can_read_revision(
         )
         .bind(resource_id)
         .bind(revision_id.as_slice())
-        .fetch_one(pool)
+        .fetch_one(&mut **tx)
         .await
         .map_err(internal_api_error);
     }
@@ -86,7 +86,7 @@ pub(crate) async fn user_can_read_revision(
         .bind(resource_id)
         .bind(access.user_id)
         .bind(revision_id.as_slice())
-        .fetch_one(pool)
+        .fetch_one(&mut **tx)
         .await
         .map_err(internal_api_error)?;
         if workspace_revision {
@@ -101,7 +101,7 @@ pub(crate) async fn user_can_read_revision(
     )
     .bind(resource_id)
     .bind(revision_id.as_slice())
-    .fetch_one(pool)
+    .fetch_one(&mut **tx)
     .await
     .map_err(internal_api_error)
 }

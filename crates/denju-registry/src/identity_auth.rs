@@ -14,7 +14,7 @@ impl Registry {
         let token_hash: [u8; 32] = Sha256::digest(raw).into();
         if let Some((session_id, user_id, installation_id)) =
             sqlx::query_as::<_, (Uuid, Uuid, Uuid)>(
-                "SELECT id,user_id,installation_id FROM sessions WHERE token_hash=$1 AND revoked_at IS NULL",
+                "SELECT session_id,user_id,installation_id FROM denju_authenticate_session($1)",
             )
             .bind(token_hash.as_slice())
             .fetch_optional(&self.pool)
@@ -28,8 +28,7 @@ impl Registry {
             });
         }
         if let Some((user_id, scopes)) = sqlx::query_as::<_, (Uuid, serde_json::Value)>(
-            "SELECT user_id,scopes FROM automation_tokens \
-             WHERE token_hash=$1 AND revoked_at IS NULL AND expires_at > now()",
+            "SELECT user_id,scopes FROM denju_authenticate_automation($1)",
         )
         .bind(token_hash.as_slice())
         .fetch_optional(&self.pool)

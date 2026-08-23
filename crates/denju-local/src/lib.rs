@@ -37,7 +37,7 @@ pub use harness::{
 };
 pub use lifecycle::{
     LocalLifecycleError, ManagedDesiredKind, RegistryRenameState, apply_registry_rename,
-    journaled_remove_managed_skill, recover_local_lifecycle,
+    journaled_remove_managed_skill, preserve_quarantined_managed_skill, recover_local_lifecycle,
 };
 pub use materialize::{
     DesiredSkillMaterialization, MaterializationError, export_skill_snapshot,

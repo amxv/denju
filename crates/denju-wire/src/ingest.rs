@@ -97,4 +97,6 @@ pub struct PrivateSkillImportResponse {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PrivateSkillCatalog {
     pub skills: Vec<PrivateSkill>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub quarantined: Vec<crate::QuarantinedResource>,
 }

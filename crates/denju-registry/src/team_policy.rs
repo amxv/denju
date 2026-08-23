@@ -25,6 +25,7 @@ use crate::{
 impl Registry {
     pub(crate) async fn team_pack_assignments_for_team(
         &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         team_id: Uuid,
     ) -> Result<Vec<TeamPackAssignment>, ApiError> {
         sqlx::query_as::<_, (Uuid, String, Uuid, String, String)>(
@@ -36,7 +37,7 @@ impl Registry {
              WHERE a.team_namespace_id=$1 ORDER BY pack_owner.slug,p.slug,p.id",
         )
         .bind(team_id)
-        .fetch_all(&self.pool)
+        .fetch_all(&mut **tx)
         .await
         .map_err(internal_api_error)
         .map(|rows| {
@@ -77,7 +78,7 @@ impl Registry {
             TeamPackAssignmentMutationKind::Assign => "pack_assign",
             TeamPackAssignmentMutationKind::Unassign => "pack_unassign",
         };
-        let mut tx = self.pool.begin().await.map_err(internal_api_error)?;
+        let mut tx = self.begin_actor_tx(authority.user_id).await?;
         if let Some(outcome) = replay_team_operation::<TeamPackAssignmentResponse>(
             &mut tx,
             authority.user_id,
@@ -99,11 +100,11 @@ impl Registry {
             ));
         }
         let pack = sqlx::query_as::<_, (String, String, String, Option<Uuid>)>(
-            "SELECT owner.slug,p.slug,p.visibility,p.owner_namespace_id FROM resources p \
-             LEFT JOIN namespaces owner ON owner.id=p.owner_namespace_id \
-             WHERE p.id=$1 AND p.kind='pack' AND p.deleted_at IS NULL FOR UPDATE OF p",
+            "SELECT owner_slug,resource_slug,visibility,owner_namespace_id \
+             FROM denju_lock_team_assignment_pack($1,$2)",
         )
         .bind(pack_id)
+        .bind(team_id)
         .fetch_optional(&mut *tx)
         .await
         .map_err(internal_api_error)?
@@ -183,7 +184,7 @@ impl Registry {
             team_leave_request_hash(&request.operation_id, &request.team).map_err(hash_error)?,
         )?;
         let slug = parse_namespace(&request.team)?;
-        let mut tx = self.pool.begin().await.map_err(internal_api_error)?;
+        let mut tx = self.begin_actor_tx(authority.user_id).await?;
         if let Some(outcome) = replay_team_operation::<TeamLeaveResponse>(
             &mut tx,
             authority.user_id,
@@ -252,7 +253,7 @@ impl Registry {
         let transfer_code_hash = decode_32(&request.transfer_code_hash, "transfer_code_hash")?;
         let slug = parse_namespace(&request.team)?;
         let member = parse_namespace(&request.member)?;
-        let mut tx = self.pool.begin().await.map_err(internal_api_error)?;
+        let mut tx = self.begin_actor_tx(authority.user_id).await?;
         if let Some(outcome) = replay_team_operation::<TeamOwnerTransferResponse>(
             &mut tx,
             authority.user_id,
@@ -345,7 +346,7 @@ impl Registry {
                 .map_err(hash_error)?,
         )?;
         let transfer_code_hash = team_owner_transfer_code_hash(&request.code);
-        let mut tx = self.pool.begin().await.map_err(internal_api_error)?;
+        let mut tx = self.begin_actor_tx(authority.user_id).await?;
         if let Some(outcome) = replay_team_operation::<TeamOwnerTransferResponse>(
             &mut tx,
             authority.user_id,
@@ -473,7 +474,7 @@ impl Registry {
             team_delete_request_hash(&request.operation_id, &request.team).map_err(hash_error)?,
         )?;
         let slug = parse_namespace(&request.team)?;
-        let mut tx = self.pool.begin().await.map_err(internal_api_error)?;
+        let mut tx = self.begin_actor_tx(authority.user_id).await?;
         if let Some(outcome) = replay_team_delete_operation(
             &mut tx,
             authority.user_id,
@@ -495,7 +496,7 @@ impl Registry {
             ));
         }
         let password_hash = sqlx::query_scalar::<_, String>(
-            "SELECT password_hash FROM users WHERE id=$1 AND deleted_at IS NULL FOR UPDATE",
+            "SELECT denju_actor_password_hash(id) FROM users WHERE id=$1 AND deleted_at IS NULL FOR UPDATE",
         )
         .bind(authority.user_id)
         .fetch_one(&mut *tx)

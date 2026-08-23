@@ -160,7 +160,7 @@ impl Registry {
         }
         validate_release_metadata(request.message.as_deref(), &request.tags)?;
 
-        let mut tx = self.pool.begin().await.map_err(internal_api_error)?;
+        let mut tx = self.begin_actor_tx(authority.user_id).await?;
         if let Some(row) = sqlx::query(
             "SELECT request_hash,resource_id,outcome_json FROM skill_release_operations \
              WHERE user_id=$1 AND operation_id=$2",
@@ -485,12 +485,13 @@ impl Registry {
                 "request_hash does not match the canonical restore payload",
             ));
         }
+        let mut replay_tx = self.begin_actor_tx(authority.user_id).await?;
         if let Some(row) = sqlx::query(
             "SELECT request_hash,resource_id,outcome_json FROM skill_restore_operations WHERE user_id=$1 AND operation_id=$2",
         )
         .bind(authority.user_id)
         .bind(operation_id.as_uuid())
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *replay_tx)
         .await
         .map_err(internal_api_error)?
         {
@@ -499,24 +500,26 @@ impl Registry {
             if stored_hash.as_slice() != supplied_hash.as_bytes() || stored_resource != resource_id.as_uuid() {
                 return Err(ApiError::new(ApiErrorCode::OperationConflict, "operation_id was already used with different restore content"));
             }
-            return serde_json::from_value(row.get(2))
-                .map_err(|error| ApiError::new(ApiErrorCode::Internal, error.to_string()));
+            let outcome = serde_json::from_value(row.get(2))
+                .map_err(|error| ApiError::new(ApiErrorCode::Internal, error.to_string()))?;
+            replay_tx.commit().await.map_err(internal_api_error)?;
+            return Ok(outcome);
         }
+        replay_tx.commit().await.map_err(internal_api_error)?;
 
-        let mut authority_tx = self.pool.begin().await.map_err(internal_api_error)?;
+        let mut authority_tx = self.begin_actor_tx(authority.user_id).await?;
         let resource_authority =
             authorize_resource_publish(&mut authority_tx, &authority, resource_id.as_uuid())
                 .await?;
-        authority_tx.commit().await.map_err(internal_api_error)?;
         let access = skill_access_for_user(
-            &self.pool,
+            &mut authority_tx,
             authority.user_id,
             authority.namespace_id,
             resource_id.as_uuid(),
         )
         .await?;
         if !user_can_read_revision(
-            &self.pool,
+            &mut authority_tx,
             &access,
             resource_id.as_uuid(),
             target.as_bytes(),
@@ -536,7 +539,7 @@ impl Registry {
         )
         .bind(resource_id.as_uuid())
         .bind(target.as_bytes().as_slice())
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *authority_tx)
         .await
         .map_err(internal_api_error)?
         .ok_or_else(|| ApiError::new(ApiErrorCode::NotFound, "restore revision not found"))?;
@@ -556,6 +559,7 @@ impl Registry {
         let snapshot_sha: Vec<u8> = target_row.get(2);
         let snapshot_size: i64 = target_row.get(3);
         let slug: String = target_row.get(4);
+        authority_tx.commit().await.map_err(internal_api_error)?;
         let snapshot_bytes = self
             .objects
             .get(&snapshot_key)
@@ -583,7 +587,7 @@ impl Registry {
         let license = document.frontmatter().license().map(str::to_owned);
         let compatibility = document.frontmatter().compatibility().map(str::to_owned);
 
-        let mut tx = self.pool.begin().await.map_err(internal_api_error)?;
+        let mut tx = self.begin_actor_tx(authority.user_id).await?;
         let resource_authority =
             authorize_resource_publish(&mut tx, &authority, resource_id.as_uuid()).await?;
         if resource_authority.is_team {
@@ -751,6 +755,7 @@ impl Registry {
         request: &SyncReconcileRequest,
     ) -> Result<SyncReconcileResponse, ApiError> {
         let catalog = self.subscription_catalog(bearer).await?;
+        let quarantined = catalog.quarantined.clone();
         let known = request
             .known
             .iter()
@@ -760,6 +765,12 @@ impl Registry {
             .skills
             .iter()
             .map(|skill| skill.resource_id.as_str())
+            .chain(
+                catalog
+                    .quarantined
+                    .iter()
+                    .map(|resource| resource.resource_id.as_str()),
+            )
             .collect::<BTreeSet<_>>();
         let removed_resource_ids = request
             .known
@@ -779,11 +790,20 @@ impl Registry {
         Ok(SyncReconcileResponse {
             skills,
             removed_resource_ids,
+            quarantined,
         })
     }
 
     pub async fn watched_resource_ids(&self, bearer: &str) -> Result<BTreeSet<Uuid>, ApiError> {
         let subject = self.subscription_subject(bearer).await?;
+        let mut tx = match subject {
+            crate::identity_support::SubscriptionSubject::Installation(id) => {
+                self.begin_installation_actor_tx(id).await?
+            }
+            crate::identity_support::SubscriptionSubject::User(id) => {
+                self.begin_actor_tx(id).await?
+            }
+        };
         let rows = match subject {
             crate::identity_support::SubscriptionSubject::Installation(id) => sqlx::query_scalar::<
                 _,
@@ -792,7 +812,7 @@ impl Registry {
                 "SELECT s.resource_id FROM installation_subscriptions s WHERE s.installation_id=$1",
             )
             .bind(id)
-            .fetch_all(&self.pool)
+            .fetch_all(&mut *tx)
             .await
             .map_err(internal_api_error)?,
             crate::identity_support::SubscriptionSubject::User(id) => {
@@ -800,11 +820,12 @@ impl Registry {
                     "SELECT s.resource_id FROM account_subscriptions s WHERE s.user_id=$1",
                 )
                 .bind(id)
-                .fetch_all(&self.pool)
+                .fetch_all(&mut *tx)
                 .await
                 .map_err(internal_api_error)?
             }
         };
+        tx.commit().await.map_err(internal_api_error)?;
         Ok(rows.into_iter().collect())
     }
 

@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, str::FromStr};
+use std::str::FromStr;
 
 use denju_core::{
     AuthorPrincipalId, BlobId, OperationId, ResourceId, ResourceLocator, Revision, RevisionId,
@@ -11,7 +11,7 @@ use denju_wire::{
     ResourceLifecycleRequest, UnpublishSkillResponse, delete_skill_request_hash,
     deprecate_skill_request_hash, rename_skill_request_hash, unpublish_skill_request_hash,
 };
-use serde::{Serialize, de::DeserializeOwned};
+use serde::de::DeserializeOwned;
 use serde_json::Value;
 use sqlx::{FromRow, Row};
 use uuid::Uuid;
@@ -26,6 +26,14 @@ use crate::{
     release::enqueue_resource_wake,
     rename_content::{PreparedRenameExpectation, consume_prepared_rename_operation},
     team_access::authorize_resource_publish,
+};
+
+mod support;
+pub(crate) use support::{
+    RevisionPersistence, ensure_generation, ensure_owner, generation_conflict, generation_i64,
+    generation_u64, internal_serialization_error, lock_active_owned_skill, next_generation,
+    persist_revision, persist_revision_snapshot, record_lifecycle_operation,
+    validate_resource_lifecycle_request,
 };
 
 #[derive(Debug, FromRow)]
@@ -61,24 +69,35 @@ impl Registry {
         &self,
         locator: &ResourceLocator,
     ) -> Result<ResolvedSkillLocator, ApiError> {
-        let active = sqlx::query_as::<_, (Uuid, Uuid, String, String)>(
-            "SELECT r.id,r.owner_namespace_id,n.slug,r.slug FROM resources r \
+        let mut tx = self.pool.begin().await.map_err(internal_api_error)?;
+        let resolved = resolve_active_skill_locator_tx(&mut tx, locator).await?;
+        tx.commit().await.map_err(internal_api_error)?;
+        Ok(resolved)
+    }
+}
+
+pub(crate) async fn resolve_active_skill_locator_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    locator: &ResourceLocator,
+) -> Result<ResolvedSkillLocator, ApiError> {
+    let active = sqlx::query_as::<_, (Uuid, Uuid, String, String)>(
+        "SELECT r.id,r.owner_namespace_id,n.slug,r.slug FROM resources r \
              JOIN namespaces n ON n.id=r.owner_namespace_id \
              WHERE n.slug=$1 AND r.kind='skill' AND r.slug=$2 AND r.deleted_at IS NULL",
-        )
-        .bind(locator.owner())
-        .bind(locator.name())
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(internal_api_error)?;
-        if let Some((resource_id, _owner_namespace_id, owner, name)) = active {
-            return Ok(ResolvedSkillLocator {
-                resource_id,
-                owner,
-                name,
-            });
-        }
-        sqlx::query_as::<_, (Uuid, Uuid, String, String)>(
+    )
+    .bind(locator.owner())
+    .bind(locator.name())
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(internal_api_error)?;
+    if let Some((resource_id, _owner_namespace_id, owner, name)) = active {
+        return Ok(ResolvedSkillLocator {
+            resource_id,
+            owner,
+            name,
+        });
+    }
+    sqlx::query_as::<_, (Uuid, Uuid, String, String)>(
             "SELECT target.id,target.owner_namespace_id,target_owner.slug,target.slug \
              FROM resource_redirects rr JOIN namespaces old_owner ON old_owner.id=rr.namespace_id \
              JOIN resources target ON target.id=rr.target_resource_id AND target.deleted_at IS NULL \
@@ -87,7 +106,7 @@ impl Registry {
         )
         .bind(locator.owner())
         .bind(locator.name())
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut **tx)
         .await
         .map_err(internal_api_error)?
         .map(|(resource_id, _owner_namespace_id, owner, name)| ResolvedSkillLocator {
@@ -96,8 +115,9 @@ impl Registry {
             name,
         })
         .ok_or_else(|| ApiError::new(ApiErrorCode::NotFound, "skill not found"))
-    }
+}
 
+impl Registry {
     pub async fn rename_skill(
         &self,
         bearer: &str,
@@ -146,6 +166,7 @@ impl Registry {
             return Ok(outcome);
         }
 
+        let mut source_tx = self.begin_actor_tx(authority.user_id).await?;
         let source = sqlx::query_as::<_, RenameSourceRow>(
             "SELECT r.owner_namespace_id,n.slug AS owner,r.slug AS name,r.generation, \
                     w.revision_id,w.manifest_json,w.snapshot_key \
@@ -154,10 +175,11 @@ impl Registry {
              WHERE r.id=$1 AND r.kind='skill' AND r.deleted_at IS NULL",
         )
         .bind(resource_id.as_uuid())
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *source_tx)
         .await
         .map_err(internal_api_error)?
         .ok_or_else(|| ApiError::new(ApiErrorCode::NotFound, "owned skill not found"))?;
+        source_tx.commit().await.map_err(internal_api_error)?;
         if source.owner_namespace_id != authority.namespace_id {
             return Err(ApiError::new(
                 ApiErrorCode::Unauthorized,
@@ -272,7 +294,7 @@ impl Registry {
             .await
             .map_err(|error| ApiError::new(ApiErrorCode::Unavailable, error.to_string()))?;
 
-        let mut tx = self.pool.begin().await.map_err(internal_api_error)?;
+        let mut tx = self.begin_actor_tx(authority.user_id).await?;
         let locked = lock_active_owned_skill(&mut tx, resource_id.as_uuid()).await?;
         ensure_owner(&locked, authority.namespace_id)?;
         if locked.generation != expected_generation || locked.name != source.name {
@@ -468,7 +490,7 @@ impl Registry {
         {
             return Ok(outcome);
         }
-        let mut tx = self.pool.begin().await.map_err(internal_api_error)?;
+        let mut tx = self.begin_actor_tx(authority.user_id).await?;
         let resource_authority =
             authorize_resource_publish(&mut tx, &authority, resource_id.as_uuid()).await?;
         let locked = lock_active_owned_skill(&mut tx, resource_id.as_uuid()).await?;
@@ -536,7 +558,7 @@ impl Registry {
         {
             return Ok(outcome);
         }
-        let mut tx = self.pool.begin().await.map_err(internal_api_error)?;
+        let mut tx = self.begin_actor_tx(authority.user_id).await?;
         let resource_authority =
             authorize_resource_publish(&mut tx, &authority, resource_id.as_uuid()).await?;
         if resource_authority.is_team {
@@ -641,7 +663,7 @@ impl Registry {
         {
             return Ok(outcome);
         }
-        let mut tx = self.pool.begin().await.map_err(internal_api_error)?;
+        let mut tx = self.begin_actor_tx(authority.user_id).await?;
         let resource_authority =
             authorize_resource_publish(&mut tx, &authority, resource_id.as_uuid()).await?;
         let locked = lock_active_owned_skill(&mut tx, resource_id.as_uuid()).await?;
@@ -758,16 +780,18 @@ impl Registry {
         kind: &str,
         resource_id: Uuid,
     ) -> Result<Option<T>, ApiError> {
+        let mut tx = self.begin_actor_tx(user_id).await?;
         let row = sqlx::query(
             "SELECT request_hash,resource_id,operation_kind,outcome_json FROM skill_lifecycle_operations \
              WHERE user_id=$1 AND operation_id=$2",
         )
         .bind(user_id)
         .bind(operation_id.as_uuid())
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *tx)
         .await
         .map_err(internal_api_error)?;
         let Some(row) = row else {
+            tx.commit().await.map_err(internal_api_error)?;
             return Ok(None);
         };
         let stored_hash: Vec<u8> = row.get(0);
@@ -782,214 +806,10 @@ impl Registry {
                 "operation_id was already used with different lifecycle content",
             ));
         }
-        serde_json::from_value(row.get(3))
+        let outcome = serde_json::from_value(row.get(3))
             .map(Some)
-            .map_err(internal_serialization_error)
+            .map_err(internal_serialization_error)?;
+        tx.commit().await.map_err(internal_api_error)?;
+        Ok(outcome)
     }
-}
-
-pub(crate) async fn lock_active_owned_skill(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    resource_id: Uuid,
-) -> Result<LockedResourceRow, ApiError> {
-    sqlx::query_as::<_, LockedResourceRow>(
-        "SELECT r.owner_namespace_id,n.slug AS owner,r.slug AS name,r.visibility,r.generation,r.latest_release_version \
-         FROM resources r JOIN namespaces n ON n.id=r.owner_namespace_id \
-         WHERE r.id=$1 AND r.kind='skill' AND r.deleted_at IS NULL FOR UPDATE OF r",
-    )
-    .bind(resource_id)
-    .fetch_optional(&mut **tx)
-    .await
-    .map_err(internal_api_error)?
-    .ok_or_else(|| ApiError::new(ApiErrorCode::NotFound, "owned skill not found"))
-}
-
-pub(crate) fn ensure_owner(row: &LockedResourceRow, namespace_id: Uuid) -> Result<(), ApiError> {
-    if row.owner_namespace_id == namespace_id {
-        Ok(())
-    } else {
-        Err(ApiError::new(
-            ApiErrorCode::Unauthorized,
-            "owned skill is unavailable",
-        ))
-    }
-}
-
-pub(crate) fn ensure_generation(row: &LockedResourceRow, expected: u64) -> Result<(), ApiError> {
-    if row.generation == generation_i64(expected)? {
-        Ok(())
-    } else {
-        Err(generation_conflict(row.generation))
-    }
-}
-
-pub(crate) fn validate_resource_lifecycle_request(
-    request: &ResourceLifecycleRequest,
-    hash: fn(&str, &str, u64) -> Result<RequestHash, denju_wire::RequestHashError>,
-) -> Result<(OperationId, ResourceId, RequestHash), ApiError> {
-    let operation_id = OperationId::from_str(&request.operation_id)
-        .map_err(|error| ApiError::new(ApiErrorCode::InvalidRequest, error.to_string()))?;
-    let resource_id = ResourceId::from_str(&request.resource_id)
-        .map_err(|error| ApiError::new(ApiErrorCode::InvalidRequest, error.to_string()))?;
-    let request_hash = validate_lifecycle_hash(
-        &request.request_hash,
-        hash(
-            &request.operation_id,
-            &request.resource_id,
-            request.expected_generation,
-        ),
-    )?;
-    Ok((operation_id, resource_id, request_hash))
-}
-
-pub(crate) struct RevisionPersistence<'a> {
-    pub(crate) revision_id: RevisionId,
-    pub(crate) root_tree: denju_core::TreeId,
-    pub(crate) author: Uuid,
-    pub(crate) operation_id: OperationId,
-    pub(crate) parent: Option<RevisionId>,
-    pub(crate) blobs: &'a BTreeMap<BlobId, u64>,
-    pub(crate) resource_id: Uuid,
-    pub(crate) namespace_id: Uuid,
-}
-
-pub(crate) async fn persist_revision(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    revision: RevisionPersistence<'_>,
-) -> Result<(), ApiError> {
-    sqlx::query(
-        "INSERT INTO revisions (revision_id,root_tree_id,author_principal_id,operation_id) VALUES ($1,$2,$3,$4)",
-    )
-    .bind(revision.revision_id.as_bytes().as_slice())
-    .bind(revision.root_tree.as_bytes().as_slice())
-    .bind(revision.author)
-    .bind(revision.operation_id.as_uuid())
-    .execute(&mut **tx)
-    .await
-    .map_err(internal_api_error)?;
-    if let Some(parent) = revision.parent {
-        sqlx::query(
-            "INSERT INTO revision_parents (revision_id,parent_revision_id,ordinal) VALUES ($1,$2,0)",
-        )
-        .bind(revision.revision_id.as_bytes().as_slice())
-        .bind(parent.as_bytes().as_slice())
-        .execute(&mut **tx)
-        .await
-        .map_err(internal_api_error)?;
-    }
-    for blob in revision.blobs.keys() {
-        sqlx::query("INSERT INTO revision_blob_reachability (revision_id,blob_id) VALUES ($1,$2)")
-            .bind(revision.revision_id.as_bytes().as_slice())
-            .bind(blob.as_bytes().as_slice())
-            .execute(&mut **tx)
-            .await
-            .map_err(internal_api_error)?;
-        sqlx::query(
-            "INSERT INTO resource_blob_reachability (resource_id,blob_id,reference_count) VALUES ($1,$2,1) \
-             ON CONFLICT(resource_id,blob_id) DO UPDATE SET reference_count=resource_blob_reachability.reference_count+1",
-        )
-        .bind(revision.resource_id)
-        .bind(blob.as_bytes().as_slice())
-        .execute(&mut **tx)
-        .await
-        .map_err(internal_api_error)?;
-        sqlx::query(
-            "INSERT INTO namespace_blob_reachability (namespace_id,blob_id,reference_count) VALUES ($1,$2,1) \
-             ON CONFLICT(namespace_id,blob_id) DO UPDATE SET reference_count=namespace_blob_reachability.reference_count+1",
-        )
-        .bind(revision.namespace_id)
-        .bind(blob.as_bytes().as_slice())
-        .execute(&mut **tx)
-        .await
-        .map_err(internal_api_error)?;
-        sqlx::query("DELETE FROM canonical_blob_gc WHERE blob_id=$1")
-            .bind(blob.as_bytes().as_slice())
-            .execute(&mut **tx)
-            .await
-            .map_err(internal_api_error)?;
-    }
-    Ok(())
-}
-
-pub(crate) async fn persist_revision_snapshot(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    resource_id: Uuid,
-    revision_id: RevisionId,
-    manifest: &PublicSkillManifest,
-    snapshot_key: &str,
-    snapshot_sha: BlobId,
-    snapshot_size: usize,
-) -> Result<(), ApiError> {
-    sqlx::query(
-        "INSERT INTO resource_revision_snapshots \
-         (resource_id,revision_id,manifest_json,snapshot_key,snapshot_sha256,snapshot_size) VALUES ($1,$2,$3,$4,$5,$6)",
-    )
-    .bind(resource_id)
-    .bind(revision_id.as_bytes().as_slice())
-    .bind(serde_json::to_value(manifest).map_err(internal_serialization_error)?)
-    .bind(snapshot_key)
-    .bind(snapshot_sha.as_bytes().as_slice())
-    .bind(i64::try_from(snapshot_size).map_err(|_| {
-        ApiError::new(ApiErrorCode::Internal, "snapshot size exceeds database range")
-    })?)
-    .execute(&mut **tx)
-    .await
-    .map_err(internal_api_error)?;
-    Ok(())
-}
-
-pub(crate) async fn record_lifecycle_operation<T: Serialize>(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    user_id: Uuid,
-    operation_id: OperationId,
-    request_hash: RequestHash,
-    resource_id: Uuid,
-    kind: &str,
-    outcome: &T,
-) -> Result<(), ApiError> {
-    sqlx::query(
-        "INSERT INTO skill_lifecycle_operations \
-         (user_id,operation_id,request_hash,resource_id,operation_kind,outcome_json) VALUES ($1,$2,$3,$4,$5,$6)",
-    )
-    .bind(user_id)
-    .bind(operation_id.as_uuid())
-    .bind(request_hash.as_bytes().as_slice())
-    .bind(resource_id)
-    .bind(kind)
-    .bind(serde_json::to_value(outcome).map_err(internal_serialization_error)?)
-    .execute(&mut **tx)
-    .await
-    .map_err(internal_api_error)?;
-    Ok(())
-}
-
-fn generation_i64(value: u64) -> Result<i64, ApiError> {
-    i64::try_from(value).map_err(|_| {
-        ApiError::new(
-            ApiErrorCode::InvalidRequest,
-            "generation exceeds database range",
-        )
-    })
-}
-
-pub(crate) fn generation_u64(value: i64) -> Result<u64, ApiError> {
-    u64::try_from(value)
-        .map_err(|_| ApiError::new(ApiErrorCode::Internal, "stored generation is invalid"))
-}
-
-pub(crate) fn next_generation(value: i64) -> Result<i64, ApiError> {
-    value
-        .checked_add(1)
-        .ok_or_else(|| ApiError::new(ApiErrorCode::Internal, "resource generation overflow"))
-}
-
-fn generation_conflict(current: i64) -> ApiError {
-    ApiError::new(
-        ApiErrorCode::GenerationConflict,
-        format!("resource advanced to generation {current}"),
-    )
-}
-
-fn internal_serialization_error(error: serde_json::Error) -> ApiError {
-    ApiError::new(ApiErrorCode::Internal, error.to_string())
 }

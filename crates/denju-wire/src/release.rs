@@ -89,6 +89,8 @@ pub struct SyncReconcileRequest {
 pub struct SyncReconcileResponse {
     pub skills: Vec<SubscribedSkill>,
     pub removed_resource_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub quarantined: Vec<crate::QuarantinedResource>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

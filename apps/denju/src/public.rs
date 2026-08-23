@@ -5,8 +5,9 @@ use denju_core::{OperationId, ResourceId, RevisionId};
 use denju_local::{
     DesiredSkillMaterialization, LocalDatabase, LocalPaths, ManagedDesiredKind, ManagedSkillRecord,
     SubscriptionRecord, journaled_remove_managed_skill, materialize_skill_snapshot,
-    prepare_harness_roots, reconcile_canonical_links, reconcile_harness_projections,
-    recover_local_lifecycle, recover_materializations, resolve_harness_roots,
+    prepare_harness_roots, preserve_quarantined_managed_skill, reconcile_canonical_links,
+    reconcile_harness_projections, recover_local_lifecycle, recover_materializations,
+    resolve_harness_roots,
 };
 use denju_wire::{
     CliErrorCode, SubscribedSkill, SubscriptionContent, SubscriptionMutationKind,
@@ -207,6 +208,11 @@ pub(crate) async fn sync_once() -> Result<SyncOutcome, RuntimeError> {
     let (_workspace_pass, hydrated_blockers) =
         crate::workspace::capture_local_edits(&context.paths, &context.db, false).await?;
     blockers.extend(hydrated_blockers);
+    // Local edits are made durable before any network request so offline sync still protects
+    // work. Once connectivity is available, security quarantine gets the next move: preserve
+    // affected bytes under the explicit quarantine root and remove their projection before a
+    // local fork can be promoted or an owned revision can be uploaded.
+    blockers.extend(crate::quarantine_sync::enforce_before_upload(&context).await?);
     crate::fork_ops::promote_local_forks(&context).await?;
     let (_uploaded, upload_blockers) = crate::workspace::drain_queued_revisions(&context).await?;
     blockers.extend(upload_blockers);
@@ -333,6 +339,84 @@ async fn sync_with_context(
         .reconcile_subscriptions(&SyncReconcileRequest { known })
         .await
         .map_err(client_error)?;
+    let quarantined_ids = reconcile
+        .quarantined
+        .iter()
+        .map(|item| item.resource_id.as_str())
+        .collect::<BTreeSet<_>>();
+    for quarantine in &reconcile.quarantined {
+        let Some(record) = existing
+            .iter()
+            .find(|record| record.resource_id == quarantine.resource_id)
+        else {
+            blockers.push(
+                RuntimeError::new(
+                    CliErrorCode::ContentVerification,
+                    format!(
+                        "{} is quarantined: {}",
+                        quarantine.locator, quarantine.reason
+                    ),
+                )
+                .recovery("denju status"),
+            );
+            continue;
+        };
+        if !crate::quarantine_sync::quarantine_targets_subscription(record, quarantine) {
+            continue;
+        }
+        let managed = ManagedSkillRecord {
+            resource_id: record.resource_id.clone(),
+            locator: record.locator.clone(),
+            owner: record.owner.clone(),
+            skill_name: record.skill_name.clone(),
+            harness_name: record.harness_name.clone(),
+            materialized_revision_id: record.materialized_revision_id.clone(),
+        };
+        let was_active = record
+            .materialized_revision_id
+            .as_deref()
+            .is_some_and(|revision| {
+                canonical_targets_revision(
+                    &context,
+                    &record.resource_id,
+                    &record.owner,
+                    &record.skill_name,
+                    revision,
+                )
+            });
+        if crate::quarantine_sync::quarantine_materialized_subscription_revision(record, quarantine)
+            .is_some()
+        {
+            preserve_quarantined_managed_skill(&context.paths, &managed).map_err(local_error)?;
+        }
+        if was_active {
+            journaled_remove_managed_skill(
+                &context.paths,
+                &context.db,
+                &context.roots,
+                &managed,
+                ManagedDesiredKind::Subscription,
+            )
+            .await
+            .map_err(local_error)?;
+        } else {
+            context
+                .db
+                .remove_subscription_record(record.resource_id.clone())
+                .await
+                .map_err(local_error)?;
+        }
+        blockers.push(
+            RuntimeError::new(
+                CliErrorCode::ContentVerification,
+                format!(
+                    "{} is quarantined: {}",
+                    quarantine.locator, quarantine.reason
+                ),
+            )
+            .recovery("inspect ~/.denju/quarantine or contact the registry operator"),
+        );
+    }
     let mut suppressed_subscription_ids = context
         .db
         .local_forks()
@@ -356,6 +440,9 @@ async fn sync_with_context(
         .collect::<BTreeSet<_>>();
     let mut removed: usize = 0;
     for record in &existing {
+        if quarantined_ids.contains(record.resource_id.as_str()) {
+            continue;
+        }
         if !removed_ids.contains(record.resource_id.as_str()) {
             continue;
         }
@@ -519,7 +606,87 @@ async fn sync_with_context(
             .map(|fork| fork.resource_id)
             .collect::<BTreeSet<_>>();
         let existing_owned = context.db.owned_skills().await.map_err(local_error)?;
+        let quarantined_owned_ids = owned
+            .quarantined
+            .iter()
+            .map(|item| item.resource_id.as_str())
+            .collect::<BTreeSet<_>>();
+        for quarantine in &owned.quarantined {
+            if quarantine.release_version.is_some() {
+                continue;
+            }
+            let Some(record) = existing_owned
+                .iter()
+                .find(|record| record.resource_id == quarantine.resource_id)
+            else {
+                blockers.push(
+                    RuntimeError::new(
+                        CliErrorCode::ContentVerification,
+                        format!(
+                            "{} is quarantined: {}",
+                            quarantine.locator, quarantine.reason
+                        ),
+                    )
+                    .recovery("denju status"),
+                );
+                continue;
+            };
+            let managed = ManagedSkillRecord {
+                resource_id: record.resource_id.clone(),
+                locator: record.locator.clone(),
+                owner: record.owner.clone(),
+                skill_name: record.skill_name.clone(),
+                harness_name: record.harness_name.clone(),
+                materialized_revision_id: record.materialized_revision_id.clone(),
+            };
+            let was_active = record
+                .materialized_revision_id
+                .as_deref()
+                .is_some_and(|revision| {
+                    canonical_targets_revision(
+                        &context,
+                        &record.resource_id,
+                        &record.owner,
+                        &record.skill_name,
+                        revision,
+                    )
+                });
+            if record.materialized_revision_id.is_some() {
+                preserve_quarantined_managed_skill(&context.paths, &managed)
+                    .map_err(local_error)?;
+            }
+            if was_active {
+                journaled_remove_managed_skill(
+                    &context.paths,
+                    &context.db,
+                    &context.roots,
+                    &managed,
+                    ManagedDesiredKind::Owned,
+                )
+                .await
+                .map_err(local_error)?;
+            } else {
+                context
+                    .db
+                    .remove_owned_skill(record.resource_id.clone())
+                    .await
+                    .map_err(local_error)?;
+            }
+            blockers.push(
+                RuntimeError::new(
+                    CliErrorCode::ContentVerification,
+                    format!(
+                        "{} is quarantined: {}",
+                        quarantine.locator, quarantine.reason
+                    ),
+                )
+                .recovery("inspect ~/.denju/quarantine or contact the registry operator"),
+            );
+        }
         for record in &existing_owned {
+            if quarantined_owned_ids.contains(record.resource_id.as_str()) {
+                continue;
+            }
             if remote_ids.contains(record.resource_id.as_str())
                 || local_fork_ids.contains(record.resource_id.as_str())
             {

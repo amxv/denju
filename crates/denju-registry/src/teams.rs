@@ -31,7 +31,7 @@ impl Registry {
             team_create_request_hash(&request.operation_id, &request.name).map_err(hash_error)?,
         )?;
         let slug = parse_namespace(&request.name)?;
-        let mut tx = self.pool.begin().await.map_err(internal_api_error)?;
+        let mut tx = self.begin_actor_tx(authority.user_id).await?;
         if let Some(outcome) = replay_team_operation::<TeamMutationResponse>(
             &mut tx,
             authority.user_id,
@@ -100,6 +100,7 @@ impl Registry {
 
     pub async fn teams(&self, bearer: &str) -> Result<TeamList, ApiError> {
         let authority = self.user_authority(bearer, "skills:read").await?;
+        let mut tx = self.begin_actor_tx(authority.user_id).await?;
         let rows = sqlx::query_as::<_, (Uuid, String, String, bool)>(
             "SELECT n.id,n.slug,tm.role,t.members_can_publish FROM team_memberships tm \
              JOIN teams t ON t.namespace_id=tm.team_namespace_id \
@@ -107,9 +108,10 @@ impl Registry {
              ORDER BY n.slug,n.id",
         )
         .bind(authority.user_id)
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *tx)
         .await
         .map_err(internal_api_error)?;
+        tx.commit().await.map_err(internal_api_error)?;
         let teams = rows
             .into_iter()
             .map(|(id, slug, role, members_can_publish)| {
@@ -127,6 +129,7 @@ impl Registry {
     pub async fn team_detail(&self, bearer: &str, team: &str) -> Result<TeamDetail, ApiError> {
         let authority = self.user_authority(bearer, "skills:read").await?;
         let slug = parse_namespace(team)?;
+        let mut tx = self.begin_actor_tx(authority.user_id).await?;
         let row = sqlx::query_as::<_, (Uuid, String, bool)>(
             "SELECT n.id,viewer.role,t.members_can_publish FROM namespaces n \
              JOIN teams t ON t.namespace_id=n.id \
@@ -135,7 +138,7 @@ impl Registry {
         )
         .bind(&slug)
         .bind(authority.user_id)
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *tx)
         .await
         .map_err(internal_api_error)?
         .ok_or_else(|| ApiError::new(ApiErrorCode::NotFound, "team not found"))?;
@@ -145,7 +148,7 @@ impl Registry {
              ORDER BY CASE tm.role WHEN 'owner' THEN 0 WHEN 'maintainer' THEN 1 ELSE 2 END,n.slug,u.id",
         )
         .bind(row.0)
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *tx)
         .await
         .map_err(internal_api_error)?
         .into_iter()
@@ -157,6 +160,8 @@ impl Registry {
             })
         })
         .collect::<Result<Vec<_>, ApiError>>()?;
+        let assigned_packs = self.team_pack_assignments_for_team(&mut tx, row.0).await?;
+        tx.commit().await.map_err(internal_api_error)?;
         Ok(TeamDetail {
             team: TeamSummary {
                 namespace_id: row.0.to_string(),
@@ -165,7 +170,7 @@ impl Registry {
                 members_can_publish: row.2,
             },
             members,
-            assigned_packs: self.team_pack_assignments_for_team(row.0).await?,
+            assigned_packs,
         })
     }
 
@@ -195,7 +200,7 @@ impl Registry {
         )?;
         let code_hash = decode_hash(&request.invite_code_hash, "invite_code_hash")?;
         let slug = parse_namespace(&request.team)?;
-        let mut tx = self.pool.begin().await.map_err(internal_api_error)?;
+        let mut tx = self.begin_actor_tx(authority.user_id).await?;
         if let Some(outcome) = replay_team_operation::<TeamInviteResponse>(
             &mut tx,
             authority.user_id,
@@ -274,7 +279,7 @@ impl Registry {
             .map_err(hash_error)?,
         )?;
         let slug = parse_namespace(&request.team)?;
-        let mut tx = self.pool.begin().await.map_err(internal_api_error)?;
+        let mut tx = self.begin_actor_tx(authority.user_id).await?;
         if let Some(outcome) = replay_team_operation::<TeamMutationResponse>(
             &mut tx,
             authority.user_id,
@@ -348,7 +353,7 @@ impl Registry {
             team_join_request_hash(&request.operation_id, &request.code).map_err(hash_error)?,
         )?;
         let code_hash = invite_code_hash(&request.code);
-        let mut tx = self.pool.begin().await.map_err(internal_api_error)?;
+        let mut tx = self.begin_actor_tx(authority.user_id).await?;
         if let Some(outcome) = replay_team_operation::<TeamMutationResponse>(
             &mut tx,
             authority.user_id,
@@ -360,6 +365,17 @@ impl Registry {
         {
             tx.commit().await.map_err(internal_api_error)?;
             return Ok(outcome);
+        }
+        let bound_invite = sqlx::query_scalar::<_, Uuid>("SELECT denju_bind_team_invite($1)")
+            .bind(code_hash.as_bytes().as_slice())
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(internal_api_error)?;
+        if bound_invite.is_none() {
+            return Err(ApiError::new(
+                ApiErrorCode::NotFound,
+                "team invite is invalid",
+            ));
         }
         let row = sqlx::query(
             "SELECT i.id,i.team_namespace_id,n.slug,i.role,t.members_can_publish,i.expires_at<=now(), \
@@ -468,7 +484,7 @@ impl Registry {
         )?;
         let slug = parse_namespace(&request.team)?;
         let member = parse_namespace(&request.member)?;
-        let mut tx = self.pool.begin().await.map_err(internal_api_error)?;
+        let mut tx = self.begin_actor_tx(authority.user_id).await?;
         if let Some(outcome) = replay_team_operation::<TeamMutationResponse>(
             &mut tx,
             authority.user_id,
@@ -552,7 +568,7 @@ impl Registry {
         )?;
         let slug = parse_namespace(&request.team)?;
         let member = parse_namespace(&request.member)?;
-        let mut tx = self.pool.begin().await.map_err(internal_api_error)?;
+        let mut tx = self.begin_actor_tx(authority.user_id).await?;
         if let Some(outcome) = replay_team_operation::<TeamMutationResponse>(
             &mut tx,
             authority.user_id,
@@ -631,7 +647,7 @@ impl Registry {
             .map_err(hash_error)?,
         )?;
         let slug = parse_namespace(&request.team)?;
-        let mut tx = self.pool.begin().await.map_err(internal_api_error)?;
+        let mut tx = self.begin_actor_tx(authority.user_id).await?;
         if let Some(outcome) = replay_team_operation::<TeamMutationResponse>(
             &mut tx,
             authority.user_id,
@@ -735,24 +751,12 @@ pub(crate) async fn remove_team_workspaces_for_user(
     team_id: Uuid,
     user_id: Uuid,
 ) -> Result<(), ApiError> {
-    sqlx::query(
-        "DELETE FROM skill_workspace_conflicts WHERE workspace_user_id=$1 AND resource_id IN \
-         (SELECT id FROM resources WHERE owner_namespace_id=$2 AND kind='skill')",
-    )
-    .bind(user_id)
-    .bind(team_id)
-    .execute(&mut **tx)
-    .await
-    .map_err(internal_api_error)?;
-    sqlx::query(
-        "DELETE FROM skill_private_workspaces WHERE workspace_user_id=$1 AND resource_id IN \
-         (SELECT id FROM resources WHERE owner_namespace_id=$2 AND kind='skill')",
-    )
-    .bind(user_id)
-    .bind(team_id)
-    .execute(&mut **tx)
-    .await
-    .map_err(internal_api_error)?;
+    sqlx::query_scalar::<_, i64>("SELECT denju_remove_team_workspaces_for_user($1,$2)")
+        .bind(team_id)
+        .bind(user_id)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(internal_api_error)?;
     Ok(())
 }
 

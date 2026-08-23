@@ -73,14 +73,17 @@ impl Registry {
         .map_err(internal_api_error)?
         .ok_or_else(|| ApiError::new(ApiErrorCode::NotFound, "user not found"))?;
         let viewer_follows = if let Some(viewer) = viewer.as_ref() {
-            sqlx::query_scalar::<_, bool>(
+            let mut tx = self.begin_actor_tx(viewer.user_id).await?;
+            let follows = sqlx::query_scalar::<_, bool>(
                 "SELECT EXISTS(SELECT 1 FROM user_follows WHERE follower_user_id=$1 AND followed_user_id=$2)",
             )
             .bind(viewer.user_id)
             .bind(row.0)
-            .fetch_one(&self.pool)
+            .fetch_one(&mut *tx)
             .await
-            .map_err(internal_api_error)?
+            .map_err(internal_api_error)?;
+            tx.commit().await.map_err(internal_api_error)?;
+            follows
         } else {
             false
         };
@@ -184,24 +187,49 @@ impl Registry {
         let cursor_resource_id = cursor.resource_uuid()?;
         // `catalog_query` interpolates only one of two hard-coded ORDER BY/keyset fragments.
         // Every user-controlled value remains a bind parameter, so this dynamic string is audited.
-        let rows = sqlx::query_as::<_, CatalogRow>(sqlx::AssertSqlSafe(catalog_query(input.sort)))
-            .bind(query)
-            .bind(viewer.as_ref().map(|viewer| viewer.user_id))
-            .bind(viewer.as_ref().map(|viewer| viewer.namespace_id))
-            .bind(input.following_only)
-            .bind(topic.as_deref())
-            .bind(input.public_skills_only)
-            .bind(input.cursor.is_some())
-            .bind(i32::from(cursor.deprecated))
-            .bind(cursor.relevance_rank)
-            .bind(cursor.star_count)
-            .bind(&cursor.owner)
-            .bind(&cursor.name)
-            .bind(cursor_resource_id)
-            .bind(i64::from(limit) + 1)
-            .fetch_all(&self.pool)
-            .await
-            .map_err(internal_api_error)?;
+        let rows = if let Some(viewer) = viewer.as_ref() {
+            let mut tx = self.begin_actor_tx(viewer.user_id).await?;
+            let rows =
+                sqlx::query_as::<_, CatalogRow>(sqlx::AssertSqlSafe(catalog_query(input.sort)))
+                    .bind(query)
+                    .bind(Some(viewer.user_id))
+                    .bind(Some(viewer.namespace_id))
+                    .bind(input.following_only)
+                    .bind(topic.as_deref())
+                    .bind(input.public_skills_only)
+                    .bind(input.cursor.is_some())
+                    .bind(i32::from(cursor.deprecated))
+                    .bind(cursor.relevance_rank)
+                    .bind(cursor.star_count)
+                    .bind(&cursor.owner)
+                    .bind(&cursor.name)
+                    .bind(cursor_resource_id)
+                    .bind(i64::from(limit) + 1)
+                    .fetch_all(&mut *tx)
+                    .await
+                    .map_err(internal_api_error)?;
+            tx.commit().await.map_err(internal_api_error)?;
+            rows
+        } else {
+            sqlx::query_as::<_, CatalogRow>(sqlx::AssertSqlSafe(catalog_query(input.sort)))
+                .bind(query)
+                .bind(Option::<Uuid>::None)
+                .bind(Option::<Uuid>::None)
+                .bind(input.following_only)
+                .bind(topic.as_deref())
+                .bind(input.public_skills_only)
+                .bind(input.cursor.is_some())
+                .bind(i32::from(cursor.deprecated))
+                .bind(cursor.relevance_rank)
+                .bind(cursor.star_count)
+                .bind(&cursor.owner)
+                .bind(&cursor.name)
+                .bind(cursor_resource_id)
+                .bind(i64::from(limit) + 1)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(internal_api_error)?
+        };
         let has_more = rows.len() > limit as usize;
         let visible = rows.into_iter().take(limit as usize).collect::<Vec<_>>();
         let next_cursor = if has_more {
@@ -294,7 +322,7 @@ impl Registry {
         viewer_user_id: Option<Uuid>,
         owner: &str,
     ) -> Result<Vec<CatalogResource>, ApiError> {
-        let rows = sqlx::query_as::<_, CatalogRow>(
+        let query = sqlx::query_as::<_, CatalogRow>(
             "SELECT sd.resource_id,sd.resource_kind,sd.owner_slug,sd.resource_slug,sd.description,sd.license,sd.compatibility, \
                     sd.topics,'public'::text AS source,'public'::text AS visibility,r.generation, \
                     CASE WHEN r.kind='skill' THEN r.latest_release_version ELSE pack.current_version END AS version, \
@@ -304,15 +332,28 @@ impl Registry {
              LEFT JOIN pack_state pack ON pack.resource_id=r.id \
              LEFT JOIN resource_stars star ON star.resource_id=r.id AND star.user_id=$2 \
              WHERE sd.owner_slug=$1 AND r.visibility='public' AND r.deleted_at IS NULL \
+               AND NOT EXISTS(SELECT 1 FROM resource_quarantines rq WHERE rq.resource_id=r.id AND rq.lifted_at IS NULL \
+                 AND (rq.release_version IS NULL OR (r.kind='skill' AND rq.release_version=r.latest_release_version))) \
                AND ((r.kind='skill' AND r.latest_release_version IS NOT NULL) OR (r.kind='pack' AND pack.resource_id IS NOT NULL)) \
              ORDER BY sd.resource_kind,sd.resource_slug,sd.resource_id LIMIT $3",
         )
         .bind(owner)
         .bind(viewer_user_id)
-        .bind(PROFILE_RESOURCE_LIMIT)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(internal_api_error)?;
+        .bind(PROFILE_RESOURCE_LIMIT);
+        let rows = if let Some(viewer_user_id) = viewer_user_id {
+            let mut tx = self.begin_actor_tx(viewer_user_id).await?;
+            let rows = query
+                .fetch_all(&mut *tx)
+                .await
+                .map_err(internal_api_error)?;
+            tx.commit().await.map_err(internal_api_error)?;
+            rows
+        } else {
+            query
+                .fetch_all(&self.pool)
+                .await
+                .map_err(internal_api_error)?
+        };
         rows.into_iter().map(CatalogRow::into_wire).collect()
     }
 }
@@ -384,6 +425,11 @@ fn catalog_query(sort: SearchSort) -> String {
              LEFT JOIN resource_stars viewer_star ON viewer_star.resource_id=r.id AND viewer_star.user_id=$2 \
              LEFT JOIN user_follows followed ON followed.follower_user_id=$2 AND followed.followed_user_id=owner_user.id \
             WHERE r.deleted_at IS NULL \
+              AND NOT EXISTS(SELECT 1 FROM resource_quarantines rq WHERE rq.resource_id=r.id AND rq.lifted_at IS NULL AND ( \
+                   rq.release_version IS NULL OR (r.kind='skill' AND ( \
+                     (r.visibility='public' AND rq.release_version=r.latest_release_version) OR \
+                     (n.kind='team' AND team_w.resource_id IS NULL AND rq.release_version=r.latest_release_version) \
+                   )))) \
               AND (NOT $6 OR (r.visibility='public' AND r.kind='skill')) \
               AND (NOT $4 OR (r.visibility='public' AND followed.followed_user_id IS NOT NULL)) \
               AND ($5::text IS NULL OR $5=ANY(sd.topics)) \

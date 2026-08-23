@@ -11,11 +11,14 @@ use clap::{Parser, Subcommand};
 use denju_core::{OwnedSkillEntry, build_deterministic_skill_snapshot};
 use denju_registry::{Registry, RegistrySettings};
 use denju_wire::RegistryLimits;
-use url::Url;
+use url::{Host, Url};
 use walkdir::WalkDir;
 
+mod admin;
 mod http;
 mod maintenance;
+
+use admin::AdminCommand;
 
 #[derive(Debug, Parser)]
 #[command(name = "denju-server", version = build_version())]
@@ -28,6 +31,10 @@ struct Cli {
 enum Command {
     Serve,
     Migrate,
+    Admin {
+        #[command(subcommand)]
+        command: AdminCommand,
+    },
     #[command(hide = true)]
     CheckObjectStore,
     #[command(hide = true)]
@@ -62,6 +69,7 @@ async fn main() -> ExitCode {
     let result = match cli.command.unwrap_or(Command::Serve) {
         Command::Serve => serve(config).await,
         Command::Migrate => migrate(&config).await,
+        Command::Admin { command } => admin::run(&config, command).await,
         Command::CheckObjectStore => check_object_store(&config).await,
         Command::Gc { limit } => maintenance::gc(&config, limit).await,
         Command::DrainPacks { limit } => drain_packs(&config, limit).await,
@@ -136,7 +144,10 @@ async fn seed_public(config: &ServerConfig, owner: &str, path: &Path) -> Result<
 }
 
 async fn migrate(config: &ServerConfig) -> Result<(), String> {
-    Registry::migrate(&config.database_url)
+    let database_url = config.database_migration_url.as_deref().ok_or_else(|| {
+        "DENJU_DATABASE_MIGRATION_URL is required for schema migrations and should not be present in the ordinary server runtime".to_owned()
+    })?;
+    Registry::migrate(database_url)
         .await
         .map_err(|error| error.to_string())?;
     println!("registry migrations applied");
@@ -166,11 +177,13 @@ async fn serve(config: ServerConfig) -> Result<(), String> {
 }
 
 #[derive(Debug, Clone)]
-struct ServerConfig {
+pub(crate) struct ServerConfig {
     bind: SocketAddr,
     public_origin: Url,
     database_url: String,
+    database_worker_url: String,
     database_listen_url: Option<String>,
+    database_migration_url: Option<String>,
     s3_bucket: String,
     s3_endpoint: Url,
     s3_region: String,
@@ -188,7 +201,11 @@ impl ServerConfig {
             .map_err(|error| format!("invalid DENJU_BIND: {error}"))?;
         let public_origin = parse_http_url("DENJU_PUBLIC_URL", &required_env("DENJU_PUBLIC_URL")?)?;
         let database_url = required_env("DENJU_DATABASE_URL")?;
+        let database_worker_url = required_env("DENJU_DATABASE_WORKER_URL")?;
         let database_listen_url = std::env::var("DENJU_DATABASE_DIRECT_URL")
+            .ok()
+            .filter(|value| !value.is_empty());
+        let database_migration_url = std::env::var("DENJU_DATABASE_MIGRATION_URL")
             .ok()
             .filter(|value| !value.is_empty());
         let s3_bucket = required_env("DENJU_S3_BUCKET")?;
@@ -207,7 +224,9 @@ impl ServerConfig {
             bind,
             public_origin,
             database_url,
+            database_worker_url,
             database_listen_url,
+            database_migration_url,
             s3_bucket,
             s3_endpoint,
             s3_region,
@@ -227,9 +246,10 @@ impl ServerConfig {
         })
     }
 
-    fn registry_settings(&self) -> RegistrySettings {
+    pub(crate) fn registry_settings(&self) -> RegistrySettings {
         RegistrySettings {
             database_url: self.database_url.clone(),
+            database_worker_url: self.database_worker_url.clone(),
             database_listen_url: self.database_listen_url.clone(),
             public_origin: self.public_origin.clone(),
             object_store_endpoint: self.s3_endpoint.clone(),
@@ -253,7 +273,23 @@ fn parse_http_url(name: &str, value: &str) -> Result<Url, String> {
     if !matches!(url.scheme(), "http" | "https") || url.cannot_be_a_base() {
         return Err(format!("{name} must be an http(s) origin"));
     }
+    if url.scheme() == "http" && !url_is_loopback(&url) {
+        return Err(format!(
+            "{name} must use https unless it targets a loopback development endpoint"
+        ));
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(format!("{name} must not embed credentials in the URL"));
+    }
     Ok(url)
+}
+
+fn url_is_loopback(url: &Url) -> bool {
+    url.host().is_some_and(|host| match host {
+        Host::Domain(host) => host.eq_ignore_ascii_case("localhost"),
+        Host::Ipv4(address) => address.is_loopback(),
+        Host::Ipv6(address) => address.is_loopback(),
+    })
 }
 
 fn required_env(name: &str) -> Result<String, String> {

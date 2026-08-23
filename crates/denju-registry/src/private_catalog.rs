@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
 use denju_wire::{
-    ApiError, ApiErrorCode, PrivateSkill, PrivateSkillCatalog, SkillForkProvenance,
-    SnapshotDownload,
+    ApiError, ApiErrorCode, PrivateSkill, PrivateSkillCatalog, QuarantinedResource,
+    SkillForkProvenance, SnapshotDownload,
 };
 use serde_json::Value;
 use sqlx::FromRow;
@@ -41,6 +41,32 @@ impl Registry {
         bearer: &str,
     ) -> Result<PrivateSkillCatalog, ApiError> {
         let authority = self.user_authority(bearer, "skills:read").await?;
+        let mut tx = self.begin_actor_tx(authority.user_id).await?;
+        // Workspace rows themselves become unreadable under whole-resource quarantine. Preserve a
+        // narrow tombstone signal first: the SECURITY DEFINER helper exposes only whether this
+        // actor already owns a workspace, never the quarantined workspace content or object key.
+        let quarantined = sqlx::query_as::<_, (Uuid, String, String, String)>(
+            "SELECT r.id,n.slug,r.slug,rq.reason \
+             FROM resources r \
+             JOIN namespaces n ON n.id=r.owner_namespace_id \
+             JOIN resource_quarantines rq ON rq.resource_id=r.id \
+                 AND rq.release_version IS NULL AND rq.lifted_at IS NULL \
+             WHERE r.kind='skill' AND r.deleted_at IS NULL \
+               AND denju_actor_has_own_workspace(r.id) \
+             ORDER BY r.slug,r.id",
+        )
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(internal_api_error)?
+        .into_iter()
+        .map(|(resource_id, owner, name, reason)| QuarantinedResource {
+            resource_id: resource_id.to_string(),
+            locator: format!("@{owner}/{name}"),
+            release_version: None,
+            revision_id: None,
+            reason,
+        })
+        .collect::<Vec<_>>();
         // Team workspaces are private maintainer refs, not shared drafts. Provision a missing
         // ref only from the team's last immutable release; unpublished work from another
         // maintainer is never a seed. Ordinary members receive none unless the team-wide
@@ -55,11 +81,12 @@ impl Registry {
              JOIN skill_releases sr ON sr.resource_id=r.id AND sr.version=r.latest_release_version \
              JOIN resource_revision_snapshots rrs ON rrs.resource_id=r.id AND rrs.revision_id=sr.revision_id \
              WHERE r.kind='skill' AND r.deleted_at IS NULL AND \
+               NOT EXISTS(SELECT 1 FROM resource_quarantines rq WHERE rq.resource_id=r.id AND rq.release_version IS NULL AND rq.lifted_at IS NULL) AND \
                (tm.role IN ('owner','maintainer') OR (tm.role='member' AND t.members_can_publish)) \
              ON CONFLICT(resource_id,workspace_user_id) DO NOTHING",
         )
         .bind(authority.user_id)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(internal_api_error)?;
         let rows = sqlx::query_as::<_, PrivateSkillRow>(
@@ -79,7 +106,7 @@ impl Registry {
              ORDER BY r.slug,r.id",
         )
         .bind(authority.user_id)
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *tx)
         .await
         .map_err(internal_api_error)?;
         let generations = rows
@@ -91,12 +118,10 @@ impl Registry {
                 Ok((row.resource_id, generation))
             })
             .collect::<Result<BTreeMap<_, _>, ApiError>>()?;
-        let mut conflicts = unresolved_workspace_conflicts_for_resources(
-            &self.pool,
-            authority.user_id,
-            &generations,
-        )
-        .await?;
+        let mut conflicts =
+            unresolved_workspace_conflicts_for_resources(&mut tx, authority.user_id, &generations)
+                .await?;
+        tx.commit().await.map_err(internal_api_error)?;
 
         let mut skills = Vec::with_capacity(rows.len());
         for row in rows {
@@ -139,7 +164,10 @@ impl Registry {
                 fork,
             });
         }
-        Ok(PrivateSkillCatalog { skills })
+        Ok(PrivateSkillCatalog {
+            skills,
+            quarantined,
+        })
     }
 }
 

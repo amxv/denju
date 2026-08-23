@@ -4,7 +4,7 @@ use denju_core::BlobId;
 use denju_wire::{ApiError, ApiErrorCode, PublicSkillManifest};
 use uuid::Uuid;
 
-use crate::internal_api_error;
+use crate::{ingest_storage::persist_revision, internal_api_error};
 
 pub(crate) struct PrivateRevisionStorage<'a> {
     pub(crate) resource_id: Uuid,
@@ -25,17 +25,14 @@ pub(crate) async fn persist_private_revision_storage(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     revision: PrivateRevisionStorage<'_>,
 ) -> Result<(), ApiError> {
-    sqlx::query(
-        "INSERT INTO revisions (revision_id,root_tree_id,author_principal_id,operation_id) \
-         VALUES ($1,$2,$3,$4) ON CONFLICT(revision_id) DO NOTHING",
+    persist_revision(
+        tx,
+        &revision.revision_id,
+        revision.root_tree_id,
+        revision.author_principal_id,
+        revision.operation_id,
     )
-    .bind(revision.revision_id.as_slice())
-    .bind(revision.root_tree_id.as_slice())
-    .bind(revision.author_principal_id)
-    .bind(revision.operation_id)
-    .execute(&mut **tx)
-    .await
-    .map_err(internal_api_error)?;
+    .await?;
     for (ordinal, parent) in revision.parents.iter().enumerate() {
         sqlx::query(
             "INSERT INTO revision_parents (revision_id,parent_revision_id,ordinal) VALUES ($1,$2,$3) \

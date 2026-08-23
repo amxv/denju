@@ -80,7 +80,7 @@ impl Registry {
         let snapshot_size = i64::try_from(snapshot.bytes().len())
             .map_err(|_| RegistryError::Seed("snapshot is too large".to_owned()))?;
         let namespace_id = Uuid::now_v7();
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.worker_pool.begin().await?;
         sqlx::query(
             "INSERT INTO namespaces (id, slug, kind) VALUES ($1, $2, 'user') ON CONFLICT (slug) DO NOTHING",
         )

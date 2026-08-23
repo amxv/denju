@@ -96,7 +96,7 @@ impl Registry {
         .map_err(|error| ApiError::new(ApiErrorCode::InvalidRequest, error.to_string()))?;
         let revision_id = revision.id();
 
-        let mut tx = self.pool.begin().await.map_err(internal_api_error)?;
+        let mut tx = self.begin_actor_tx(authority.user_id).await?;
         let target = authorize_namespace_publish(&mut tx, &authority, &request.owner).await?;
         sqlx::query_scalar::<_, Uuid>("SELECT id FROM namespaces WHERE id=$1 FOR UPDATE")
             .bind(target.namespace_id)
@@ -310,8 +310,9 @@ impl Registry {
             .map_err(|error| ApiError::new(ApiErrorCode::InvalidRequest, error.to_string()))?;
         let supplied_hash = RequestHash::from_str(&request.request_hash)
             .map_err(|error| ApiError::new(ApiErrorCode::InvalidRequestHash, error.to_string()))?;
+        let mut read_tx = self.begin_actor_tx(authority.user_id).await?;
         let operation =
-            fetch_import_operation_pool(&self.pool, authority.user_id, operation_id.as_uuid())
+            fetch_import_operation(&mut read_tx, authority.user_id, operation_id.as_uuid())
                 .await?
                 .ok_or_else(|| {
                     ApiError::new(ApiErrorCode::NotFound, "private import operation not found")
@@ -323,22 +324,19 @@ impl Registry {
         let target_slug =
             sqlx::query_scalar::<_, String>("SELECT slug FROM namespaces WHERE id=$1")
                 .bind(operation.namespace_id)
-                .fetch_optional(&self.pool)
+                .fetch_optional(&mut *read_tx)
                 .await
                 .map_err(internal_api_error)?
                 .ok_or_else(|| {
                     ApiError::new(ApiErrorCode::NotFound, "import namespace is unavailable")
                 })?;
-        let mut authority_tx = self.pool.begin().await.map_err(internal_api_error)?;
-        let target =
-            authorize_namespace_publish(&mut authority_tx, &authority, &target_slug).await?;
+        let target = authorize_namespace_publish(&mut read_tx, &authority, &target_slug).await?;
         if target.namespace_id != operation.namespace_id {
             return Err(ApiError::new(
                 ApiErrorCode::Unauthorized,
                 "import namespace is unavailable",
             ));
         }
-        authority_tx.commit().await.map_err(internal_api_error)?;
         if operation.expected_generation != 0 {
             return Err(ApiError::new(
                 ApiErrorCode::Internal,
@@ -361,7 +359,7 @@ impl Registry {
         )
         .bind(authority.user_id)
         .bind(operation_id.as_uuid())
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *read_tx)
         .await
         .map_err(internal_api_error)?;
         let mut staging = BTreeMap::new();
@@ -372,6 +370,40 @@ impl Registry {
             })?;
             staging.insert(blob, (size, row.staging_key));
         }
+
+        let mut canonical_objects = BTreeMap::<BlobId, (u64, String)>::new();
+        for (blob, expected_size) in &expected_blobs {
+            if staging.contains_key(blob) {
+                continue;
+            }
+            let row = sqlx::query_as::<_, (i64, String)>(
+                "SELECT cb.size_bytes,cb.object_key FROM namespace_blob_reachability nbr \
+                 JOIN canonical_blobs cb ON cb.blob_id=nbr.blob_id \
+                 WHERE nbr.namespace_id=$1 AND nbr.blob_id=$2",
+            )
+            .bind(operation.namespace_id)
+            .bind(blob.as_bytes().as_slice())
+            .fetch_optional(&mut *read_tx)
+            .await
+            .map_err(internal_api_error)?
+            .ok_or_else(|| {
+                ApiError::new(
+                    ApiErrorCode::InvalidRequest,
+                    "required object proof is missing; rerun import prepare",
+                )
+            })?;
+            let stored_size = u64::try_from(row.0).map_err(|_| {
+                ApiError::new(ApiErrorCode::Internal, "canonical object size is invalid")
+            })?;
+            if stored_size != *expected_size {
+                return Err(ApiError::new(
+                    ApiErrorCode::Internal,
+                    "canonical object size is invalid",
+                ));
+            }
+            canonical_objects.insert(*blob, (stored_size, row.1));
+        }
+        read_tx.commit().await.map_err(internal_api_error)?;
 
         let mut bytes_by_blob = BTreeMap::<BlobId, Vec<u8>>::new();
         for (blob, expected_size) in &expected_blobs {
@@ -387,30 +419,11 @@ impl Registry {
                     .await
                     .map_err(object_store_api_error)?
             } else {
-                let row = sqlx::query_as::<_, (i64, String)>(
-                    "SELECT cb.size_bytes,cb.object_key FROM namespace_blob_reachability nbr \
-                     JOIN canonical_blobs cb ON cb.blob_id=nbr.blob_id \
-                     WHERE nbr.namespace_id=$1 AND nbr.blob_id=$2",
-                )
-                .bind(operation.namespace_id)
-                .bind(blob.as_bytes().as_slice())
-                .fetch_optional(&self.pool)
-                .await
-                .map_err(internal_api_error)?
-                .ok_or_else(|| {
-                    ApiError::new(
-                        ApiErrorCode::InvalidRequest,
-                        "required object proof is missing; rerun import prepare",
-                    )
+                let (_, key) = canonical_objects.get(blob).ok_or_else(|| {
+                    ApiError::new(ApiErrorCode::Internal, "canonical object proof disappeared")
                 })?;
-                if u64::try_from(row.0).ok() != Some(*expected_size) {
-                    return Err(ApiError::new(
-                        ApiErrorCode::Internal,
-                        "canonical object size is invalid",
-                    ));
-                }
                 self.objects
-                    .get(&row.1)
+                    .get(key)
                     .await
                     .map_err(object_store_api_error)?
             };
@@ -480,7 +493,7 @@ impl Registry {
 
         let revision_id = decode_32(&operation.revision_id, "stored revision ID")?;
 
-        let mut tx = self.pool.begin().await.map_err(internal_api_error)?;
+        let mut tx = self.begin_actor_tx(authority.user_id).await?;
         let target = authorize_namespace_publish(&mut tx, &authority, &target_slug).await?;
         if target.namespace_id != operation.namespace_id {
             return Err(ApiError::new(
@@ -564,17 +577,14 @@ impl Registry {
         .map_err(internal_api_error)?;
         persist_canonical_blobs(&mut tx, &expected_blobs).await?;
         persist_trees(&mut tx, &trees).await?;
-        sqlx::query(
-            "INSERT INTO revisions (revision_id,root_tree_id,author_principal_id,operation_id) \
-             VALUES ($1,$2,$3,$4) ON CONFLICT(revision_id) DO NOTHING",
+        persist_revision(
+            &mut tx,
+            &revision_id,
+            manifest.root_tree().as_bytes(),
+            revision_author,
+            operation_id.as_uuid(),
         )
-        .bind(revision_id.as_slice())
-        .bind(manifest.root_tree().as_bytes().as_slice())
-        .bind(revision_author)
-        .bind(operation_id.as_uuid())
-        .execute(&mut *tx)
-        .await
-        .map_err(internal_api_error)?;
+        .await?;
         if let Some(fork) = fork.as_ref() {
             sqlx::query(
                 "INSERT INTO revision_parents (revision_id,parent_revision_id,ordinal) VALUES ($1,$2,0) \
@@ -915,8 +925,7 @@ async fn validate_fork_source(
     fork: ValidatedFork,
 ) -> Result<(String, String), ApiError> {
     let row = sqlx::query_as::<_, (String, String)>(
-        "SELECT n.slug,r.slug FROM resources r JOIN namespaces n ON n.id=r.owner_namespace_id \
-         WHERE r.id=$1 AND r.kind='skill' AND r.deleted_at IS NULL FOR SHARE OF r",
+        "SELECT owner_slug,resource_slug FROM denju_lock_fork_source($1)",
     )
     .bind(fork.upstream_resource_id)
     .fetch_optional(&mut **tx)
@@ -940,24 +949,6 @@ async fn validate_fork_source(
     Ok(row)
 }
 
-async fn fetch_import_operation_pool(
-    pool: &sqlx::PgPool,
-    user_id: Uuid,
-    operation_id: Uuid,
-) -> Result<Option<ImportOperationRow>, ApiError> {
-    sqlx::query_as::<_, ImportOperationRow>(
-        "SELECT request_hash,namespace_id,resource_id,slug,expected_generation,revision_id,manifest_json, \
-                snapshot_sha256,snapshot_size,revision_author_principal_id,fork_upstream_resource_id,fork_upstream_revision_id,fork_replace_subscription, \
-                fork_promotion_head_revision_id,historical_skill_name,state,outcome_json \
-         FROM private_import_operations WHERE user_id=$1 AND operation_id=$2",
-    )
-    .bind(user_id)
-    .bind(operation_id)
-    .fetch_optional(pool)
-    .await
-    .map_err(internal_api_error)
-}
-
 async fn fetch_staging_rows(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     user_id: Uuid,
@@ -976,8 +967,8 @@ async fn fetch_staging_rows(
 
 pub(crate) use crate::ingest_storage::{
     canonical_blob_key, decode_32, enforce_namespace_quota, ensure_request_hash, manifest_blobs,
-    object_store_api_error, owned_entries_from_manifest, persist_canonical_blobs, persist_trees,
-    verify_blob,
+    object_store_api_error, owned_entries_from_manifest, persist_canonical_blobs, persist_revision,
+    persist_trees, verify_blob,
 };
 
 fn decode_import_outcome(value: Option<Value>) -> Result<PrivateSkillImportResponse, ApiError> {

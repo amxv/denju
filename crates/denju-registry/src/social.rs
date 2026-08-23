@@ -55,7 +55,7 @@ impl Registry {
                 "profile bio must contain at most 500 characters",
             ));
         }
-        let mut tx = self.pool.begin().await.map_err(internal_api_error)?;
+        let mut tx = self.begin_actor_tx(authority.user_id).await?;
         lock_live_social_user(&mut tx, authority.user_id).await?;
         if let Some(outcome) = replay_social_operation::<ProfileUpdateResponse>(
             &mut tx,
@@ -124,7 +124,7 @@ impl Registry {
             FollowMutationKind::Follow => "follow",
             FollowMutationKind::Unfollow => "unfollow",
         };
-        let mut tx = self.pool.begin().await.map_err(internal_api_error)?;
+        let mut tx = self.begin_actor_tx(authority.user_id).await?;
         lock_live_social_user(&mut tx, authority.user_id).await?;
         if let Some(outcome) = replay_social_operation::<FollowMutationResponse>(
             &mut tx,
@@ -138,15 +138,13 @@ impl Registry {
             tx.commit().await.map_err(internal_api_error)?;
             return Ok(outcome);
         }
-        let username = sqlx::query_scalar::<_, String>(
-            "SELECT n.slug FROM users u JOIN namespaces n ON n.id=u.namespace_id \
-             WHERE u.id=$1 AND u.deleted_at IS NULL AND n.kind='user' FOR SHARE OF u",
-        )
-        .bind(target)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(internal_api_error)?
-        .ok_or_else(|| ApiError::new(ApiErrorCode::NotFound, "user not found"))?;
+        let username =
+            sqlx::query_scalar::<_, String>("SELECT username FROM denju_lock_live_social_user($1)")
+                .bind(target)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(internal_api_error)?
+                .ok_or_else(|| ApiError::new(ApiErrorCode::NotFound, "user not found"))?;
         let following = match kind {
             FollowMutationKind::Follow => {
                 sqlx::query(
@@ -209,7 +207,7 @@ impl Registry {
             StarMutationKind::Star => "star",
             StarMutationKind::Unstar => "unstar",
         };
-        let mut tx = self.pool.begin().await.map_err(internal_api_error)?;
+        let mut tx = self.begin_actor_tx(authority.user_id).await?;
         lock_live_social_user(&mut tx, authority.user_id).await?;
         if let Some(outcome) = replay_social_operation::<StarMutationResponse>(
             &mut tx,
@@ -224,9 +222,8 @@ impl Registry {
             return Ok(outcome);
         }
         let row = sqlx::query(
-            "SELECT COALESCE(n.slug,r.deleted_owner_slug),r.slug,r.kind,r.visibility,r.deleted_at IS NOT NULL, \
-                    EXISTS(SELECT 1 FROM skill_releases sr WHERE sr.resource_id=r.id AND sr.version=r.latest_release_version),r.star_count \
-             FROM resources r LEFT JOIN namespaces n ON n.id=r.owner_namespace_id WHERE r.id=$1 FOR UPDATE OF r",
+            "SELECT owner_slug,resource_slug,resource_kind,visibility,deleted,released,star_count \
+             FROM denju_lock_social_resource($1)",
         )
         .bind(resource_id)
         .fetch_optional(&mut *tx)
@@ -273,24 +270,19 @@ impl Registry {
             .rows_affected()
                 == 1,
         };
-        if changed {
-            let delta: i64 = if kind == StarMutationKind::Star {
-                1
-            } else {
-                -1
-            };
-            sqlx::query("UPDATE resources SET star_count=GREATEST(0,star_count+$1) WHERE id=$2")
-                .bind(delta)
+        let star_count: i64 = if changed {
+            sqlx::query_scalar("SELECT denju_refresh_resource_star_count($1)")
                 .bind(resource_id)
-                .execute(&mut *tx)
+                .fetch_one(&mut *tx)
                 .await
-                .map_err(internal_api_error)?;
-        }
-        let star_count: i64 = sqlx::query_scalar("SELECT star_count FROM resources WHERE id=$1")
-            .bind(resource_id)
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(internal_api_error)?;
+                .map_err(internal_api_error)?
+        } else {
+            sqlx::query_scalar("SELECT star_count FROM resources WHERE id=$1")
+                .bind(resource_id)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(internal_api_error)?
+        };
         let outcome = StarMutationResponse {
             resource_id: resource_id.to_string(),
             locator: format!("@{}/{}", owner.unwrap_or_else(|| "deleted".into()), name),
@@ -330,7 +322,7 @@ impl Registry {
             )
             .map_err(hash_error)?,
         )?;
-        let mut tx = self.pool.begin().await.map_err(internal_api_error)?;
+        let mut tx = self.begin_actor_tx(authority.user_id).await?;
         lock_live_social_user(&mut tx, authority.user_id).await?;
         if let Some(outcome) = replay_social_operation::<ResourceTopicsResponse>(
             &mut tx,
@@ -420,7 +412,7 @@ impl Registry {
             )
             .map_err(hash_error)?,
         )?;
-        let mut tx = self.pool.begin().await.map_err(internal_api_error)?;
+        let mut tx = self.begin_actor_tx(authority.user_id).await?;
         lock_live_social_user(&mut tx, authority.user_id).await?;
         if let Some(outcome) = replay_social_operation::<ReportResourceResponse>(
             &mut tx,
@@ -434,15 +426,14 @@ impl Registry {
             tx.commit().await.map_err(internal_api_error)?;
             return Ok(outcome);
         }
-        let public = sqlx::query_scalar::<_, Uuid>(
-            "SELECT r.id FROM resources r \
-             WHERE r.id=$1 AND r.deleted_at IS NULL AND r.visibility='public' FOR SHARE OF r",
+        let public = sqlx::query_scalar::<_, bool>(
+            "SELECT visibility='public' AND NOT deleted FROM denju_lock_social_resource($1)",
         )
         .bind(resource_id)
         .fetch_optional(&mut *tx)
         .await
         .map_err(internal_api_error)?;
-        if public.is_none() {
+        if public != Some(true) {
             return Err(ApiError::new(
                 ApiErrorCode::NotFound,
                 "public resource not found",

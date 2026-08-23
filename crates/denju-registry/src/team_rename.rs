@@ -107,7 +107,7 @@ async fn rename_team_skill(
     request: &RenameSkillRequest,
     request_hash: RequestHash,
 ) -> Result<RenameSkillResponse, ApiError> {
-    let mut authority_tx = registry.pool.begin().await.map_err(internal_api_error)?;
+    let mut authority_tx = registry.begin_actor_tx(authority.user_id).await?;
     let resource_authority =
         authorize_resource_publish(&mut authority_tx, authority, resource_id).await?;
     if !resource_authority.is_team {
@@ -116,9 +116,7 @@ async fn rename_team_skill(
             "team rename was selected for a non-team skill",
         ));
     }
-    authority_tx.commit().await.map_err(internal_api_error)?;
-
-    let source = load_team_resource(registry, resource_id).await?;
+    let source = load_team_resource(&mut authority_tx, resource_id).await?;
     if source.owner_namespace_id != resource_authority.namespace_id {
         return Err(ApiError::new(
             ApiErrorCode::Unauthorized,
@@ -133,7 +131,22 @@ async fn rename_team_skill(
         ));
     }
 
-    let workspaces = load_workspaces(registry, resource_id).await?;
+    authority_tx.commit().await.map_err(internal_api_error)?;
+    // Team rename is the one lifecycle operation that must mechanically rewrite every
+    // maintainer's private workspace while still never exposing one maintainer's draft through
+    // the ordinary app/RLS read surface. Re-authorize inside the isolated worker transaction,
+    // then use that trusted service boundary only for the cross-workspace read/write itself.
+    let mut worker_read_tx = registry.begin_worker_tx().await?;
+    let worker_authority =
+        authorize_resource_publish(&mut worker_read_tx, authority, resource_id).await?;
+    if !worker_authority.is_team || worker_authority.namespace_id != source.owner_namespace_id {
+        return Err(ApiError::new(
+            ApiErrorCode::Unauthorized,
+            "team skill is unavailable",
+        ));
+    }
+    let workspaces = load_workspaces(&mut worker_read_tx, resource_id).await?;
+    worker_read_tx.commit().await.map_err(internal_api_error)?;
     let actor_index = workspaces
         .iter()
         .position(|workspace| workspace.workspace_user_id == authority.user_id)
@@ -236,7 +249,7 @@ async fn rename_team_skill(
         None
     };
 
-    let mut tx = registry.pool.begin().await.map_err(internal_api_error)?;
+    let mut tx = registry.begin_worker_tx().await?;
     let current_authority = authorize_resource_publish(&mut tx, authority, resource_id).await?;
     if !current_authority.is_team || current_authority.namespace_id != source.owner_namespace_id {
         return Err(ApiError::new(
@@ -459,7 +472,7 @@ async fn rename_team_skill(
 }
 
 async fn load_team_resource(
-    registry: &Registry,
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     resource_id: Uuid,
 ) -> Result<TeamResourceRow, ApiError> {
     sqlx::query_as::<_, TeamResourceRow>(
@@ -468,14 +481,14 @@ async fn load_team_resource(
          WHERE r.id=$1 AND r.kind='skill' AND r.deleted_at IS NULL",
     )
     .bind(resource_id)
-    .fetch_optional(&registry.pool)
+    .fetch_optional(&mut **tx)
     .await
     .map_err(internal_api_error)?
     .ok_or_else(|| ApiError::new(ApiErrorCode::NotFound, "team skill not found"))
 }
 
 async fn load_workspaces(
-    registry: &Registry,
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     resource_id: Uuid,
 ) -> Result<Vec<WorkspaceRow>, ApiError> {
     sqlx::query_as::<_, WorkspaceRow>(
@@ -483,7 +496,7 @@ async fn load_workspaces(
          FROM skill_private_workspaces WHERE resource_id=$1 ORDER BY workspace_user_id",
     )
     .bind(resource_id)
-    .fetch_all(&registry.pool)
+    .fetch_all(&mut **tx)
     .await
     .map_err(internal_api_error)
 }

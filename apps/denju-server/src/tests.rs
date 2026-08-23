@@ -4,7 +4,22 @@ use denju_registry::RegistryWake;
 use denju_wire::SyncHint;
 use tokio::sync::broadcast;
 
-use crate::http::next_sync_hint;
+use crate::{http::next_sync_hint, parse_http_url};
+
+#[test]
+fn hosted_service_urls_require_tls_but_loopback_development_stays_available() {
+    assert!(parse_http_url("DENJU_PUBLIC_URL", "https://registry.example.com").is_ok());
+    assert!(parse_http_url("DENJU_S3_ENDPOINT", "http://127.0.0.1:53900").is_ok());
+    assert!(parse_http_url("DENJU_S3_ENDPOINT", "http://[::1]:53900").is_ok());
+    assert!(parse_http_url("DENJU_PUBLIC_URL", "http://registry.example.com").is_err());
+    assert!(
+        parse_http_url(
+            "DENJU_S3_ENDPOINT",
+            "https://user:secret@objects.example.com"
+        )
+        .is_err()
+    );
+}
 
 #[tokio::test]
 async fn sync_hints_coalesce_duplicate_resources_and_filter_unwatched_resources() {

@@ -1,11 +1,11 @@
 use denju_core::OperationId;
 use denju_wire::{
-    AccountDeleteRequest, AccountDeleteResponse, ApiError, ApiErrorCode,
-    AutomationTokenCreateRequest, AutomationTokenCreateResponse, AutomationTokenInfo,
-    AutomationTokenList, AutomationTokenRevokeRequest, AutomationTokenRevokeResponse,
-    ClaimIdentityRequest, DeviceInfo, DeviceList, DeviceRevokeRequest, DeviceRevokeResponse,
-    IdentityBackupRequest, IdentityInfo, IdentityMutationDomain, IdentitySessionResponse,
-    LoginRequest, RecoveryResetRequest, RequestHash,
+    ApiError, ApiErrorCode, AutomationTokenCreateRequest, AutomationTokenCreateResponse,
+    AutomationTokenInfo, AutomationTokenList, AutomationTokenRevokeRequest,
+    AutomationTokenRevokeResponse, ClaimIdentityRequest, DeviceInfo, DeviceList,
+    DeviceRevokeRequest, DeviceRevokeResponse, IdentityBackupRequest, IdentityInfo,
+    IdentityMutationDomain, IdentitySessionResponse, LoginRequest, RecoveryResetRequest,
+    RequestHash,
 };
 use serde::de::DeserializeOwned;
 use sha2::{Digest, Sha256};
@@ -13,7 +13,10 @@ use sqlx::Row;
 use uuid::Uuid;
 
 use crate::{
-    Registry, identity_support::*, internal_api_error, teams::remove_team_workspaces_for_user,
+    Registry,
+    identity_support::*,
+    internal_api_error,
+    rls::{set_actor_installation, set_actor_user},
 };
 
 impl Registry {
@@ -58,6 +61,7 @@ impl Registry {
         let password_hash = hash_password(&request.password)?;
 
         let mut tx = self.pool.begin().await.map_err(internal_api_error)?;
+        set_actor_installation(&mut tx, installation_id).await?;
         let existing_user = sqlx::query_scalar::<_, Option<Uuid>>(
             "SELECT user_id FROM installations WHERE id=$1 FOR UPDATE",
         )
@@ -112,6 +116,7 @@ impl Registry {
         .await
         .map_err(internal_api_error)?;
         link_installation_to_user(&mut tx, installation_id, user_id).await?;
+        set_actor_user(&mut tx, user_id).await?;
         sqlx::query(
             "INSERT INTO author_principal_users (author_principal_id,user_id) VALUES ($1,$2), \
              ((SELECT author_principal_id FROM installations WHERE id=$3),$2)",
@@ -188,20 +193,32 @@ impl Registry {
         }
         let installation_id = self.authenticate_installation(installation_bearer).await?;
         let mut tx = self.pool.begin().await.map_err(internal_api_error)?;
+        set_actor_installation(&mut tx, installation_id).await?;
         let row = sqlx::query(
-            "SELECT u.id,u.namespace_id,u.password_hash,u.author_principal_id FROM users u \
-             JOIN namespaces n ON n.id=u.namespace_id WHERE n.slug=$1 AND u.deleted_at IS NULL FOR UPDATE",
+            "SELECT user_id,namespace_id,password_hash,author_principal_id FROM denju_login_candidate($1)",
         )
         .bind(&username)
         .fetch_optional(&mut *tx)
         .await
-        .map_err(internal_api_error)?
-        .ok_or_else(invalid_credentials)?;
+        .map_err(internal_api_error)?;
+        let candidate_password_hash = row.as_ref().map(|row| row.get::<String, _>(2));
+        verify_password_with_dummy(&request.password, candidate_password_hash.as_deref())?;
+        let row = row.ok_or_else(invalid_credentials)?;
         let user_id: Uuid = row.get(0);
         let namespace_id: Uuid = row.get(1);
         let password_hash: String = row.get(2);
         let user_author_id: Uuid = row.get(3);
-        verify_password(&request.password, &password_hash)?;
+        set_actor_user(&mut tx, user_id).await?;
+        let live = sqlx::query_scalar::<_, bool>(
+            "SELECT TRUE FROM users WHERE id=$1 AND deleted_at IS NULL FOR UPDATE",
+        )
+        .bind(user_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(internal_api_error)?;
+        if live.is_none() {
+            return Err(invalid_credentials());
+        }
         link_installation_to_user(&mut tx, installation_id, user_id).await?;
         let installation_author = sqlx::query_scalar::<_, Uuid>(
             "SELECT author_principal_id FROM installations WHERE id=$1",
@@ -299,20 +316,28 @@ impl Registry {
         let supplied_recovery_hash: [u8; 32] = Sha256::digest(supplied_recovery).into();
         let new_password_hash = hash_password(&request.new_password)?;
         let mut tx = self.pool.begin().await.map_err(internal_api_error)?;
+        set_actor_installation(&mut tx, installation_id).await?;
         let row = sqlx::query(
-            "SELECT u.id,u.namespace_id,u.recovery_secret_hash,u.author_principal_id FROM users u \
-             JOIN namespaces n ON n.id=u.namespace_id WHERE n.slug=$1 AND u.deleted_at IS NULL FOR UPDATE",
+            "SELECT user_id,namespace_id,author_principal_id FROM denju_recovery_candidate($1,$2)",
         )
         .bind(&username)
+        .bind(supplied_recovery_hash.as_slice())
         .fetch_optional(&mut *tx)
         .await
         .map_err(internal_api_error)?
         .ok_or_else(invalid_credentials)?;
         let user_id: Uuid = row.get(0);
         let namespace_id: Uuid = row.get(1);
-        let stored_recovery: Vec<u8> = row.get(2);
-        let user_author_id: Uuid = row.get(3);
-        if stored_recovery.as_slice() != supplied_recovery_hash {
+        let user_author_id: Uuid = row.get(2);
+        set_actor_user(&mut tx, user_id).await?;
+        let live = sqlx::query_scalar::<_, bool>(
+            "SELECT TRUE FROM users WHERE id=$1 AND deleted_at IS NULL FOR UPDATE",
+        )
+        .bind(user_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(internal_api_error)?;
+        if live.is_none() {
             return Err(invalid_credentials());
         }
         let operation_secret_verifier = hash_operation_secret(&operation_secret)?;
@@ -388,15 +413,13 @@ impl Registry {
         }
         let actor = self.authenticate_actor(bearer).await?;
         let user_id = require_session(actor)?.1;
-        let mut tx = self.pool.begin().await.map_err(internal_api_error)?;
-        let password_hash = sqlx::query_scalar::<_, String>(
-            "SELECT password_hash FROM users WHERE id=$1 AND deleted_at IS NULL",
-        )
-        .bind(user_id)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(internal_api_error)?
-        .ok_or_else(invalid_credentials)?;
+        let mut tx = self.begin_actor_tx(user_id).await?;
+        let password_hash = sqlx::query_scalar::<_, String>("SELECT denju_actor_password_hash($1)")
+            .bind(user_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(internal_api_error)?
+            .ok_or_else(invalid_credentials)?;
         verify_password(&request.password, &password_hash)?;
         sqlx::query("UPDATE users SET recovery_secret_hash=$1 WHERE id=$2")
             .bind(replacement.as_slice())
@@ -444,14 +467,16 @@ impl Registry {
     pub async fn devices(&self, bearer: &str) -> Result<DeviceList, ApiError> {
         let actor = self.authenticate_actor(bearer).await?;
         let (current_session, user_id) = require_session(actor)?;
+        let mut tx = self.begin_actor_tx(user_id).await?;
         let rows = sqlx::query(
             "SELECT id,installation_id,device_name,(extract(epoch from created_at)*1000)::bigint \
              FROM sessions WHERE user_id=$1 AND revoked_at IS NULL ORDER BY created_at,id",
         )
         .bind(user_id)
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *tx)
         .await
         .map_err(internal_api_error)?;
+        tx.commit().await.map_err(internal_api_error)?;
         Ok(DeviceList {
             devices: rows
                 .into_iter()
@@ -498,7 +523,7 @@ impl Registry {
         }
         let actor = self.authenticate_actor(bearer).await?;
         let (_, user_id) = require_session(actor)?;
-        let mut tx = self.pool.begin().await.map_err(internal_api_error)?;
+        let mut tx = self.begin_actor_tx(user_id).await?;
         let changed = sqlx::query(
             "UPDATE sessions SET revoked_at=now() WHERE id=$1 AND user_id=$2 AND revoked_at IS NULL",
         )
@@ -571,7 +596,7 @@ impl Registry {
         let token_id = Uuid::now_v7();
         let seconds = i64::try_from(request.expires_in_seconds)
             .map_err(|_| ApiError::new(ApiErrorCode::InvalidRequest, "TTL is too large"))?;
-        let mut tx = self.pool.begin().await.map_err(internal_api_error)?;
+        let mut tx = self.begin_actor_tx(user_id).await?;
         let expires_at_unix_ms = sqlx::query_scalar::<_, i64>(
             "INSERT INTO automation_tokens (id,user_id,token_hash,scopes,expires_at) \
              VALUES ($1,$2,$3,$4,now() + ($5 * interval '1 second')) \
@@ -612,6 +637,7 @@ impl Registry {
     pub async fn automation_tokens(&self, bearer: &str) -> Result<AutomationTokenList, ApiError> {
         let actor = self.authenticate_actor(bearer).await?;
         let (_, user_id) = require_session(actor)?;
+        let mut tx = self.begin_actor_tx(user_id).await?;
         let rows = sqlx::query(
             "SELECT id,scopes,(extract(epoch from created_at)*1000)::bigint, \
                     (extract(epoch from expires_at)*1000)::bigint \
@@ -620,9 +646,10 @@ impl Registry {
              ORDER BY created_at,id",
         )
         .bind(user_id)
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *tx)
         .await
         .map_err(internal_api_error)?;
+        tx.commit().await.map_err(internal_api_error)?;
         let mut tokens = Vec::with_capacity(rows.len());
         for row in rows {
             let scopes: serde_json::Value = row.get(1);
@@ -667,7 +694,7 @@ impl Registry {
         }
         let actor = self.authenticate_actor(bearer).await?;
         let (_, user_id) = require_session(actor)?;
-        let mut tx = self.pool.begin().await.map_err(internal_api_error)?;
+        let mut tx = self.begin_actor_tx(user_id).await?;
         let changed = sqlx::query(
             "UPDATE automation_tokens SET revoked_at=now() \
              WHERE id=$1 AND user_id=$2 AND revoked_at IS NULL",
@@ -696,220 +723,33 @@ impl Registry {
         Ok(outcome)
     }
 
-    pub async fn delete_account(
-        &self,
-        bearer: &str,
-        request: &AccountDeleteRequest,
-    ) -> Result<AccountDeleteResponse, ApiError> {
-        let operation_id = validate_operation_id(&request.operation_id)?;
-        let request_hash = validate_request_hash(
-            &request.operation_id,
-            IdentityMutationDomain::AccountDelete,
-            &(),
-            &request.request_hash,
-        )?;
-        if let Some(user_id) = self.session_user_from_bearer_any(bearer).await?
-            && let Some(outcome) = self
-                .replay_identity_operation(
-                    IdentityOperationActor::User(user_id),
-                    operation_id,
-                    request_hash,
-                    "account_delete",
-                    Some(request.password.as_bytes()),
-                )
-                .await?
-        {
-            return Ok(outcome);
-        }
-        let actor = self.authenticate_actor(bearer).await?;
-        let (_, user_id) = require_session(actor)?;
-        let mut tx = self.pool.begin().await.map_err(internal_api_error)?;
-        let row = sqlx::query(
-            "SELECT u.namespace_id,u.password_hash,n.slug FROM users u \
-             JOIN namespaces n ON n.id=u.namespace_id WHERE u.id=$1 AND u.deleted_at IS NULL FOR UPDATE",
-        )
-        .bind(user_id)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(internal_api_error)?
-        .ok_or_else(invalid_credentials)?;
-        let namespace_id: Uuid = row.get(0);
-        let password_hash: String = row.get(1);
-        let username: String = row.get(2);
-        verify_password(&request.password, &password_hash)?;
-        let owned_team = sqlx::query_scalar::<_, String>(
-            "SELECT n.slug FROM team_memberships tm \
-             JOIN namespaces n ON n.id=tm.team_namespace_id \
-             WHERE tm.user_id=$1 AND tm.role='owner' ORDER BY n.slug LIMIT 1 FOR UPDATE OF tm",
-        )
-        .bind(user_id)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(internal_api_error)?;
-        if let Some(team) = owned_team {
-            return Err(ApiError::new(
-                ApiErrorCode::InvalidRequest,
-                format!(
-                    "account owns @{team}; team ownership succession must be completed before deleting the account"
-                ),
-            ));
-        }
-        let joined_teams = sqlx::query_scalar::<_, Uuid>(
-            "SELECT team_namespace_id FROM team_memberships \
-             WHERE user_id=$1 ORDER BY team_namespace_id FOR UPDATE",
-        )
-        .bind(user_id)
-        .fetch_all(&mut *tx)
-        .await
-        .map_err(internal_api_error)?;
-        for team_id in joined_teams {
-            remove_team_workspaces_for_user(&mut tx, team_id, user_id).await?;
-        }
-        sqlx::query("DELETE FROM team_memberships WHERE user_id=$1")
-            .bind(user_id)
-            .execute(&mut *tx)
-            .await
-            .map_err(internal_api_error)?;
-        sqlx::query(
-            "UPDATE team_invites SET revoked_at=now() \
-             WHERE created_by_user_id=$1 AND used_at IS NULL AND revoked_at IS NULL",
-        )
-        .bind(user_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(internal_api_error)?;
-        let _resource_wakes = self
-            .tombstone_owned_resources_for_account_delete(&mut tx, namespace_id, &username)
-            .await?;
-        sqlx::query("DELETE FROM account_subscriptions WHERE user_id=$1")
-            .bind(user_id)
-            .execute(&mut *tx)
-            .await
-            .map_err(internal_api_error)?;
-        sqlx::query("DELETE FROM user_follows WHERE follower_user_id=$1 OR followed_user_id=$1")
-            .bind(user_id)
-            .execute(&mut *tx)
-            .await
-            .map_err(internal_api_error)?;
-        sqlx::query(
-            "WITH removed AS (DELETE FROM resource_stars WHERE user_id=$1 RETURNING resource_id) \
-             UPDATE resources r SET star_count=GREATEST(0,r.star_count-1) FROM removed \
-             WHERE r.id=removed.resource_id",
-        )
-        .bind(user_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(internal_api_error)?;
-        sqlx::query("UPDATE resource_reports SET reporter_user_id=NULL WHERE reporter_user_id=$1")
-            .bind(user_id)
-            .execute(&mut *tx)
-            .await
-            .map_err(internal_api_error)?;
-        sqlx::query("DELETE FROM social_operations WHERE user_id=$1")
-            .bind(user_id)
-            .execute(&mut *tx)
-            .await
-            .map_err(internal_api_error)?;
-        sqlx::query("UPDATE sessions SET revoked_at=coalesce(revoked_at,now()) WHERE user_id=$1")
-            .bind(user_id)
-            .execute(&mut *tx)
-            .await
-            .map_err(internal_api_error)?;
-        sqlx::query(
-            "UPDATE automation_tokens SET revoked_at=coalesce(revoked_at,now()) WHERE user_id=$1",
-        )
-        .bind(user_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(internal_api_error)?;
-        sqlx::query(
-            "DELETE FROM installation_subscriptions WHERE installation_id IN \
-             (SELECT id FROM installations WHERE user_id=$1)",
-        )
-        .bind(user_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(internal_api_error)?;
-        sqlx::query("DELETE FROM private_import_operations WHERE user_id=$1")
-            .bind(user_id)
-            .execute(&mut *tx)
-            .await
-            .map_err(internal_api_error)?;
-        sqlx::query("DELETE FROM private_revision_operations WHERE user_id=$1")
-            .bind(user_id)
-            .execute(&mut *tx)
-            .await
-            .map_err(internal_api_error)?;
-        sqlx::query(
-            "UPDATE installations SET revoked_at=coalesce(revoked_at,now()) WHERE user_id=$1",
-        )
-        .bind(user_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(internal_api_error)?;
-        sqlx::query(
-            "UPDATE users SET namespace_id=NULL,password_hash=NULL,recovery_secret_hash=NULL,bio=NULL,deleted_at=now() WHERE id=$1",
-        )
-        .bind(user_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(internal_api_error)?;
-        sqlx::query(
-            "UPDATE author_principals SET kind='deleted_user' \
-             WHERE id IN (SELECT author_principal_id FROM author_principal_users WHERE user_id=$1)",
-        )
-        .bind(user_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(internal_api_error)?;
-        sqlx::query("DELETE FROM namespaces WHERE id=$1")
-            .bind(namespace_id)
-            .execute(&mut *tx)
-            .await
-            .map_err(internal_api_error)?;
-        let outcome = AccountDeleteResponse {
-            deleted: true,
-            username: format!("@{username}"),
-        };
-        record_identity_operation(
-            &mut tx,
-            IdentityOperationActor::User(user_id),
-            operation_id,
-            request_hash,
-            "account_delete",
-            Some(&password_hash),
-            &outcome,
-        )
-        .await?;
-        tx.commit().await.map_err(internal_api_error)?;
-        let _ = self.drain_outbox(256).await;
-        Ok(outcome)
-    }
-
     async fn installation_id_from_bearer_any(
         &self,
         bearer: &str,
     ) -> Result<Option<Uuid>, ApiError> {
         let raw = decode_secret_value(bearer, "bearer token")?;
         let token_hash: [u8; 32] = Sha256::digest(raw).into();
-        sqlx::query_scalar::<_, Uuid>("SELECT id FROM installations WHERE credential_hash=$1")
+        sqlx::query_scalar::<_, Uuid>("SELECT denju_lookup_installation_any($1)")
             .bind(token_hash.as_slice())
             .fetch_optional(&self.pool)
             .await
             .map_err(internal_api_error)
     }
 
-    async fn session_user_from_bearer_any(&self, bearer: &str) -> Result<Option<Uuid>, ApiError> {
+    pub(crate) async fn session_user_from_bearer_any(
+        &self,
+        bearer: &str,
+    ) -> Result<Option<Uuid>, ApiError> {
         let raw = decode_secret_value(bearer, "bearer token")?;
         let token_hash: [u8; 32] = Sha256::digest(raw).into();
-        sqlx::query_scalar::<_, Uuid>("SELECT user_id FROM sessions WHERE token_hash=$1")
+        sqlx::query_scalar::<_, Uuid>("SELECT denju_lookup_session_user_any($1)")
             .bind(token_hash.as_slice())
             .fetch_optional(&self.pool)
             .await
             .map_err(internal_api_error)
     }
 
-    async fn replay_identity_operation<T: DeserializeOwned>(
+    pub(crate) async fn replay_identity_operation<T: DeserializeOwned>(
         &self,
         actor: IdentityOperationActor,
         operation_id: OperationId,
@@ -917,6 +757,12 @@ impl Registry {
         operation_kind: &str,
         secret_material: Option<&[u8]>,
     ) -> Result<Option<T>, ApiError> {
+        let mut tx = match actor {
+            IdentityOperationActor::Installation(installation_id) => {
+                self.begin_installation_actor_tx(installation_id).await?
+            }
+            IdentityOperationActor::User(user_id) => self.begin_actor_tx(user_id).await?,
+        };
         let row = sqlx::query(
             "SELECT request_hash,operation_kind,outcome_json,secret_verifier FROM identity_operations \
              WHERE actor_kind=$1 AND actor_id=$2 AND operation_id=$3",
@@ -924,10 +770,11 @@ impl Registry {
         .bind(actor.kind())
         .bind(actor.id())
         .bind(operation_id.as_uuid())
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *tx)
         .await
         .map_err(internal_api_error)?;
         let Some(row) = row else {
+            tx.commit().await.map_err(internal_api_error)?;
             return Ok(None);
         };
         let stored_hash: Vec<u8> = row.get(0);
@@ -946,9 +793,11 @@ impl Registry {
                 "operation_id was already used with different secret input",
             ));
         }
-        serde_json::from_value(outcome)
+        let outcome = serde_json::from_value(outcome)
             .map(Some)
-            .map_err(|error| ApiError::new(ApiErrorCode::Internal, error.to_string()))
+            .map_err(|error| ApiError::new(ApiErrorCode::Internal, error.to_string()))?;
+        tx.commit().await.map_err(internal_api_error)?;
+        Ok(outcome)
     }
 
     async fn identity_info(&self, user_id: Uuid) -> Result<IdentityInfo, ApiError> {

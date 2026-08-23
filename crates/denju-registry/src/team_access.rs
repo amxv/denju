@@ -86,7 +86,9 @@ pub(crate) async fn authorize_resource_publish(
 ) -> Result<NamespacePublishAuthority, ApiError> {
     let owner = sqlx::query_scalar::<_, String>(
         "SELECT n.slug FROM resources r JOIN namespaces n ON n.id=r.owner_namespace_id \
-         WHERE r.id=$1 AND r.deleted_at IS NULL",
+         WHERE r.id=$1 AND r.deleted_at IS NULL \
+           AND NOT EXISTS(SELECT 1 FROM resource_quarantines rq \
+             WHERE rq.resource_id=r.id AND rq.lifted_at IS NULL AND rq.release_version IS NULL)",
     )
     .bind(resource_id)
     .fetch_optional(&mut **tx)
@@ -97,7 +99,7 @@ pub(crate) async fn authorize_resource_publish(
 }
 
 pub(crate) async fn user_is_team_member(
-    pool: &sqlx::PgPool,
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     user_id: Uuid,
     namespace_id: Uuid,
 ) -> Result<bool, ApiError> {
@@ -106,7 +108,7 @@ pub(crate) async fn user_is_team_member(
     )
     .bind(namespace_id)
     .bind(user_id)
-    .fetch_one(pool)
+    .fetch_one(&mut **tx)
     .await
     .map_err(internal_api_error)
 }

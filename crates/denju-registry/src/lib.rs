@@ -1,11 +1,13 @@
 //! Registry use cases plus PostgreSQL and S3-compatible persistence boundaries.
 
 mod access;
+mod admin;
 mod discovery;
 mod fork_sync;
 mod history;
 mod identity;
 mod identity_auth;
+mod identity_delete;
 mod identity_support;
 mod ingest;
 mod ingest_storage;
@@ -28,9 +30,11 @@ mod release;
 mod release_validation;
 mod rename_content;
 mod revision_graph;
+mod rls;
 mod sharing;
 mod social;
 mod subscription_access;
+mod subscriptions;
 mod team_access;
 mod team_policy;
 mod team_rename;
@@ -56,22 +60,32 @@ use denju_wire::{
     RegistryCapabilities, RegistryLimits, RequestHash, create_installation_request_hash,
 };
 use sha2::{Digest, Sha256};
-use sqlx::{PgPool, postgres::PgPoolOptions};
+use sqlx::{
+    Connection, PgPool,
+    postgres::{PgConnection, PgPoolOptions},
+};
 use thiserror::Error;
 use tokio::sync::broadcast;
 use url::Url;
 use uuid::Uuid;
 
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
-const EXPECTED_SCHEMA_VERSION: i64 = 14;
+const EXPECTED_SCHEMA_VERSION: i64 = 17;
 const SNAPSHOT_URL_TTL: Duration = Duration::from_secs(5 * 60);
 const STAGING_URL_TTL: Duration = Duration::from_secs(10 * 60);
 
 #[derive(Debug, Clone)]
 pub struct RegistrySettings {
+    /// Transaction-pooled request SQL. This URL must authenticate directly as the restricted
+    /// `denju_app` login role; connecting as an owner and switching roles is deliberately
+    /// rejected because the session identity could regain bypass privileges.
     pub database_url: String,
+    /// Background/recovery SQL. This URL must authenticate directly as the separate restricted
+    /// `denju_worker` login role and must not be usable by the request pool.
+    pub database_worker_url: String,
     /// Optional session-mode/direct PostgreSQL URL used only for LISTEN/NOTIFY. Never point
-    /// this at a transaction-mode pooler such as Neon's pooled endpoint.
+    /// this at a transaction-mode pooler such as Neon's pooled endpoint. It must authenticate
+    /// directly as `denju_app`, like the request pool.
     pub database_listen_url: Option<String>,
     pub public_origin: Url,
     pub object_store_endpoint: Url,
@@ -87,6 +101,7 @@ pub struct RegistrySettings {
 #[derive(Clone)]
 pub struct Registry {
     pool: PgPool,
+    worker_pool: PgPool,
     objects: ObjectStore,
     public_origin: Url,
     limits: RegistryLimits,
@@ -104,14 +119,19 @@ pub enum RegistryWake {
 
 impl Registry {
     pub async fn connect(settings: RegistrySettings) -> Result<Self, RegistryError> {
-        let pool = PgPoolOptions::new()
-            .max_connections(10)
-            .connect(&settings.database_url)
-            .await?;
+        let pool = connect_role_pool(&settings.database_url, 10, DatabaseRole::App).await?;
+        let worker_pool =
+            connect_role_pool(&settings.database_worker_url, 4, DatabaseRole::Worker).await?;
+        validate_database_role(&pool, DatabaseRole::App).await?;
+        validate_database_role(&worker_pool, DatabaseRole::Worker).await?;
+        if let Some(database_listen_url) = settings.database_listen_url.as_deref() {
+            validate_direct_database_role(database_listen_url, DatabaseRole::App).await?;
+        }
         let objects = ObjectStore::new(&settings);
         let (wake_tx, _) = broadcast::channel(256);
         Ok(Self {
             pool,
+            worker_pool,
             objects,
             public_origin: settings.public_origin,
             limits: settings.limits,
@@ -147,6 +167,8 @@ impl Registry {
 
     pub async fn readiness(&self) -> Result<(), RegistryError> {
         self.validate_schema().await?;
+        validate_database_role(&self.pool, DatabaseRole::App).await?;
+        validate_database_role(&self.worker_pool, DatabaseRole::Worker).await?;
         sqlx::query_scalar::<_, i32>("SELECT 1")
             .fetch_one(&self.pool)
             .await?;
@@ -321,20 +343,123 @@ impl Registry {
                 )
             })?;
         let credential_hash: [u8; 32] = Sha256::digest(&raw).into();
-        sqlx::query_scalar::<_, Uuid>(
-            "SELECT id FROM installations WHERE credential_hash = $1 AND revoked_at IS NULL",
-        )
-        .bind(credential_hash.as_slice())
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(internal_api_error)?
-        .ok_or_else(|| {
-            ApiError::new(
-                ApiErrorCode::Unauthorized,
-                "invalid installation credential",
-            )
-        })
+        sqlx::query_scalar::<_, Uuid>("SELECT denju_authenticate_installation($1)")
+            .bind(credential_hash.as_slice())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(internal_api_error)?
+            .ok_or_else(|| {
+                ApiError::new(
+                    ApiErrorCode::Unauthorized,
+                    "invalid installation credential",
+                )
+            })
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DatabaseRole {
+    App,
+    Worker,
+}
+
+impl DatabaseRole {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::App => "denju_app",
+            Self::Worker => "denju_worker",
+        }
+    }
+
+    const fn other(self) -> Self {
+        match self {
+            Self::App => Self::Worker,
+            Self::Worker => Self::App,
+        }
+    }
+}
+
+async fn connect_role_pool(
+    database_url: &str,
+    max_connections: u32,
+    _role: DatabaseRole,
+) -> Result<PgPool, RegistryError> {
+    PgPoolOptions::new()
+        .max_connections(max_connections)
+        .connect(database_url)
+        .await
+        .map_err(RegistryError::Database)
+}
+
+async fn validate_database_role(
+    pool: &PgPool,
+    expected: DatabaseRole,
+) -> Result<(), RegistryError> {
+    let row = sqlx::query_as::<_, (String, String, bool, bool, bool, bool, bool)>(
+        "SELECT current_user,session_user,role.rolsuper,role.rolbypassrls,role.rolcanlogin, \
+                pg_has_role(session_user,$1,'SET'), \
+                EXISTS(SELECT 1 FROM pg_roles target WHERE target.rolname<>session_user \
+                  AND (target.rolsuper OR target.rolbypassrls) \
+                  AND pg_has_role(session_user,target.oid,'SET')) \
+         FROM pg_roles role WHERE role.rolname=current_user",
+    )
+    .bind(expected.other().name())
+    .fetch_one(pool)
+    .await?;
+    if row.0 != expected.name()
+        || row.1 != expected.name()
+        || row.2
+        || row.3
+        || !row.4
+        || row.5
+        || row.6
+    {
+        return Err(RegistryError::SecurityBoundary(format!(
+            "database pool must authenticate directly as isolated non-bypass role {} (current_user={}, session_user={}, superuser={}, bypassrls={}, login={}, can_set_other_role={}, can_set_bypass_role={})",
+            expected.name(),
+            row.0,
+            row.1,
+            row.2,
+            row.3,
+            row.4,
+            row.5,
+            row.6
+        )));
+    }
+    Ok(())
+}
+
+async fn validate_direct_database_role(
+    database_url: &str,
+    expected: DatabaseRole,
+) -> Result<(), RegistryError> {
+    let mut connection = PgConnection::connect(database_url).await?;
+    let row = sqlx::query_as::<_, (String, String, bool, bool, bool, bool, bool)>(
+        "SELECT current_user,session_user,role.rolsuper,role.rolbypassrls,role.rolcanlogin, \
+                pg_has_role(session_user,$1,'SET'), \
+                EXISTS(SELECT 1 FROM pg_roles target WHERE target.rolname<>session_user \
+                  AND (target.rolsuper OR target.rolbypassrls) \
+                  AND pg_has_role(session_user,target.oid,'SET')) \
+         FROM pg_roles role WHERE role.rolname=current_user",
+    )
+    .bind(expected.other().name())
+    .fetch_one(&mut connection)
+    .await?;
+    connection.close().await?;
+    if row.0 != expected.name()
+        || row.1 != expected.name()
+        || row.2
+        || row.3
+        || !row.4
+        || row.5
+        || row.6
+    {
+        return Err(RegistryError::SecurityBoundary(format!(
+            "direct database connection must authenticate as isolated non-bypass role {}",
+            expected.name()
+        )));
+    }
+    Ok(())
 }
 
 #[derive(Clone)]
@@ -475,6 +600,8 @@ pub enum RegistryError {
     Migration(#[from] sqlx::migrate::MigrateError),
     #[error("object-store error: {0}")]
     ObjectStore(String),
+    #[error("security boundary error: {0}")]
+    SecurityBoundary(String),
     #[error(
         "registry schema is not current (found {0:?}, expected {EXPECTED_SCHEMA_VERSION}); run denju-server migrate"
     )]

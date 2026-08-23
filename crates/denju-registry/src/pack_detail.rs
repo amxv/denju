@@ -7,6 +7,7 @@ use uuid::Uuid;
 
 use crate::{
     Registry,
+    admin::effective_quarantine_tx,
     ingest::decode_32,
     internal_api_error,
     lifecycle::generation_u64,
@@ -78,7 +79,15 @@ impl Registry {
         } else {
             private_actor_readable
         };
-        let unavailable_reason = if deleted {
+        let quarantine = effective_quarantine_tx(
+            tx,
+            member.skill_resource_id,
+            member.resolved_release_version,
+        )
+        .await?;
+        let unavailable_reason = if quarantine.is_some() {
+            Some(PackUnavailableReason::Quarantined)
+        } else if deleted {
             Some(PackUnavailableReason::Deleted)
         } else if pack.visibility == "public" && visibility != "public" {
             Some(PackUnavailableReason::Unpublished)

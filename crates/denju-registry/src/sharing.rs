@@ -39,13 +39,14 @@ impl Registry {
             ));
         }
 
+        let mut tx = self.begin_actor_tx(authority.user_id).await?;
         if let Some(row) = sqlx::query(
             "SELECT request_hash,resource_id,outcome_json FROM private_share_operations \
              WHERE user_id=$1 AND operation_id=$2",
         )
         .bind(authority.user_id)
         .bind(operation_id.as_uuid())
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *tx)
         .await
         .map_err(internal_api_error)?
         {
@@ -63,7 +64,6 @@ impl Registry {
                 .map_err(|error| ApiError::new(ApiErrorCode::Internal, error.to_string()));
         }
 
-        let mut tx = self.pool.begin().await.map_err(internal_api_error)?;
         let resource = sqlx::query_as::<_, (Uuid, String, String, i64, String)>(
             "SELECT r.owner_namespace_id,n.slug,r.slug,r.generation,n.kind FROM resources r \
              JOIN namespaces n ON n.id=r.owner_namespace_id \

@@ -34,7 +34,7 @@ impl Registry {
         let mut processed_pack_revisions = 0usize;
         let mut completed_release_events = 0usize;
         loop {
-            let event = load_earliest_pending_release_event(&self.pool).await?;
+            let event = load_earliest_pending_release_event(&self.worker_pool).await?;
             let Some(event) = event else {
                 return Ok(PackDrainResponse {
                     processed_pack_revisions: processed_pack_revisions as u64,
@@ -49,7 +49,7 @@ impl Registry {
                     pending_release_event_id: Some(event.id as u64),
                 });
             }
-            let pack_id = next_pack_for_release_event(&self.pool, &event).await?;
+            let pack_id = next_pack_for_release_event(&self.worker_pool, &event).await?;
             if let Some(pack_id) = pack_id {
                 if self.advance_pack_for_release_event(pack_id, &event).await? {
                     processed_pack_revisions += 1;
@@ -60,7 +60,7 @@ impl Registry {
                 "INSERT INTO pack_release_event_completions (event_id) VALUES ($1) ON CONFLICT DO NOTHING",
             )
             .bind(event.id)
-            .execute(&self.pool)
+            .execute(&self.worker_pool)
             .await
             .map_err(internal_api_error)?;
             completed_release_events += 1;
@@ -72,7 +72,7 @@ impl Registry {
         pack_id: Uuid,
         event: &ReleaseEvent,
     ) -> Result<bool, ApiError> {
-        let mut tx = self.pool.begin().await.map_err(internal_api_error)?;
+        let mut tx = self.begin_worker_tx().await?;
         lock_pack_resource(&mut tx, pack_id).await?;
         lock_skill_resource(&mut tx, event.skill_resource_id).await?;
         let advanced = advance_pack_event_in_tx(&mut tx, pack_id, event).await?;
@@ -199,12 +199,7 @@ pub(crate) async fn lock_and_catch_up_pack(
         lock_skill_resource(tx, skill_id).await?;
     }
     let events = sqlx::query(
-        "SELECT ae.id,ae.resource_id,ae.payload_json FROM authority_events ae \
-         JOIN pack_members pm ON pm.skill_resource_id=ae.resource_id \
-         WHERE pm.pack_resource_id=$1 AND pm.pinned_release_version IS NULL \
-         AND ae.event_kind='skill_release_published' AND pm.follow_after_event_id < ae.id \
-         AND NOT EXISTS(SELECT 1 FROM pack_revisions pr WHERE pr.pack_resource_id=$1 AND pr.source_release_event_id=ae.id) \
-         ORDER BY ae.id LIMIT $2",
+        "SELECT event_id,resource_id,payload_json FROM denju_pack_pending_release_events($1,$2)",
     )
     .bind(pack.id)
     .bind(i64::try_from(PACK_MUTATION_CATCH_UP_LIMIT + 1).unwrap_or(i64::MAX))

@@ -48,6 +48,8 @@ denju subscribe @alice/code-review --retain-on-delete
 
 Retention is opt-in per direct subscription. If the owner later deletes the resource, a retained subscription freezes on that resource's final immutable release. An ordinary subscription is removed. Retention follows the immutable resource ID, never locator text, so a new skill that later reuses `@alice/code-review` is unrelated.
 
+Security quarantine is stronger than retention. If the retained tombstone release or whole resource is quarantined, Denju preserves the local bytes under `~/.denju/quarantine/` for inspection and removes the active projection instead of continuing to expose the retained copy.
+
 ## Delete
 
 ```bash

@@ -6,6 +6,7 @@ use sqlx::Row;
 use uuid::Uuid;
 
 use crate::{
+    admin::effective_quarantine_tx,
     internal_api_error,
     lifecycle::{generation_u64, next_generation},
 };
@@ -294,6 +295,15 @@ pub(crate) async fn resolve_member(
         let version = i64::try_from(version).map_err(|_| {
             ApiError::new(ApiErrorCode::InvalidRequest, "release version is too large")
         })?;
+        if effective_quarantine_tx(tx, skill_id, Some(version))
+            .await?
+            .is_some()
+        {
+            return Err(ApiError::new(
+                ApiErrorCode::NotFound,
+                "pack member skill release is quarantined",
+            ));
+        }
         let revision = sqlx::query_scalar::<_, Vec<u8>>(
             "SELECT revision_id FROM skill_releases WHERE resource_id=$1 AND version=$2",
         )
@@ -311,6 +321,15 @@ pub(crate) async fn resolve_member(
         });
     }
     if let Some(version) = latest_release {
+        if effective_quarantine_tx(tx, skill_id, Some(version))
+            .await?
+            .is_some()
+        {
+            return Err(ApiError::new(
+                ApiErrorCode::NotFound,
+                "pack member skill release is quarantined",
+            ));
+        }
         let revision = sqlx::query_scalar::<_, Vec<u8>>(
             "SELECT revision_id FROM skill_releases WHERE resource_id=$1 AND version=$2",
         )
@@ -334,6 +353,12 @@ pub(crate) async fn resolve_member(
             } else {
                 "team pack members must have a team-visible published release"
             },
+        ));
+    }
+    if effective_quarantine_tx(tx, skill_id, None).await?.is_some() {
+        return Err(ApiError::new(
+            ApiErrorCode::NotFound,
+            "pack member skill is quarantined",
         ));
     }
     let revision = if owner_kind.as_deref() == Some("team") {

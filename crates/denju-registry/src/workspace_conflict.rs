@@ -89,7 +89,7 @@ pub(crate) async fn record_workspace_conflict(
 }
 
 pub(crate) async fn unresolved_workspace_conflicts_for_resources(
-    pool: &sqlx::PgPool,
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     workspace_user_id: Uuid,
     generations: &BTreeMap<Uuid, u64>,
 ) -> Result<BTreeMap<Uuid, Vec<PrivateWorkspaceConflict>>, ApiError> {
@@ -104,7 +104,7 @@ pub(crate) async fn unresolved_workspace_conflicts_for_resources(
     )
     .bind(workspace_user_id)
     .bind(&resource_ids)
-    .fetch_all(pool)
+    .fetch_all(&mut **tx)
     .await
     .map_err(internal_api_error)?;
     let mut conflicts = BTreeMap::<Uuid, Vec<PrivateWorkspaceConflict>>::new();

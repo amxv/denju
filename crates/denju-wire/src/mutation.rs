@@ -4,10 +4,12 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
+mod admin_hash;
 mod pack_hash;
 mod social_hash;
 mod team_hash;
 
+pub use admin_hash::{AdminQuarantineMutationKind, admin_quarantine_request_hash};
 pub use pack_hash::{
     pack_create_request_hash, pack_delete_request_hash, pack_mutation_request_hash,
     pack_publish_request_hash, pack_rename_request_hash, pack_subscription_request_hash,

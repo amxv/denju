@@ -23,7 +23,7 @@ struct SkillReleaseWakePayload<'a> {
 impl Registry {
     pub async fn drain_outbox(&self, limit: u32) -> Result<usize, ApiError> {
         let limit = i64::from(limit.clamp(1, 256));
-        let mut tx = self.pool.begin().await.map_err(internal_api_error)?;
+        let mut tx = self.begin_worker_tx().await?;
         let rows = sqlx::query(
             "SELECT event_id,event_kind,payload_json FROM outbox_events WHERE dispatched_at IS NULL \
              ORDER BY event_id FOR UPDATE SKIP LOCKED LIMIT $1",

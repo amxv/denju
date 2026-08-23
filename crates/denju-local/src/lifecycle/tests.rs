@@ -8,8 +8,8 @@ use uuid::Uuid;
 
 use super::*;
 use crate::{
-    DesiredSkillMaterialization, ensure_local_layout, materialize_skill_snapshot,
-    prepare_harness_roots,
+    DesiredSkillMaterialization, SubscriptionRecord, ensure_local_layout,
+    materialize_skill_snapshot, prepare_harness_roots,
 };
 
 fn skill_snapshot(name: &str) -> denju_core::DeterministicSkillSnapshot {
@@ -370,6 +370,153 @@ async fn pack_detach_preserves_captured_edit_then_allows_authoritative_rebuild()
     assert_eq!(
         fs::read(rebuilt.join("notes.txt")).unwrap(),
         b"durable user bytes\n"
+    );
+}
+
+#[tokio::test]
+async fn quarantine_moves_exact_generation_before_visibility_is_removed() {
+    let home = tempdir().unwrap();
+    let paths = LocalPaths::from_home(home.path().to_owned());
+    ensure_local_layout(&paths).unwrap();
+    let roots = roots(home.path());
+    prepare_harness_roots(&roots).unwrap();
+    let db = LocalDatabase::open(&paths.state_db).await.unwrap();
+    let resource_id = ResourceId::from_str("01890f47-6a1f-7cc2-98c1-5f6c1ed8a3a2").unwrap();
+    let revision = RevisionId::from_bytes([8; 32]);
+    let snapshot = skill_snapshot("review");
+    let resource_id_text = resource_id.to_string();
+    let revision_text = revision.to_string();
+    db.upsert_subscription_desired(
+        SubscriptionRecord {
+            resource_id: resource_id_text.clone(),
+            locator: "@alice/review".to_owned(),
+            owner: "alice".to_owned(),
+            skill_name: "review".to_owned(),
+            resource_generation: 1,
+            release_version: 1,
+            desired_revision_id: revision_text.clone(),
+            harness_name: None,
+            materialized_revision_id: None,
+            retain_on_delete: true,
+            retained_after_delete: false,
+            live_private: false,
+            desired_root_tree_id: snapshot.manifest().root_tree().to_string(),
+        },
+        1,
+    )
+    .await
+    .unwrap();
+    let generation = materialize_skill_snapshot(
+        &paths,
+        &db,
+        &DesiredSkillMaterialization {
+            resource_id,
+            owner: "alice".to_owned(),
+            skill_name: "review".to_owned(),
+            revision_id: revision,
+            manifest: snapshot.manifest().clone(),
+        },
+        snapshot.bytes(),
+    )
+    .await
+    .unwrap();
+    reconcile_harness_projections(&paths, &db, &roots)
+        .await
+        .unwrap();
+    let record = db
+        .managed_skills()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|record| record.resource_id == resource_id_text)
+        .unwrap();
+    let quarantined = preserve_quarantined_managed_skill(&paths, &record).unwrap();
+    assert!(quarantined.starts_with(fs::canonicalize(&paths.quarantine).unwrap()));
+    assert_eq!(
+        fs::read(quarantined.join("notes.txt")).unwrap(),
+        b"durable user bytes\n"
+    );
+    assert!(generation.exists());
+
+    journaled_remove_managed_skill(
+        &paths,
+        &db,
+        &roots,
+        &record,
+        ManagedDesiredKind::Subscription,
+    )
+    .await
+    .unwrap();
+    assert!(!paths.skills.join("alice/review").exists());
+    assert!(db.subscriptions().await.unwrap().is_empty());
+    assert_eq!(
+        fs::read(quarantined.join("notes.txt")).unwrap(),
+        b"durable user bytes\n"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn quarantine_refuses_relative_symlink_escape_in_locally_modified_generation() {
+    let home = tempdir().unwrap();
+    let paths = LocalPaths::from_home(home.path().to_owned());
+    ensure_local_layout(&paths).unwrap();
+    let roots = roots(home.path());
+    prepare_harness_roots(&roots).unwrap();
+    let db = LocalDatabase::open(&paths.state_db).await.unwrap();
+    let resource_id = ResourceId::from_str("01890f47-6a1f-7cc2-98c1-5f6c1ed8a3a3").unwrap();
+    let revision = RevisionId::from_bytes([9; 32]);
+    let snapshot = skill_snapshot("unsafe-review");
+    db.upsert_subscription_desired(
+        SubscriptionRecord {
+            resource_id: resource_id.to_string(),
+            locator: "@alice/unsafe-review".to_owned(),
+            owner: "alice".to_owned(),
+            skill_name: "unsafe-review".to_owned(),
+            resource_generation: 1,
+            release_version: 1,
+            desired_revision_id: revision.to_string(),
+            harness_name: None,
+            materialized_revision_id: None,
+            retain_on_delete: false,
+            retained_after_delete: false,
+            live_private: false,
+            desired_root_tree_id: snapshot.manifest().root_tree().to_string(),
+        },
+        1,
+    )
+    .await
+    .unwrap();
+    let generation = materialize_skill_snapshot(
+        &paths,
+        &db,
+        &DesiredSkillMaterialization {
+            resource_id,
+            owner: "alice".to_owned(),
+            skill_name: "unsafe-review".to_owned(),
+            revision_id: revision,
+            manifest: snapshot.manifest().clone(),
+        },
+        snapshot.bytes(),
+    )
+    .await
+    .unwrap();
+    std::os::unix::fs::symlink("../../../outside", generation.join("escape")).unwrap();
+    let record = db
+        .managed_skills()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|record| record.resource_id == resource_id.to_string())
+        .unwrap();
+    let error = preserve_quarantined_managed_skill(&paths, &record).unwrap_err();
+    assert!(error.to_string().contains("escapes the skill root"));
+    assert!(
+        !paths
+            .quarantine
+            .join(resource_id.to_string())
+            .join(revision.to_string())
+            .exists()
     );
 }
 

@@ -47,7 +47,7 @@ impl Registry {
                 "invalid pack name",
             ));
         }
-        let mut tx = self.pool.begin().await.map_err(internal_api_error)?;
+        let mut tx = self.begin_actor_tx(authority.user_id).await?;
         if let Some(outcome) = replay_pack_operation::<PackLifecycleResponse>(
             &mut tx,
             authority.user_id,
@@ -173,7 +173,7 @@ impl Registry {
             )
             .map_err(hash_error)?,
         )?;
-        let mut tx = self.pool.begin().await.map_err(internal_api_error)?;
+        let mut tx = self.begin_actor_tx(authority.user_id).await?;
         if let Some(outcome) = replay_pack_operation::<PackLifecycleResponse>(
             &mut tx,
             authority.user_id,
@@ -287,7 +287,7 @@ impl Registry {
             )
             .map_err(hash_error)?,
         )?;
-        let mut tx = self.pool.begin().await.map_err(internal_api_error)?;
+        let mut tx = self.begin_actor_tx(authority.user_id).await?;
         if let Some(outcome) = replay_pack_operation::<PackLifecycleResponse>(
             &mut tx,
             authority.user_id,

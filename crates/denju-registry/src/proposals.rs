@@ -74,7 +74,7 @@ impl Registry {
         .map_err(hash_error)?;
         ensure_hash(supplied_hash, expected_hash)?;
 
-        let mut tx = self.pool.begin().await.map_err(internal_api_error)?;
+        let mut tx = self.begin_actor_tx(authority.user_id).await?;
         if let Some(outcome) = replay_operation::<SkillProposal>(
             &mut tx,
             authority.user_id,
@@ -181,6 +181,7 @@ impl Registry {
 
     pub async fn proposals(&self, bearer: &str) -> Result<SkillProposalList, ApiError> {
         let authority = self.user_authority(bearer, "skills:read").await?;
+        let mut tx = self.begin_actor_tx(authority.user_id).await?;
         let ids = sqlx::query_scalar::<_, Uuid>(
             "SELECT p.id FROM skill_proposals p \
              JOIN resources target ON target.id=p.target_resource_id \
@@ -192,16 +193,15 @@ impl Registry {
         )
         .bind(authority.user_id)
         .bind(authority.namespace_id)
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *tx)
         .await
         .map_err(internal_api_error)?;
         let mut proposals = Vec::with_capacity(ids.len());
         for id in ids {
-            let mut tx = self.pool.begin().await.map_err(internal_api_error)?;
             let row = load_proposal_row(&mut tx, id).await?;
             proposals.push(proposal_summary(&row)?);
-            tx.commit().await.map_err(internal_api_error)?;
         }
+        tx.commit().await.map_err(internal_api_error)?;
         Ok(SkillProposalList { proposals })
     }
 
@@ -212,7 +212,7 @@ impl Registry {
     ) -> Result<SkillProposalDetail, ApiError> {
         let authority = self.user_authority(bearer, "skills:read").await?;
         let proposal_id = parse_uuid(proposal_id, "proposal ID")?;
-        let mut tx = self.pool.begin().await.map_err(internal_api_error)?;
+        let mut tx = self.begin_actor_tx(authority.user_id).await?;
         let row = load_proposal_row(&mut tx, proposal_id).await?;
         let target_publisher = can_publish_target(
             &mut tx,
@@ -315,7 +315,7 @@ impl Registry {
             ProposalCloseKind::Withdraw => "withdrawn",
         };
 
-        let mut tx = self.pool.begin().await.map_err(internal_api_error)?;
+        let mut tx = self.begin_actor_tx(authority.user_id).await?;
         if let Some(outcome) = replay_operation::<SkillProposal>(
             &mut tx,
             authority.user_id,
@@ -414,7 +414,7 @@ impl Registry {
         .map_err(hash_error)?;
         ensure_hash(supplied_hash, expected_hash)?;
 
-        let mut tx = self.pool.begin().await.map_err(internal_api_error)?;
+        let mut tx = self.begin_actor_tx(authority.user_id).await?;
         if let Some(outcome) = replay_operation::<SkillProposal>(
             &mut tx,
             authority.user_id,
@@ -611,20 +611,27 @@ async fn load_proposal_row(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     proposal_id: Uuid,
 ) -> Result<ProposalRow, ApiError> {
-    proposal_query(tx, proposal_id, false).await
+    proposal_query(tx, proposal_id).await
 }
 
 async fn load_proposal_row_for_update(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     proposal_id: Uuid,
 ) -> Result<ProposalRow, ApiError> {
-    proposal_query(tx, proposal_id, true).await
+    let locked = sqlx::query_scalar::<_, bool>("SELECT locked FROM denju_lock_proposal_rows($1)")
+        .bind(proposal_id)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(internal_api_error)?;
+    if locked != Some(true) {
+        return Err(ApiError::new(ApiErrorCode::NotFound, "proposal not found"));
+    }
+    proposal_query(tx, proposal_id).await
 }
 
 async fn proposal_query(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     proposal_id: Uuid,
-    lock: bool,
 ) -> Result<ProposalRow, ApiError> {
     const SELECT_PROPOSAL: &str = "SELECT p.id AS proposal_id,p.generation AS proposal_generation,p.state,p.message, \
          p.proposer_user_id,proposer_ns.id AS proposer_namespace_id,proposer_ns.slug AS proposer, \
@@ -647,39 +654,11 @@ async fn proposal_query(
          LEFT JOIN skill_private_workspaces target_workspace ON target_workspace.resource_id=target.id AND target_workspace.workspace_user_id=target_owner_user.id \
          LEFT JOIN skill_releases release ON release.resource_id=target.id AND release.version=target.latest_release_version \
          WHERE p.id=$1";
-    const SELECT_PROPOSAL_FOR_UPDATE: &str = "SELECT p.id AS proposal_id,p.generation AS proposal_generation,p.state,p.message, \
-         p.proposer_user_id,proposer_ns.id AS proposer_namespace_id,proposer_ns.slug AS proposer, \
-         source.id AS source_resource_id,source_owner.slug AS source_owner,source.slug AS source_name, \
-         source.generation AS source_generation,source_workspace.revision_id AS source_revision_id, \
-         target.id AS target_resource_id,target.owner_namespace_id AS target_owner_namespace_id,target_owner.kind AS target_owner_kind, \
-         target_owner.slug AS target_owner,target.slug AS target_name,target.generation AS target_generation, \
-         target.visibility AS target_visibility,COALESCE(target_workspace.revision_id,release.revision_id) AS target_revision_id, \
-         release.revision_id AS target_release_revision_id, \
-         EXISTS(SELECT 1 FROM private_skill_shares share WHERE share.resource_id=target.id AND share.recipient_user_id=p.proposer_user_id) AS target_shared_with_proposer, \
-         EXISTS(SELECT 1 FROM team_memberships tm WHERE tm.team_namespace_id=target.owner_namespace_id AND tm.user_id=p.proposer_user_id) AS target_team_with_proposer, \
-         fork.sync_base_revision_id,p.closed_revision_id,p.closed_source_generation \
-         FROM skill_proposals p JOIN users proposer_user ON proposer_user.id=p.proposer_user_id \
-         JOIN namespaces proposer_ns ON proposer_ns.id=proposer_user.namespace_id \
-         JOIN resources source ON source.id=p.source_resource_id JOIN namespaces source_owner ON source_owner.id=source.owner_namespace_id \
-         JOIN skill_private_workspaces source_workspace ON source_workspace.resource_id=source.id AND source_workspace.workspace_user_id=p.proposer_user_id \
-         JOIN skill_forks fork ON fork.resource_id=source.id \
-         JOIN resources target ON target.id=p.target_resource_id JOIN namespaces target_owner ON target_owner.id=target.owner_namespace_id \
-         LEFT JOIN users target_owner_user ON target_owner_user.namespace_id=target.owner_namespace_id \
-         LEFT JOIN skill_private_workspaces target_workspace ON target_workspace.resource_id=target.id AND target_workspace.workspace_user_id=target_owner_user.id \
-         LEFT JOIN skill_releases release ON release.resource_id=target.id AND release.version=target.latest_release_version \
-         WHERE p.id=$1 FOR UPDATE OF p,source,target,source_workspace,fork";
-    let row = if lock {
-        sqlx::query_as::<_, ProposalRow>(SELECT_PROPOSAL_FOR_UPDATE)
-            .bind(proposal_id)
-            .fetch_optional(&mut **tx)
-            .await
-    } else {
-        sqlx::query_as::<_, ProposalRow>(SELECT_PROPOSAL)
-            .bind(proposal_id)
-            .fetch_optional(&mut **tx)
-            .await
-    }
-    .map_err(internal_api_error)?;
+    let row = sqlx::query_as::<_, ProposalRow>(SELECT_PROPOSAL)
+        .bind(proposal_id)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(internal_api_error)?;
     row.ok_or_else(|| ApiError::new(ApiErrorCode::NotFound, "proposal not found"))
 }
 
@@ -870,7 +849,7 @@ async fn attach_proposal_revision(
         .execute(&mut **tx)
         .await
         .map_err(internal_api_error)?;
-        sqlx::query("DELETE FROM canonical_blob_gc WHERE blob_id=$1")
+        sqlx::query("SELECT denju_cancel_blob_gc($1)")
             .bind(blob.as_bytes().as_slice())
             .execute(&mut **tx)
             .await

@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, convert::Infallible, sync::Arc, time::Duration}
 
 use axum::{
     Json, Router,
-    extract::{Query, State},
+    extract::{DefaultBodyLimit, Query, State},
     http::{HeaderMap, StatusCode},
     response::sse::{Event, KeepAlive, Sse},
     response::{IntoResponse, Response},
@@ -36,6 +36,7 @@ use denju_wire::{
 use futures_util::stream;
 use serde::Deserialize;
 
+mod admin_routes;
 mod auth;
 mod discovery_routes;
 mod team_routes;
@@ -61,6 +62,7 @@ pub(super) fn router(registry: Arc<Registry>) -> Router {
         )
         .route("/v1/tokens/revoke", post(revoke_automation_token))
         .route("/v1/account/delete", post(delete_account))
+        .merge(admin_routes::router())
         .merge(discovery_routes::router())
         .merge(team_routes::router())
         .route("/v1/skills/show", get(show_public_skill))
@@ -119,6 +121,7 @@ pub(super) fn router(registry: Arc<Registry>) -> Router {
         .route("/v1/internal/packs/drain", post(drain_packs))
         .route("/v1/sync/reconcile", post(sync_reconcile))
         .route("/v1/events", get(events))
+        .layer(DefaultBodyLimit::max(2 * 1024 * 1024))
         .with_state(registry)
 }
 

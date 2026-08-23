@@ -18,19 +18,20 @@ use crate::{
 impl Registry {
     pub async fn usage(&self, bearer: &str) -> Result<UsageResponse, ApiError> {
         let authority = self.user_authority(bearer, "skills:read").await?;
+        let mut tx = self.begin_actor_tx(authority.user_id).await?;
         let storage_used = sqlx::query_scalar::<_, i64>(
             "SELECT COALESCE(sum(cb.size_bytes),0)::bigint FROM namespace_blob_reachability nbr \
              JOIN canonical_blobs cb ON cb.blob_id=nbr.blob_id WHERE nbr.namespace_id=$1",
         )
         .bind(authority.namespace_id)
-        .fetch_one(&self.pool)
+        .fetch_one(&mut *tx)
         .await
         .map_err(internal_api_error)?;
         let active_resources = sqlx::query_scalar::<_, i64>(
             "SELECT count(*) FROM resources WHERE owner_namespace_id=$1 AND deleted_at IS NULL",
         )
         .bind(authority.namespace_id)
-        .fetch_one(&self.pool)
+        .fetch_one(&mut *tx)
         .await
         .map_err(internal_api_error)?;
         let private_revisions = sqlx::query_scalar::<_, i64>(
@@ -39,7 +40,7 @@ impl Registry {
              WHERE sr.resource_id=rrs.resource_id AND sr.revision_id=rrs.revision_id)",
         )
         .bind(authority.namespace_id)
-        .fetch_one(&self.pool)
+        .fetch_one(&mut *tx)
         .await
         .map_err(internal_api_error)?;
         let prunable_revisions = sqlx::query_scalar::<_, i64>(
@@ -56,7 +57,7 @@ impl Registry {
                  AND prm.resolved_revision_id=rrs.revision_id)",
         )
         .bind(authority.namespace_id)
-        .fetch_one(&self.pool)
+        .fetch_one(&mut *tx)
         .await
         .map_err(internal_api_error)?;
         let prunable_bytes = sqlx::query_scalar::<_, i64>(
@@ -81,9 +82,10 @@ impl Registry {
              JOIN canonical_blobs cb ON cb.blob_id=pr.blob_id WHERE nbr.reference_count<=pr.refs",
         )
         .bind(authority.namespace_id)
-        .fetch_one(&self.pool)
+        .fetch_one(&mut *tx)
         .await
         .map_err(internal_api_error)?;
+        tx.commit().await.map_err(internal_api_error)?;
         let used = nonnegative_u64(storage_used, "namespace usage")?;
         let limit = self.limits.namespace_storage_bytes;
         Ok(UsageResponse {
@@ -120,7 +122,7 @@ impl Registry {
         {
             return Ok(outcome);
         }
-        let mut tx = self.pool.begin().await.map_err(internal_api_error)?;
+        let mut tx = self.begin_actor_tx(authority.user_id).await?;
         let locked = lock_active_owned_skill(&mut tx, resource_id.as_uuid()).await?;
         ensure_owner(&locked, authority.namespace_id)?;
         ensure_generation(&locked, request.expected_generation)?;
@@ -304,12 +306,12 @@ impl Registry {
             "SELECT blob_id FROM canonical_blob_gc WHERE eligible_after<=now() ORDER BY eligible_after,blob_id LIMIT $1",
         )
         .bind(i64::from(limit.clamp(1, 256)))
-        .fetch_all(&self.pool)
+        .fetch_all(&self.worker_pool)
         .await
         .map_err(internal_api_error)?;
         let mut deleted = 0;
         for blob in blobs {
-            let mut tx = self.pool.begin().await.map_err(internal_api_error)?;
+            let mut tx = self.begin_worker_tx().await?;
             let object_key = sqlx::query_scalar::<_, String>(
                 "SELECT cb.object_key FROM canonical_blob_gc gc JOIN canonical_blobs cb ON cb.blob_id=gc.blob_id \
                  WHERE gc.blob_id=$1 AND gc.eligible_after<=now() FOR UPDATE OF cb,gc",

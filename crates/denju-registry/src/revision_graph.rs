@@ -70,6 +70,16 @@ pub(crate) async fn revision_parents(
     pool: &sqlx::PgPool,
     revision_id: &str,
 ) -> Result<Vec<String>, ApiError> {
+    let mut tx = pool.begin().await.map_err(internal_api_error)?;
+    let parents = revision_parents_tx(&mut tx, revision_id).await?;
+    tx.commit().await.map_err(internal_api_error)?;
+    Ok(parents)
+}
+
+pub(crate) async fn revision_parents_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    revision_id: &str,
+) -> Result<Vec<String>, ApiError> {
     let revision = revision_id
         .parse::<RevisionId>()
         .map_err(|error| ApiError::new(ApiErrorCode::Internal, error.to_string()))?;
@@ -77,7 +87,7 @@ pub(crate) async fn revision_parents(
         "SELECT parent_revision_id FROM revision_parents WHERE revision_id=$1 ORDER BY ordinal",
     )
     .bind(revision.as_bytes().as_slice())
-    .fetch_all(pool)
+    .fetch_all(&mut **tx)
     .await
     .map_err(internal_api_error)?;
     rows.into_iter()

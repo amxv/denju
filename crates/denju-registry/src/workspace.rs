@@ -125,7 +125,7 @@ impl Registry {
                 .map_err(|error| ApiError::new(ApiErrorCode::InvalidRequest, error.to_string()))?;
         let revision_id = revision.id();
 
-        let mut tx = self.pool.begin().await.map_err(internal_api_error)?;
+        let mut tx = self.begin_actor_tx(authority.user_id).await?;
         if let Some(existing) =
             fetch_revision_operation(&mut tx, authority.user_id, operation_id.as_uuid()).await?
         {
@@ -378,8 +378,9 @@ impl Registry {
             .map_err(|error| ApiError::new(ApiErrorCode::InvalidRequest, error.to_string()))?;
         let supplied_hash = RequestHash::from_str(&request.request_hash)
             .map_err(|error| ApiError::new(ApiErrorCode::InvalidRequestHash, error.to_string()))?;
+        let mut read_tx = self.begin_actor_tx(authority.user_id).await?;
         let operation =
-            fetch_revision_operation_pool(&self.pool, authority.user_id, operation_id.as_uuid())
+            fetch_revision_operation(&mut read_tx, authority.user_id, operation_id.as_uuid())
                 .await?
                 .ok_or_else(|| {
                     ApiError::new(ApiErrorCode::NotFound, "private revision not found")
@@ -388,17 +389,14 @@ impl Registry {
         if revision_operation_state(&operation.state)? != PrivateRevisionOperationState::Prepared {
             return decode_revision_outcome(operation.outcome_json);
         }
-        let mut authority_tx = self.pool.begin().await.map_err(internal_api_error)?;
         let resource_authority =
-            authorize_resource_publish(&mut authority_tx, &authority, operation.resource_id)
-                .await?;
+            authorize_resource_publish(&mut read_tx, &authority, operation.resource_id).await?;
         if operation.namespace_id != resource_authority.namespace_id {
             return Err(ApiError::new(
                 ApiErrorCode::Unauthorized,
                 "private revision namespace is unavailable",
             ));
         }
-        authority_tx.commit().await.map_err(internal_api_error)?;
         let manifest_wire: PublicSkillManifest =
             serde_json::from_value(operation.manifest_json.clone())
                 .map_err(|error| ApiError::new(ApiErrorCode::Internal, error.to_string()))?;
@@ -414,7 +412,7 @@ impl Registry {
         )
         .bind(authority.user_id)
         .bind(operation_id.as_uuid())
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *read_tx)
         .await
         .map_err(internal_api_error)?;
         let mut staging = BTreeMap::new();
@@ -424,6 +422,39 @@ impl Registry {
                 ApiError::new(ApiErrorCode::Internal, "stored staging size is invalid")
             })?;
             staging.insert(blob, (size, row.staging_key));
+        }
+
+        let mut canonical_objects = BTreeMap::<BlobId, (u64, String)>::new();
+        for (blob, expected_size) in &expected_blobs {
+            if staging.contains_key(blob) {
+                continue;
+            }
+            let row = sqlx::query_as::<_, (i64, String)>(
+                "SELECT cb.size_bytes,cb.object_key FROM namespace_blob_reachability nbr \
+                 JOIN canonical_blobs cb ON cb.blob_id=nbr.blob_id \
+                 WHERE nbr.namespace_id=$1 AND nbr.blob_id=$2",
+            )
+            .bind(operation.namespace_id)
+            .bind(blob.as_bytes().as_slice())
+            .fetch_optional(&mut *read_tx)
+            .await
+            .map_err(internal_api_error)?
+            .ok_or_else(|| {
+                ApiError::new(
+                    ApiErrorCode::InvalidRequest,
+                    "required object proof is missing; rerun revision prepare",
+                )
+            })?;
+            let stored_size = u64::try_from(row.0).map_err(|_| {
+                ApiError::new(ApiErrorCode::Internal, "canonical object size is invalid")
+            })?;
+            if stored_size != *expected_size {
+                return Err(ApiError::new(
+                    ApiErrorCode::Internal,
+                    "canonical object size is invalid",
+                ));
+            }
+            canonical_objects.insert(*blob, (stored_size, row.1));
         }
 
         let mut bytes_by_blob = BTreeMap::<BlobId, Vec<u8>>::new();
@@ -440,30 +471,11 @@ impl Registry {
                     .await
                     .map_err(object_store_api_error)?
             } else {
-                let row = sqlx::query_as::<_, (i64, String)>(
-                    "SELECT cb.size_bytes,cb.object_key FROM namespace_blob_reachability nbr \
-                     JOIN canonical_blobs cb ON cb.blob_id=nbr.blob_id \
-                     WHERE nbr.namespace_id=$1 AND nbr.blob_id=$2",
-                )
-                .bind(operation.namespace_id)
-                .bind(blob.as_bytes().as_slice())
-                .fetch_optional(&self.pool)
-                .await
-                .map_err(internal_api_error)?
-                .ok_or_else(|| {
-                    ApiError::new(
-                        ApiErrorCode::InvalidRequest,
-                        "required object proof is missing; rerun revision prepare",
-                    )
+                let (_, key) = canonical_objects.get(blob).ok_or_else(|| {
+                    ApiError::new(ApiErrorCode::Internal, "canonical object proof disappeared")
                 })?;
-                if u64::try_from(row.0).ok() != Some(*expected_size) {
-                    return Err(ApiError::new(
-                        ApiErrorCode::Internal,
-                        "canonical object size is invalid",
-                    ));
-                }
                 self.objects
-                    .get(&row.1)
+                    .get(key)
                     .await
                     .map_err(object_store_api_error)?
             };
@@ -475,7 +487,7 @@ impl Registry {
             "SELECT slug,owner_namespace_id FROM resources WHERE id=$1 AND kind='skill' AND deleted_at IS NULL",
         )
         .bind(operation.resource_id)
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *read_tx)
         .await
         .map_err(internal_api_error)?
         .ok_or_else(|| ApiError::new(ApiErrorCode::NotFound, "private skill not found"))?;
@@ -485,6 +497,13 @@ impl Registry {
                 "private skill is unavailable",
             ));
         }
+        let parents = fetch_revision_operation_parents_tx(
+            &mut read_tx,
+            authority.user_id,
+            operation_id.as_uuid(),
+        )
+        .await?;
+        read_tx.commit().await.map_err(internal_api_error)?;
         let owned_entries = owned_entries_from_manifest(&manifest, &bytes_by_blob)?;
         let validation_name = operation
             .historical_skill_name
@@ -538,14 +557,7 @@ impl Registry {
             &operation.expected_head_revision_id,
             "stored expected workspace head",
         )?;
-        let parents = fetch_revision_operation_parents_pool(
-            &self.pool,
-            authority.user_id,
-            operation_id.as_uuid(),
-        )
-        .await?;
-
-        let mut tx = self.pool.begin().await.map_err(internal_api_error)?;
+        let mut tx = self.begin_actor_tx(authority.user_id).await?;
         let resource_authority =
             authorize_resource_publish(&mut tx, &authority, operation.resource_id).await?;
         if resource_authority.namespace_id != operation.namespace_id {
@@ -891,23 +903,6 @@ async fn fetch_revision_operation(
     .map_err(internal_api_error)
 }
 
-async fn fetch_revision_operation_pool(
-    pool: &sqlx::PgPool,
-    user_id: Uuid,
-    operation_id: Uuid,
-) -> Result<Option<RevisionOperationRow>, ApiError> {
-    sqlx::query_as::<_, RevisionOperationRow>(
-        "SELECT request_hash,namespace_id,resource_id,expected_generation,expected_head_revision_id,revision_id,manifest_json, \
-                revision_author_principal_id,fork_sync_base_revision_id,fork_sync_upstream_revision_id,historical_skill_name,state,outcome_json \
-         FROM private_revision_operations WHERE user_id=$1 AND operation_id=$2",
-    )
-    .bind(user_id)
-    .bind(operation_id)
-    .fetch_optional(pool)
-    .await
-    .map_err(internal_api_error)
-}
-
 async fn fetch_revision_staging(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     user_id: Uuid,
@@ -924,8 +919,8 @@ async fn fetch_revision_staging(
     .map_err(internal_api_error)
 }
 
-async fn fetch_revision_operation_parents_pool(
-    pool: &sqlx::PgPool,
+async fn fetch_revision_operation_parents_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     user_id: Uuid,
     operation_id: Uuid,
 ) -> Result<Vec<[u8; 32]>, ApiError> {
@@ -935,7 +930,7 @@ async fn fetch_revision_operation_parents_pool(
     )
     .bind(user_id)
     .bind(operation_id)
-    .fetch_all(pool)
+    .fetch_all(&mut **tx)
     .await
     .map_err(internal_api_error)?;
     rows.into_iter()

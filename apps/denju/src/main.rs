@@ -16,6 +16,7 @@ mod pack_commands;
 mod pack_sync;
 mod proposals;
 mod public;
+mod quarantine_sync;
 mod release;
 mod result;
 mod setup;
