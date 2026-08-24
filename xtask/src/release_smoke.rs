@@ -176,7 +176,7 @@ fn smoke_npm_installer(
     )
     .map_err(io_error("write npm smoke metadata"))?;
 
-    let pack = safe_command(Command::new("npm"), home)
+    let pack = safe_command(Command::new(npm_program()), home)
         .args(["pack", "--silent", "--pack-destination"])
         .arg(temporary)
         .current_dir(&package)
@@ -201,7 +201,7 @@ fn smoke_npm_installer(
     let npm_registry = NpmRegistryServer::start(&tarball, SMOKE_VERSION)?;
     let npm_registry_url = format!("http://{}", npm_registry.address());
     let prefix = temporary.join("npm-prefix");
-    let status = safe_command(Command::new("npm"), home)
+    let status = safe_command(Command::new(npm_program()), home)
         .args([
             "install",
             "--global",
@@ -279,6 +279,10 @@ fn npm_global_package_path(prefix: &Path) -> PathBuf {
     } else {
         prefix.join("lib/node_modules/denju-cli")
     }
+}
+
+fn npm_program() -> &'static str {
+    if cfg!(windows) { "npm.cmd" } else { "npm" }
 }
 
 fn smoke_standalone_upgrade(
