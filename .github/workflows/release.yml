@@ -166,6 +166,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v4
         with:
+          pattern: denju-*
           path: dist
           merge-multiple: true
       - name: Generate shared release manifest
