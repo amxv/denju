@@ -13,6 +13,21 @@ $KnownAssets = @(
     "denju_windows_arm64.exe"
 )
 
+function Get-DenjuSha256([string]$Path) {
+    $Stream = [System.IO.File]::OpenRead($Path)
+    try {
+        $Sha256 = [System.Security.Cryptography.SHA256]::Create()
+        try {
+            $Hash = $Sha256.ComputeHash($Stream)
+        } finally {
+            $Sha256.Dispose()
+        }
+    } finally {
+        $Stream.Dispose()
+    }
+    return ([System.BitConverter]::ToString($Hash)).Replace("-", "").ToLowerInvariant()
+}
+
 $Architecture = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString().ToLowerInvariant()
 $Arch = switch ($Architecture) {
     "x64" { "amd64" }
@@ -93,7 +108,7 @@ try {
     $Staged = Join-Path $TempDir $Asset
     Invoke-WebRequest -UseBasicParsing -Uri "$ReleaseBase/$Asset" -OutFile $Staged
     if ((Get-Item $Staged).Length -ne $ExpectedSize) { throw "Size mismatch for $Asset" }
-    $ActualSha = (Get-FileHash -Algorithm SHA256 $Staged).Hash.ToLowerInvariant()
+    $ActualSha = Get-DenjuSha256 $Staged
     if ($ActualSha -ne $ExpectedSha) { throw "Checksum mismatch for $Asset" }
 
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
