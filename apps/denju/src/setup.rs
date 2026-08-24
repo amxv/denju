@@ -3,7 +3,7 @@ use std::{
     path::Path,
     process::ExitCode,
     str::FromStr,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use denju_client::RegistryClient;
@@ -48,6 +48,20 @@ pub struct DoctorOutcome {
     pub registry: String,
     pub repaired: Vec<String>,
     pub issues: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct DaemonHealthSnapshot {
+    version: u32,
+    updated_at_unix_ms: i64,
+    iterations: u64,
+    watcher_mode: &'static str,
+    last_scan_full_hash: bool,
+    full_hash_scans_total: u64,
+    capture_errors_total: u64,
+    remote_sync_errors_total: u64,
+    last_capture_duration_ms: u64,
+    last_remote_sync_duration_ms: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -362,6 +376,10 @@ pub async fn daemon() -> Result<ExitCode, RuntimeError> {
     let mut watcher = WorkspaceWatcher::start(&paths).ok();
     let mut force_full_hash = false;
     let mut polling_ticks = 0_u8;
+    let mut iterations = 0_u64;
+    let mut full_hash_scans = 0_u64;
+    let mut capture_errors = 0_u64;
+    let mut remote_sync_errors = 0_u64;
     loop {
         db.quick_check().await.map_err(local_error)?;
         recover_local_lifecycle(&paths, &db, &roots)
@@ -375,10 +393,43 @@ pub async fn daemon() -> Result<ExitCode, RuntimeError> {
         // Filesystem notifications are only latency hints. This bounded scan is the
         // authoritative fallback and also lets valid owned edits become durable local
         // revisions while the registry is temporarily unavailable.
-        let _ = crate::workspace::capture_local_edits(&paths, &db, force_full_hash).await;
+        let scan_full_hash = force_full_hash;
+        full_hash_scans = full_hash_scans.saturating_add(u64::from(scan_full_hash));
+        let capture_started = Instant::now();
+        if crate::workspace::capture_local_edits(&paths, &db, scan_full_hash)
+            .await
+            .is_err()
+        {
+            capture_errors = capture_errors.saturating_add(1);
+        }
+        let capture_duration_ms = duration_millis(capture_started.elapsed());
         // Remote synchronization is opportunistic background work. The daemon stays alive
         // through registry/network outages; the foreground `denju sync` path surfaces them.
-        let _ = crate::proposals::sync_once().await;
+        let remote_sync_started = Instant::now();
+        if crate::proposals::sync_once().await.is_err() {
+            remote_sync_errors = remote_sync_errors.saturating_add(1);
+        }
+        let remote_sync_duration_ms = duration_millis(remote_sync_started.elapsed());
+        iterations = iterations.saturating_add(1);
+        write_daemon_health(
+            &paths,
+            &DaemonHealthSnapshot {
+                version: 1,
+                updated_at_unix_ms: now_unix_ms(),
+                iterations,
+                watcher_mode: if watcher.is_some() {
+                    "native"
+                } else {
+                    "polling"
+                },
+                last_scan_full_hash: scan_full_hash,
+                full_hash_scans_total: full_hash_scans,
+                capture_errors_total: capture_errors,
+                remote_sync_errors_total: remote_sync_errors,
+                last_capture_duration_ms: capture_duration_ms,
+                last_remote_sync_duration_ms: remote_sync_duration_ms,
+            },
+        )?;
         if let Some(native) = watcher.as_mut() {
             tokio::select! {
                 _ = tokio::signal::ctrl_c() => return Ok(ExitCode::SUCCESS),
@@ -737,6 +788,21 @@ fn now_unix_ms() -> i64 {
         .unwrap_or_default()
         .as_millis();
     i64::try_from(millis).unwrap_or(i64::MAX)
+}
+
+fn duration_millis(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+}
+
+fn write_daemon_health(
+    paths: &LocalPaths,
+    snapshot: &DaemonHealthSnapshot,
+) -> Result<(), RuntimeError> {
+    let bytes = serde_json::to_vec(snapshot)
+        .map_err(|error| RuntimeError::new(CliErrorCode::Internal, error.to_string()))?;
+    let temporary = paths.run.join("daemon.metrics.json.tmp");
+    fs::write(&temporary, bytes).map_err(local_error)?;
+    fs::rename(temporary, paths.run.join("daemon.metrics.json")).map_err(local_error)
 }
 
 fn force_file_credentials() -> bool {

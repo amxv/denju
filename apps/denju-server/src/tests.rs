@@ -4,7 +4,7 @@ use denju_registry::RegistryWake;
 use denju_wire::SyncHint;
 use tokio::sync::broadcast;
 
-use crate::{http::next_sync_hint, parse_http_url};
+use crate::{http::realtime_routes::next_sync_hint, parse_http_url};
 
 #[test]
 fn hosted_service_urls_require_tls_but_loopback_development_stays_available() {

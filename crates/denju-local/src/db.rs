@@ -83,6 +83,48 @@ impl LocalDatabase {
         .await
     }
 
+    pub async fn installation_and_identity(
+        &self,
+    ) -> Result<(Option<InstallationRecord>, Option<IdentityRecord>), LocalDbError> {
+        self.call(|connection| {
+            let installation = connection
+                .query_row(
+                    "SELECT registry_origin, installation_id, author_principal_id, \
+                     credential_backend, created_at_unix_ms FROM installation WHERE singleton = 1",
+                    [],
+                    |row| {
+                        Ok(InstallationRecord {
+                            registry_origin: row.get(0)?,
+                            installation_id: row.get(1)?,
+                            author_principal_id: row.get(2)?,
+                            credential_backend: row.get(3)?,
+                            created_at_unix_ms: row.get(4)?,
+                        })
+                    },
+                )
+                .optional()?;
+            let identity = connection
+                .query_row(
+                    "SELECT user_id, namespace_id, username, session_id, session_backend, author_principal_id \
+                     FROM identity_state WHERE singleton=1",
+                    [],
+                    |row| {
+                        Ok(IdentityRecord {
+                            user_id: row.get(0)?,
+                            namespace_id: row.get(1)?,
+                            username: row.get(2)?,
+                            session_id: row.get(3)?,
+                            session_backend: row.get(4)?,
+                            author_principal_id: row.get(5)?,
+                        })
+                    },
+                )
+                .optional()?;
+            Ok((installation, identity))
+        })
+        .await
+    }
+
     pub async fn clear_installation(&self) -> Result<(), LocalDbError> {
         self.call(|connection| {
             connection.execute("DELETE FROM installation WHERE singleton=1", [])?;
@@ -736,67 +778,40 @@ impl LocalDatabase {
 fn open_connection(path: &Path) -> Result<Connection, LocalDbError> {
     let connection = Connection::open(path)?;
     connection.busy_timeout(std::time::Duration::from_secs(5))?;
-    connection.execute_batch(
-        "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON;",
-    )?;
-    let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    if version > 14 {
+    connection.execute_batch("PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON;")?;
+    const CURRENT_SCHEMA_VERSION: i64 = 14;
+    let mut version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version > CURRENT_SCHEMA_VERSION {
         return Err(LocalDbError::UnsupportedSchema(version));
     }
+    // WAL is a persistent database setting. Establish it once for a new Denju database rather
+    // than querying/resetting it on every short-lived CLI invocation. Every historical Denju
+    // local schema was created through this same open path, so an existing supported database is
+    // already WAL-backed; doctor/schema tests remain responsible for detecting corruption.
     if version == 0 {
-        connection.execute_batch(MIGRATION_V1)?;
+        connection.execute_batch("PRAGMA journal_mode=WAL;")?;
     }
-    let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    if version == 1 {
-        connection.execute_batch(MIGRATION_V2)?;
-    }
-    let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    if version == 2 {
-        connection.execute_batch(MIGRATION_V3)?;
-    }
-    let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    if version == 3 {
-        connection.execute_batch(MIGRATION_V4)?;
-    }
-    let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    if version == 4 {
-        connection.execute_batch(MIGRATION_V5)?;
-    }
-    let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    if version == 5 {
-        connection.execute_batch(MIGRATION_V6)?;
-    }
-    let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    if version == 6 {
-        connection.execute_batch(MIGRATION_V7)?;
-    }
-    let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    if version == 7 {
-        connection.execute_batch(MIGRATION_V8)?;
-    }
-    let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    if version == 8 {
-        connection.execute_batch(MIGRATION_V9)?;
-    }
-    let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    if version == 9 {
-        connection.execute_batch(MIGRATION_V10)?;
-    }
-    let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    if version == 10 {
-        connection.execute_batch(MIGRATION_V11)?;
-    }
-    let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    if version == 11 {
-        connection.execute_batch(MIGRATION_V12)?;
-    }
-    let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    if version == 12 {
-        connection.execute_batch(MIGRATION_V13)?;
-    }
-    let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    if version == 13 {
-        connection.execute_batch(MIGRATION_V14)?;
+
+    while version < CURRENT_SCHEMA_VERSION {
+        let migration = match version {
+            0 => MIGRATION_V1,
+            1 => MIGRATION_V2,
+            2 => MIGRATION_V3,
+            3 => MIGRATION_V4,
+            4 => MIGRATION_V5,
+            5 => MIGRATION_V6,
+            6 => MIGRATION_V7,
+            7 => MIGRATION_V8,
+            8 => MIGRATION_V9,
+            9 => MIGRATION_V10,
+            10 => MIGRATION_V11,
+            11 => MIGRATION_V12,
+            12 => MIGRATION_V13,
+            13 => MIGRATION_V14,
+            _ => return Err(LocalDbError::UnsupportedSchema(version)),
+        };
+        connection.execute_batch(migration)?;
+        version = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
     }
     Ok(connection)
 }

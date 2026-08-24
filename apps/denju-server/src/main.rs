@@ -17,6 +17,7 @@ use walkdir::WalkDir;
 mod admin;
 mod http;
 mod maintenance;
+mod observability;
 
 use admin::AdminCommand;
 
@@ -57,6 +58,7 @@ enum Command {
 
 #[tokio::main]
 async fn main() -> ExitCode {
+    init_tracing();
     let cli = Cli::parse();
     let config = match ServerConfig::from_env() {
         Ok(config) => config,
@@ -169,7 +171,7 @@ async fn serve(config: ServerConfig) -> Result<(), String> {
     let listener = tokio::net::TcpListener::bind(config.bind)
         .await
         .map_err(|error| format!("failed to bind {}: {error}", config.bind))?;
-    eprintln!("denju-server listening on {}", config.bind);
+    tracing::info!(bind = %config.bind, "server_listening");
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await
@@ -265,7 +267,38 @@ impl ServerConfig {
 }
 
 async fn shutdown_signal() {
-    let _ = tokio::signal::ctrl_c().await;
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+
+        let mut terminate = signal(SignalKind::terminate()).ok();
+        if let Some(terminate) = terminate.as_mut() {
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {}
+                _ = terminate.recv() => {}
+            }
+        } else {
+            let _ = tokio::signal::ctrl_c().await;
+        }
+        tracing::info!("server_shutdown_signal");
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+        tracing::info!("server_shutdown_signal");
+    }
+}
+
+fn init_tracing() {
+    use tracing_subscriber::EnvFilter;
+
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let _ = tracing_subscriber::fmt()
+        .json()
+        .with_env_filter(filter)
+        .with_current_span(false)
+        .with_span_list(false)
+        .try_init();
 }
 
 fn parse_http_url(name: &str, value: &str) -> Result<Url, String> {

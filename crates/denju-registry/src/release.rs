@@ -91,19 +91,35 @@ impl Registry {
                 let mut listener = match sqlx::postgres::PgListener::connect(&database_url).await {
                     Ok(listener) => listener,
                     Err(_) => {
+                        crate::observability::record_wake_listener_error();
                         tokio::time::sleep(Duration::from_secs(1)).await;
                         continue;
                     }
                 };
                 if listener.listen("denju_wake").await.is_err() {
+                    crate::observability::record_wake_listener_error();
                     tokio::time::sleep(Duration::from_secs(1)).await;
                     continue;
                 }
+                crate::observability::record_wake_listener_connected();
                 loop {
-                    let notification = match listener.recv().await {
-                        Ok(notification) => notification,
-                        Err(_) => break,
+                    // `try_recv` is intentionally used here instead of `recv`: SQLx's
+                    // `PgListener` eagerly reconnects before returning `Ok(None)` after a
+                    // transient connection loss. That gives us an observable reconnect edge
+                    // without changing the disposable-hint semantics.
+                    let notification = match listener.try_recv().await {
+                        Ok(Some(notification)) => notification,
+                        Ok(None) => {
+                            crate::observability::record_wake_listener_error();
+                            crate::observability::record_wake_listener_connected();
+                            continue;
+                        }
+                        Err(_) => {
+                            crate::observability::record_wake_listener_error();
+                            break;
+                        }
                     };
+                    crate::observability::record_wake_notification();
                     let Ok(hint) = serde_json::from_str::<SyncHint>(notification.payload()) else {
                         let _ = wake_tx.send(RegistryWake::ResyncAll);
                         continue;
@@ -777,7 +793,7 @@ impl Registry {
             .iter()
             .filter(|item| !desired_ids.contains(item.resource_id.as_str()))
             .map(|item| item.resource_id.clone())
-            .collect();
+            .collect::<Vec<_>>();
         let skills = catalog
             .skills
             .into_iter()
@@ -786,7 +802,9 @@ impl Registry {
                     local.generation != skill.generation || local.revision_id != skill.revision_id
                 })
             })
-            .collect();
+            .collect::<Vec<_>>();
+        let changed_roots = skills.len() + removed_resource_ids.len() + quarantined.len();
+        crate::observability::record_reconcile(request.known.len(), changed_roots);
         Ok(SyncReconcileResponse {
             skills,
             removed_resource_ids,

@@ -14,6 +14,7 @@ mod ingest_storage;
 mod lifecycle;
 mod lifecycle_hash;
 mod lifecycle_storage;
+mod observability;
 mod outbox;
 mod pack_detail;
 mod pack_drain;
@@ -68,6 +69,8 @@ use thiserror::Error;
 use tokio::sync::broadcast;
 use url::Url;
 use uuid::Uuid;
+
+pub use observability::{RegistryMetricsSnapshot, RegistryOperationalMetrics};
 
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 const EXPECTED_SCHEMA_VERSION: i64 = 17;
@@ -496,7 +499,7 @@ impl ObjectStore {
             .bucket(&self.bucket)
             .send()
             .await
-            .map_err(|error| RegistryError::ObjectStore(error.to_string()))?;
+            .map_err(object_store_error)?;
         Ok(())
     }
 
@@ -508,7 +511,8 @@ impl ObjectStore {
             .body(ByteStream::from(bytes.to_vec()))
             .send()
             .await
-            .map_err(|error| RegistryError::ObjectStore(error.to_string()))?;
+            .map_err(object_store_error)?;
+        observability::record_object_store_write_bytes(bytes.len());
         Ok(())
     }
 
@@ -520,13 +524,15 @@ impl ObjectStore {
             .key(key)
             .send()
             .await
-            .map_err(|error| RegistryError::ObjectStore(error.to_string()))?;
-        output
+            .map_err(object_store_error)?;
+        let bytes = output
             .body
             .collect()
             .await
             .map(|bytes| bytes.into_bytes().to_vec())
-            .map_err(|error| RegistryError::ObjectStore(error.to_string()))
+            .map_err(object_store_error)?;
+        observability::record_object_store_read_bytes(bytes.len());
+        Ok(bytes)
     }
 
     async fn delete(&self, key: &str) -> Result<(), RegistryError> {
@@ -536,7 +542,7 @@ impl ObjectStore {
             .key(key)
             .send()
             .await
-            .map_err(|error| RegistryError::ObjectStore(error.to_string()))?;
+            .map_err(object_store_error)?;
         Ok(())
     }
 
@@ -553,7 +559,7 @@ impl ObjectStore {
             .content_length(size)
             .presigned(config)
             .await
-            .map_err(|error| RegistryError::ObjectStore(error.to_string()))?;
+            .map_err(object_store_error)?;
         Ok(request.uri().to_string())
     }
 
@@ -567,9 +573,14 @@ impl ObjectStore {
             .key(key)
             .presigned(config)
             .await
-            .map_err(|error| RegistryError::ObjectStore(error.to_string()))?;
+            .map_err(object_store_error)?;
         Ok(request.uri().to_string())
     }
+}
+
+fn object_store_error(error: impl std::fmt::Display) -> RegistryError {
+    observability::record_object_store_error();
+    RegistryError::ObjectStore(error.to_string())
 }
 
 // Use tuples for the two owner/name columns to keep SQL identifiers simple and avoid
@@ -586,6 +597,7 @@ fn decode_hash(value: &str, field: &str) -> Result<[u8; 32], ApiError> {
 }
 
 fn internal_api_error(error: sqlx::Error) -> ApiError {
+    observability::record_database_error();
     ApiError::new(
         ApiErrorCode::Internal,
         format!("registry database error: {error}"),

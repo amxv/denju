@@ -22,6 +22,7 @@ struct SkillReleaseWakePayload<'a> {
 
 impl Registry {
     pub async fn drain_outbox(&self, limit: u32) -> Result<usize, ApiError> {
+        crate::observability::record_outbox_drain();
         let limit = i64::from(limit.clamp(1, 256));
         let mut tx = self.begin_worker_tx().await?;
         let rows = sqlx::query(
@@ -69,6 +70,7 @@ impl Registry {
                 .map_err(internal_api_error)?;
         }
         tx.commit().await.map_err(internal_api_error)?;
+        crate::observability::record_outbox_dispatched(count);
         Ok(count)
     }
 }

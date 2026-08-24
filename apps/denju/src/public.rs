@@ -55,21 +55,6 @@ pub struct ProjectionOutcome {
     pub harness_name: String,
 }
 
-pub(crate) async fn catalog_context() -> Result<InstalledContext, RuntimeError> {
-    let context = installed_context(false).await?;
-    let has_session = context
-        .db
-        .identity()
-        .await
-        .map_err(local_error)?
-        .is_some_and(|identity| identity.session_backend.is_some());
-    if has_session {
-        installed_context(true).await
-    } else {
-        Ok(context)
-    }
-}
-
 pub async fn subscribe(
     locator: &str,
     release_version: Option<u64>,
@@ -947,5 +932,6 @@ pub(crate) async fn mutate_subscription(
 }
 
 pub(crate) use crate::context::{
-    InstalledContext, client_error, installed_context, local_error, now_unix_ms,
+    CatalogContext, InstalledContext, catalog_context, client_error, installed_context,
+    local_error, now_unix_ms,
 };

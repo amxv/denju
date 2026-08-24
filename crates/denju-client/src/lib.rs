@@ -34,7 +34,7 @@ use denju_wire::{
 use futures_util::StreamExt;
 use reqwest::{Client, RequestBuilder, StatusCode};
 use thiserror::Error;
-use url::Url;
+use url::{Host, Url};
 
 mod discovery;
 
@@ -50,8 +50,15 @@ impl RegistryClient {
         if !matches!(origin.scheme(), "http" | "https") || origin.cannot_be_a_base() {
             return Err(ClientError::InvalidRegistryOrigin(origin.to_string()));
         }
+        let mut builder = Client::builder();
+        // Loopback registries are the supported development boundary and must not escape through
+        // ambient HTTP(S) proxy configuration. Skipping proxy discovery also keeps local CLI
+        // operations representative of the registry itself rather than host proxy setup.
+        if origin_is_loopback(&origin) {
+            builder = builder.no_proxy();
+        }
         Ok(Self {
-            http: Client::builder().build()?,
+            http: builder.build()?,
             origin,
             bearer: None,
         })
@@ -801,6 +808,35 @@ impl RegistryClient {
         self.origin
             .join(path)
             .map_err(|error| ClientError::InvalidRegistryOrigin(error.to_string()))
+    }
+}
+
+fn origin_is_loopback(origin: &Url) -> bool {
+    match origin.host() {
+        Some(Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
+        Some(Host::Ipv4(address)) => address.is_loopback(),
+        Some(Host::Ipv6(address)) => address.is_loopback(),
+        None => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::origin_is_loopback;
+    use url::Url;
+
+    #[test]
+    fn loopback_origin_detection_is_explicit() {
+        for origin in [
+            "http://localhost:7788",
+            "http://127.0.0.1:7788",
+            "http://[::1]:7788",
+        ] {
+            assert!(origin_is_loopback(&Url::parse(origin).unwrap()));
+        }
+        assert!(!origin_is_loopback(
+            &Url::parse("https://registry.example.com").unwrap()
+        ));
     }
 }
 

@@ -41,29 +41,36 @@ pub async fn search(
 ) -> Result<CatalogSearchResponse, RuntimeError> {
     let context = catalog_context().await?;
     let limit = limit.clamp(1, MAX_CLI_SEARCH_LIMIT);
-    let remote = context
-        .client
-        .search_catalog(&CatalogSearchQuery {
-            q: query.to_owned(),
-            limit: Some(limit),
-            cursor: cursor.map(str::to_owned),
-            sort,
-            following,
-            topic: topic.map(str::to_owned),
-        })
-        .await
-        .map_err(client_error)?;
+    let request = CatalogSearchQuery {
+        q: query.to_owned(),
+        limit: Some(limit),
+        cursor: cursor.map(str::to_owned),
+        sort,
+        following,
+        topic: topic.map(str::to_owned),
+    };
 
     if following || topic.is_some() || cursor.is_some() {
-        return Ok(remote);
+        return context
+            .client
+            .search_catalog(&request)
+            .await
+            .map_err(client_error);
     }
 
-    refresh_local_metadata(&context).await?;
-    let local = context
-        .db
-        .local_discovery_records()
-        .await
-        .map_err(local_error)?;
+    let remote = context.client.search_catalog(&request);
+    let local = async {
+        if context.owned_skills.is_empty() {
+            return Ok(context.local_discovery.clone());
+        }
+        refresh_local_metadata(&context).await?;
+        context
+            .db
+            .local_discovery_records()
+            .await
+            .map_err(local_error)
+    };
+    let (remote, local) = tokio::try_join!(async { remote.await.map_err(client_error) }, local)?;
     Ok(merge_local_results(remote, local, query, sort, limit))
 }
 
@@ -371,9 +378,9 @@ pub async fn update_profile(
 }
 
 async fn refresh_local_metadata(
-    context: &crate::public::InstalledContext,
+    context: &crate::public::CatalogContext,
 ) -> Result<(), RuntimeError> {
-    for record in context.db.owned_skills().await.map_err(local_error)? {
+    for record in &context.owned_skills {
         let skill_md = context
             .paths
             .skills
@@ -389,7 +396,7 @@ async fn refresh_local_metadata(
         context
             .db
             .upsert_skill_discovery_metadata(
-                record.resource_id,
+                record.resource_id.clone(),
                 document.frontmatter().description().to_owned(),
                 document.frontmatter().license().map(str::to_owned),
                 document.frontmatter().compatibility().map(str::to_owned),
@@ -464,7 +471,7 @@ fn merge_local_results(
 }
 
 async fn local_skill_detail(
-    context: &crate::public::InstalledContext,
+    context: &crate::public::CatalogContext,
     locator: &str,
 ) -> Result<Option<PublicSkillDetail>, RuntimeError> {
     let Some(record) = context

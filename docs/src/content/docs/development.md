@@ -19,6 +19,9 @@ Rust is the primary project. The root Bun workspace exists only for the document
 
 `cargo xtask check` is the comprehensive handoff gate. `just` is a discoverable alias layer; it does not own build, migration, or environment logic.
 
+For the reproducible performance/stateless lifecycle harness, checked repository contracts, and
+extended property corpus, see [Performance and resilience](/docs/performance-and-resilience).
+
 ## Run the local registry
 
 `cargo xtask dev` owns the local dependency and registry lifecycle. It starts the pinned PostgreSQL 18.6 and Garage 2.3.0 services, applies registry migrations, and runs the registry at `http://127.0.0.1:7788`. Re-running it while the registry is already live is safe.

@@ -1,14 +1,14 @@
-use std::{collections::BTreeMap, convert::Infallible, sync::Arc, time::Duration};
+use std::sync::Arc;
 
 use axum::{
-    Json, Router,
+    Extension, Json, Router,
     extract::{DefaultBodyLimit, Query, State},
     http::{HeaderMap, StatusCode},
-    response::sse::{Event, KeepAlive, Sse},
+    middleware,
     response::{IntoResponse, Response},
     routing::{get, post},
 };
-use denju_registry::{Registry, RegistryWake};
+use denju_registry::Registry;
 use denju_wire::{
     AccountDeleteRequest, AccountDeleteResponse, ApiError, ApiErrorCode,
     AutomationTokenCreateRequest, AutomationTokenCreateResponse, AutomationTokenList,
@@ -30,23 +30,26 @@ use denju_wire::{
     ShareMutationKind, ShareSkillRequest, ShareSkillResponse, SkillHistoryResponse, SkillProposal,
     SkillProposalDetail, SkillProposalList, SkillRevisionDetail, SubscriptionCatalog,
     SubscriptionMutationKind, SubscriptionMutationRequest, SubscriptionMutationResponse,
-    SubscriptionTarget, SyncHint, SyncReconcileRequest, SyncReconcileResponse,
-    UnpublishSkillResponse, UsageResponse,
+    SubscriptionTarget, SyncReconcileRequest, SyncReconcileResponse, UnpublishSkillResponse,
+    UsageResponse,
 };
-use futures_util::stream;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 mod admin_routes;
 mod auth;
 mod discovery_routes;
+pub(crate) mod realtime_routes;
 mod team_routes;
 
+use crate::observability::HttpMetrics;
 use auth::{bearer_token, optional_bearer_token, recovery_bearer_token};
 
 pub(super) fn router(registry: Arc<Registry>) -> Router {
+    let metrics = Arc::new(HttpMetrics::new());
     Router::new()
         .route("/health/live", get(health_live))
         .route("/health/ready", get(health_ready))
+        .route("/health/metrics", get(crate::observability::health_metrics))
         .route("/v1/capabilities", get(capabilities))
         .route("/v1/installations", post(create_installation))
         .route("/v1/identity/claim", post(claim_identity))
@@ -118,10 +121,16 @@ pub(super) fn router(registry: Arc<Registry>) -> Router {
             get(pack_subscriptions).post(subscribe_pack),
         )
         .route("/v1/pack-subscriptions/remove", post(unsubscribe_pack))
+        .route("/v1/internal/outbox/drain", post(drain_outbox))
         .route("/v1/internal/packs/drain", post(drain_packs))
         .route("/v1/sync/reconcile", post(sync_reconcile))
-        .route("/v1/events", get(events))
+        .route("/v1/events", get(realtime_routes::events))
         .layer(DefaultBodyLimit::max(2 * 1024 * 1024))
+        .layer(middleware::from_fn_with_state(
+            metrics.clone(),
+            crate::observability::observe_request,
+        ))
+        .layer(Extension(metrics))
         .with_state(registry)
 }
 
@@ -796,6 +805,29 @@ async fn drain_packs(
         .map_err(ApiResponseError)
 }
 
+#[derive(Debug, Deserialize)]
+struct OutboxDrainRequest {
+    limit: u32,
+}
+
+#[derive(Debug, Serialize)]
+struct OutboxDrainResponse {
+    dispatched: usize,
+}
+
+async fn drain_outbox(
+    State(registry): State<Arc<Registry>>,
+    headers: HeaderMap,
+    Json(request): Json<OutboxDrainRequest>,
+) -> Result<Json<OutboxDrainResponse>, ApiResponseError> {
+    recovery_bearer_token(&headers)?;
+    registry
+        .drain_outbox(request.limit)
+        .await
+        .map(|dispatched| Json(OutboxDrainResponse { dispatched }))
+        .map_err(ApiResponseError)
+}
+
 async fn sync_reconcile(
     State(registry): State<Arc<Registry>>,
     headers: HeaderMap,
@@ -809,107 +841,6 @@ async fn sync_reconcile(
         .map_err(ApiResponseError)
 }
 
-async fn events(
-    State(registry): State<Arc<Registry>>,
-    headers: HeaderMap,
-) -> Result<Sse<impl futures_util::Stream<Item = Result<Event, Infallible>>>, ApiResponseError> {
-    let bearer = bearer_token(&headers)?;
-    registry.ensure_wake_listener();
-    let watched = registry
-        .watched_resource_ids(bearer)
-        .await
-        .map_err(ApiResponseError)?;
-    let receiver = registry.subscribe_wakes();
-    let _ = registry.drain_outbox(256).await;
-    let event_stream = stream::unfold((receiver, watched), |(mut receiver, watched)| async move {
-        loop {
-            match next_sync_hint(&mut receiver, &watched).await {
-                Some(hint) => {
-                    let event = Event::default()
-                        .event("sync")
-                        .json_data(hint)
-                        .unwrap_or_else(|_| {
-                            Event::default()
-                                .event("sync")
-                                .data("{\"kind\":\"resync_all\"}")
-                        });
-                    return Some((Ok(event), (receiver, watched)));
-                }
-                None if receiver.is_closed() => return None,
-                None => continue,
-            }
-        }
-    });
-    Ok(Sse::new(event_stream).keep_alive(
-        KeepAlive::new()
-            .interval(Duration::from_secs(15))
-            .text("keepalive"),
-    ))
-}
-
-pub(crate) async fn next_sync_hint(
-    receiver: &mut tokio::sync::broadcast::Receiver<RegistryWake>,
-    watched: &std::collections::BTreeSet<uuid::Uuid>,
-) -> Option<SyncHint> {
-    const MAX_DIRTY: usize = 64;
-    let first = match receiver.recv().await {
-        Ok(wake) => wake,
-        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-            return Some(SyncHint::ResyncAll);
-        }
-        Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
-    };
-    if matches!(first, RegistryWake::ResyncAll) {
-        return Some(SyncHint::ResyncAll);
-    }
-    let mut dirty = BTreeMap::<uuid::Uuid, u64>::new();
-    if let RegistryWake::Resource {
-        resource_id,
-        generation,
-    } = first
-        && watched.contains(&resource_id)
-    {
-        dirty.insert(resource_id, generation);
-    }
-    loop {
-        match receiver.try_recv() {
-            Ok(RegistryWake::ResyncAll) => return Some(SyncHint::ResyncAll),
-            Ok(RegistryWake::Resource {
-                resource_id,
-                generation,
-            }) => {
-                if watched.contains(&resource_id) {
-                    dirty
-                        .entry(resource_id)
-                        .and_modify(|current| *current = (*current).max(generation))
-                        .or_insert(generation);
-                    if dirty.len() > MAX_DIRTY {
-                        return Some(SyncHint::ResyncAll);
-                    }
-                }
-            }
-            Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {
-                return Some(SyncHint::ResyncAll);
-            }
-            Err(tokio::sync::broadcast::error::TryRecvError::Empty) => break,
-            Err(tokio::sync::broadcast::error::TryRecvError::Closed) => break,
-        }
-    }
-    if dirty.is_empty() {
-        None
-    } else {
-        Some(SyncHint::Dirty {
-            resources: dirty
-                .into_iter()
-                .map(|(resource_id, generation)| denju_wire::DirtyResource {
-                    resource_id: resource_id.to_string(),
-                    generation,
-                })
-                .collect(),
-        })
-    }
-}
-
 async fn health_live() -> StatusCode {
     StatusCode::OK
 }
@@ -917,11 +848,17 @@ async fn health_live() -> StatusCode {
 async fn health_ready(State(registry): State<Arc<Registry>>) -> Response {
     match registry.readiness().await {
         Ok(()) => StatusCode::OK.into_response(),
-        Err(error) => (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(ApiError::new(ApiErrorCode::Unavailable, error.to_string())),
-        )
-            .into_response(),
+        Err(_) => {
+            tracing::warn!(target: "denju_server::health", "registry_readiness_failed");
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(ApiError::new(
+                    ApiErrorCode::Unavailable,
+                    "registry dependencies are unavailable",
+                )),
+            )
+                .into_response()
+        }
     }
 }
 

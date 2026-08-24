@@ -7,9 +7,12 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod load;
+mod repository_checks;
+
 fn main() -> ExitCode {
     let Some(command) = std::env::args().nth(1) else {
-        eprintln!("usage: cargo xtask <check|rust|docs|dev>");
+        eprintln!("usage: cargo xtask <check|rust|docs|contracts|fuzz|load|dev>");
         return ExitCode::FAILURE;
     };
 
@@ -17,10 +20,17 @@ fn main() -> ExitCode {
         "check" => check_all(),
         "rust" => check_rust(),
         "docs" => run("bun", &["run", "docs:check"]),
+        "contracts" => match std::env::args().nth(2).as_deref() {
+            None => repository_checks::check(&repo_root()),
+            Some("--update") => repository_checks::update_fixture_checksums(&repo_root()),
+            Some(other) => Err(format!("unknown contracts option: {other}")),
+        },
+        "fuzz" => fuzz_properties(),
+        "load" => load::run(&repo_root()),
         "dev" => dev(),
         other => {
             eprintln!("unknown xtask command: {other}");
-            eprintln!("usage: cargo xtask <check|rust|docs|dev>");
+            eprintln!("usage: cargo xtask <check|rust|docs|contracts|fuzz|load|dev>");
             return ExitCode::FAILURE;
         }
     };
@@ -35,6 +45,7 @@ fn main() -> ExitCode {
 }
 
 fn check_all() -> Result<(), String> {
+    repository_checks::check(&repo_root())?;
     check_rust()?;
     run("bun", &["run", "check"])
 }
@@ -53,6 +64,31 @@ fn check_rust() -> Result<(), String> {
         ],
     )?;
     run("cargo", &["test", "--workspace"])
+}
+
+fn fuzz_properties() -> Result<(), String> {
+    let cases = std::env::var("DENJU_PROPTEST_CASES").unwrap_or_else(|_| "4096".to_owned());
+    eprintln!("property/fuzz cases per property: {cases}");
+    run_with_env(
+        "cargo",
+        &[
+            "test",
+            "--release",
+            "-p",
+            "denju-core",
+            "--test",
+            "properties",
+            "-p",
+            "denju-wire",
+            "--test",
+            "properties",
+            "-p",
+            "denju-sync",
+            "--test",
+            "properties",
+        ],
+        &[("DENJU_PROPTEST_CASES", &cases)],
+    )
 }
 
 fn dev() -> Result<(), String> {
@@ -217,6 +253,23 @@ fn run(program: &str, args: &[&str]) -> Result<(), String> {
     let status = Command::new(program)
         .args(args)
         .current_dir(repo_root())
+        .status()
+        .map_err(|error| format!("failed to run {program}: {error}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("{program} exited with {status}"))
+    }
+}
+
+fn run_with_env(program: &str, args: &[&str], env: &[(&str, &str)]) -> Result<(), String> {
+    eprintln!("+ {program} {}", args.join(" "));
+    let mut command = Command::new(program);
+    command.args(args).current_dir(repo_root());
+    for (key, value) in env {
+        command.env(key, value);
+    }
+    let status = command
         .status()
         .map_err(|error| format!("failed to run {program}: {error}"))?;
     if status.success() {

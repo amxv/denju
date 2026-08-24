@@ -29,7 +29,7 @@ pub use db::{
     PackSkillSourceRecord, PackSourceConflictRecord, PackSubscriptionRecord, ServiceRecord,
     SubscriptionRecord,
 };
-pub use discovery_db::{AnonymousFollowRecord, LocalDiscoveryRecord};
+pub use discovery_db::{AnonymousFollowRecord, LocalCatalogState, LocalDiscoveryRecord};
 pub use harness::{
     HarnessEnvironment, HarnessError, ResolvedHarnessRoots, detect_unmanaged_skills,
     prepare_harness_roots, remove_old_codex_projection, resolve_harness_roots,

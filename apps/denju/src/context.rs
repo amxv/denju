@@ -3,8 +3,8 @@ use std::str::FromStr;
 use denju_client::{ClientError, RegistryClient};
 use denju_local::{
     CredentialBackend, CredentialManager, IdentityRecord, InstallCredential, InstallationRecord,
-    LocalDatabase, LocalPaths, ResolvedHarnessRoots, SessionCredential, prepare_harness_roots,
-    resolve_harness_roots,
+    LocalDatabase, LocalDiscoveryRecord, LocalPaths, OwnedSkillRecord, ResolvedHarnessRoots,
+    SessionCredential, prepare_harness_roots, resolve_harness_roots,
 };
 use denju_wire::{ApiErrorCode, CliErrorCode, RegistryLimits};
 use url::Url;
@@ -17,6 +17,51 @@ pub(crate) struct InstalledContext {
     pub(crate) roots: ResolvedHarnessRoots,
     pub(crate) client: RegistryClient,
     pub(crate) limits: RegistryLimits,
+}
+
+pub(crate) struct CatalogContext {
+    pub(crate) paths: LocalPaths,
+    pub(crate) db: LocalDatabase,
+    pub(crate) client: RegistryClient,
+    pub(crate) owned_skills: Vec<OwnedSkillRecord>,
+    pub(crate) local_discovery: Vec<LocalDiscoveryRecord>,
+}
+
+pub(crate) async fn catalog_context() -> Result<CatalogContext, RuntimeError> {
+    let paths = LocalPaths::discover().map_err(local_error)?;
+    if !paths.state_db.is_file() {
+        return Err(
+            RuntimeError::new(CliErrorCode::SetupRequired, "Denju is not set up")
+                .recovery("denju setup"),
+        );
+    }
+    let db = LocalDatabase::open(&paths.state_db)
+        .await
+        .map_err(local_error)?;
+    let local = db.catalog_state().await.map_err(local_error)?;
+    let installation = local.installation.ok_or_else(|| {
+        RuntimeError::new(CliErrorCode::SetupRequired, "Denju is not set up")
+            .recovery("denju setup")
+    })?;
+    let origin = Url::parse(&installation.registry_origin)
+        .map_err(|error| RuntimeError::new(CliErrorCode::LocalState, error.to_string()))?;
+    let has_session = local
+        .identity
+        .as_ref()
+        .is_some_and(|identity| identity.session_backend.is_some());
+    let client = if has_session {
+        let bearer = load_active_bearer(&paths, &db, &installation).await?;
+        RegistryClient::authenticated(origin, bearer).map_err(client_error)?
+    } else {
+        RegistryClient::new(origin).map_err(client_error)?
+    };
+    Ok(CatalogContext {
+        paths,
+        db,
+        client,
+        owned_skills: local.owned_skills,
+        local_discovery: local.discovery_records,
+    })
 }
 
 pub(crate) async fn installed_context(

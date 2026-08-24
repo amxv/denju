@@ -211,11 +211,8 @@ impl Registry {
             tx.commit().await.map_err(internal_api_error)?;
             rows
         } else {
-            sqlx::query_as::<_, CatalogRow>(sqlx::AssertSqlSafe(catalog_query(input.sort)))
+            sqlx::query_as::<_, CatalogRow>(sqlx::AssertSqlSafe(catalog_public_query(input.sort)))
                 .bind(query)
-                .bind(Option::<Uuid>::None)
-                .bind(Option::<Uuid>::None)
-                .bind(input.following_only)
                 .bind(topic.as_deref())
                 .bind(input.public_skills_only)
                 .bind(input.cursor.is_some())
@@ -369,26 +366,7 @@ struct CatalogSearchInput<'a> {
 }
 
 fn catalog_query(sort: SearchSort) -> String {
-    let cursor_order = match sort {
-        SearchSort::Relevance => {
-            "c.relevance_rank < $9 OR (c.relevance_rank=$9 AND (c.star_count < $10 OR \
-             (c.star_count=$10 AND (c.owner_slug>$11 OR (c.owner_slug=$11 AND (c.resource_slug>$12 OR \
-             (c.resource_slug=$12 AND c.resource_id>$13)))))))"
-        }
-        SearchSort::Stars => {
-            "c.star_count < $10 OR (c.star_count=$10 AND (c.relevance_rank < $9 OR \
-             (c.relevance_rank=$9 AND (c.owner_slug>$11 OR (c.owner_slug=$11 AND (c.resource_slug>$12 OR \
-             (c.resource_slug=$12 AND c.resource_id>$13)))))))"
-        }
-    };
-    let order = match sort {
-        SearchSort::Relevance => {
-            "c.deprecated,c.relevance_rank DESC,c.star_count DESC,c.owner_slug,c.resource_slug,c.resource_id"
-        }
-        SearchSort::Stars => {
-            "c.deprecated,c.star_count DESC,c.relevance_rank DESC,c.owner_slug,c.resource_slug,c.resource_id"
-        }
-    };
+    let (cursor_order, order) = catalog_sort_fragments(sort, 9, 10, 11, 12, 13);
     let follow_boost = match sort {
         SearchSort::Relevance => {
             "CASE WHEN followed.followed_user_id IS NOT NULL THEN 250 ELSE 0 END"
@@ -447,6 +425,69 @@ fn catalog_query(sort: SearchSort) -> String {
               (c.deprecated::int=$8 AND ({cursor_order}))) \
          ORDER BY {order} LIMIT $14"
     )
+}
+
+fn catalog_public_query(sort: SearchSort) -> String {
+    let (cursor_order, order) = catalog_sort_fragments(sort, 6, 7, 8, 9, 10);
+    format!(
+        "WITH candidate AS (\
+           SELECT sd.resource_id,sd.resource_kind,sd.owner_slug,sd.resource_slug,sd.description,sd.license,sd.compatibility,sd.topics, \
+                  'public'::text AS source,'public'::text AS visibility,r.generation, \
+                  CASE WHEN r.kind='skill' THEN r.latest_release_version ELSE pack.current_version END AS version, \
+                  sd.star_count,false AS viewer_starred,(r.deprecated_at IS NOT NULL) AS deprecated, \
+                  sd.fork_upstream_locator,sd.pack_membership_text, \
+                  (CASE WHEN $1='' THEN 0 ELSE \
+                      CASE WHEN lower('@' || sd.owner_slug || '/' || sd.resource_slug)=lower($1) THEN 12000 \
+                           WHEN lower(sd.resource_slug)=lower($1) THEN 10000 \
+                           WHEN lower(sd.resource_slug) LIKE lower($1) || '%' THEN 7000 ELSE 0 END + \
+                      (ts_rank_cd(sd.search_vector,websearch_to_tsquery('simple',$1))*10000)::bigint + \
+                      (similarity(sd.search_text,$1)*1000)::bigint END)::bigint AS relevance_rank \
+             FROM resource_search_documents sd JOIN resources r ON r.id=sd.resource_id \
+             LEFT JOIN pack_state pack ON pack.resource_id=r.id \
+            WHERE r.deleted_at IS NULL AND r.visibility='public' \
+              AND ((r.kind='skill' AND r.latest_release_version IS NOT NULL) OR (r.kind='pack' AND pack.resource_id IS NOT NULL)) \
+              AND NOT EXISTS(SELECT 1 FROM resource_quarantines rq WHERE rq.resource_id=r.id AND rq.lifted_at IS NULL AND ( \
+                   rq.release_version IS NULL OR (r.kind='skill' AND rq.release_version=r.latest_release_version))) \
+              AND (NOT $3 OR r.kind='skill') \
+              AND ($2::text IS NULL OR $2=ANY(sd.topics)) \
+              AND ($1='' OR sd.search_vector @@ websearch_to_tsquery('simple',$1) OR sd.search_text % $1 OR position(lower($1) in lower(sd.search_text))>0) \
+         ) SELECT * FROM candidate c WHERE (NOT $4 OR c.deprecated::int>$5 OR \
+              (c.deprecated::int=$5 AND ({cursor_order}))) \
+         ORDER BY {order} LIMIT $11"
+    )
+}
+
+fn catalog_sort_fragments(
+    sort: SearchSort,
+    relevance_parameter: u8,
+    stars_parameter: u8,
+    owner_parameter: u8,
+    name_parameter: u8,
+    resource_parameter: u8,
+) -> (String, &'static str) {
+    let cursor_order = match sort {
+        SearchSort::Relevance => format!(
+            "c.relevance_rank < ${relevance_parameter} OR (c.relevance_rank=${relevance_parameter} AND \
+             (c.star_count < ${stars_parameter} OR (c.star_count=${stars_parameter} AND \
+             (c.owner_slug>${owner_parameter} OR (c.owner_slug=${owner_parameter} AND \
+             (c.resource_slug>${name_parameter} OR (c.resource_slug=${name_parameter} AND c.resource_id>${resource_parameter})))))))"
+        ),
+        SearchSort::Stars => format!(
+            "c.star_count < ${stars_parameter} OR (c.star_count=${stars_parameter} AND \
+             (c.relevance_rank < ${relevance_parameter} OR (c.relevance_rank=${relevance_parameter} AND \
+             (c.owner_slug>${owner_parameter} OR (c.owner_slug=${owner_parameter} AND \
+             (c.resource_slug>${name_parameter} OR (c.resource_slug=${name_parameter} AND c.resource_id>${resource_parameter})))))))"
+        ),
+    };
+    let order = match sort {
+        SearchSort::Relevance => {
+            "c.deprecated,c.relevance_rank DESC,c.star_count DESC,c.owner_slug,c.resource_slug,c.resource_id"
+        }
+        SearchSort::Stars => {
+            "c.deprecated,c.star_count DESC,c.relevance_rank DESC,c.owner_slug,c.resource_slug,c.resource_id"
+        }
+    };
+    (cursor_order, order)
 }
 
 #[derive(sqlx::FromRow)]

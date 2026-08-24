@@ -1,0 +1,92 @@
+{
+  "environment": {
+    "os": "macos",
+    "arch": "aarch64",
+    "postgres": "18.6 (Debian 18.6-1.pgdg13+2)",
+    "garage": "garage v2.3.0 [features: bundled-libs, consul-discovery, fjall, journald, k2v, kubernetes-discovery, lmdb, metrics, sqlite, syslog, telemetry-otlp]",
+    "profile": "release"
+  },
+  "catalog_size": 300,
+  "cold_start_samples_ms": [
+    664,
+    619,
+    695
+  ],
+  "cold_start_ms": 695,
+  "registry_search_p95_ms": 18.698958,
+  "registry_show_p95_ms": 7.247917,
+  "single_instance_concurrent_search_p95_ms": 41.244875,
+  "horizontal_search_p95_ms": 18.105333,
+  "cli_status_latency": {
+    "p50_ms": 21.52575,
+    "p95_ms": 33.109041999999995
+  },
+  "cli_search_latency": {
+    "p50_ms": 41.003499999999995,
+    "p95_ms": 47.539832999999994
+  },
+  "daemon_runtime": {
+    "watcher_mode": "native",
+    "iterations": 2,
+    "full_hash_scans_total": 1,
+    "capture_errors_total": 0,
+    "remote_sync_errors_total": 0,
+    "resident_memory_kib": 14880
+  },
+  "reconcile": [
+    {
+      "watched_resources": 25,
+      "p95_ms": 151.228333
+    },
+    {
+      "watched_resources": 100,
+      "p95_ms": 612.165333
+    },
+    {
+      "watched_resources": 200,
+      "p95_ms": 1173.310334
+    }
+  ],
+  "missed_event_reconcile": {
+    "watched_resources": 100,
+    "synthetic_missed_events": 4000,
+    "before_p95_ms": 294.947792,
+    "after_p95_ms": 246.1865,
+    "before_payload_bytes": 39,
+    "after_payload_bytes": 39
+  },
+  "pack_fanout": {
+    "dependent_packs": 64,
+    "direct_subscribers": 1000,
+    "subscription_rows_before_publish": 1001,
+    "subscription_rows_after_publish": 1001,
+    "publish_ms": 408,
+    "online_update_ms": 742,
+    "request_adjacent_pack_revisions": 16,
+    "recovery_drain_ms": 592,
+    "total_pack_revisions": 64,
+    "semantic_release_events": 1
+  },
+  "object_store_concurrency": {
+    "concurrent_probes": 8,
+    "elapsed_ms": 3689,
+    "isolated_restart_recovery_ms": 414,
+    "failure_observed_while_stopped": true
+  },
+  "team_scale": {
+    "members": 500,
+    "team_detail_ms": 31,
+    "returned_members": 501,
+    "membership_plan": "Limit  (cost=12.81..12.82 rows=4 width=16) (actual time=0.179..0.214 rows=200.00 loops=1)\n  Buffers: shared hit=12\n  ->  Sort  (cost=12.81..12.82 rows=4 width=16) (actual time=0.178..0.191 rows=200.00 loops=1)\n        Sort Key: user_id\n        Sort Method: top-N heapsort  Memory: 17kB\n        Buffers: shared hit=12\n        ->  Bitmap Heap Scan on team_memberships  (cost=4.31..12.77 rows=4 width=16) (actual time=0.041..0.101 rows=501.00 loops=1)\n              Recheck Cond: (team_namespace_id = '01a032dd-bc11-7ca0-8112-7c87b04c6e98'::uuid)\n              Heap Blocks: exact=5\n              Buffers: shared hit=9\n              ->  Bitmap Index Scan on team_memberships_pkey  (cost=0.00..4.31 rows=4 width=0) (actual time=0.031..0.031 rows=501.00 loops=1)\n                    Index Cond: (team_namespace_id = '01a032dd-bc11-7ca0-8112-7c87b04c6e98'::uuid)\n                    Index Searches: 1\n                    Buffers: shared hit=4\nPlanning:\n  Buffers: shared hit=107\nPlanning Time: 0.262 ms\nExecution Time: 0.239 ms\n"
+  },
+  "scale_to_zero_recovery_ms": 646,
+  "cross_instance_wake_ms": 5,
+  "listener_reconnected": true,
+  "sigterm_exit_ms": 120,
+  "arbitrary_kill_restart_ms": 944,
+  "sse_disconnect_observed": true,
+  "sse_reconnect_observed": true,
+  "outbox_pending_after_recovery": 0,
+  "search_plan": "Limit  (cost=0.55..13.12 rows=20 width=50) (actual time=0.256..0.284 rows=20.00 loops=1)\n  Buffers: shared hit=191\n  ->  Nested Loop  (cost=0.55..252.06 rows=400 width=50) (actual time=0.255..0.279 rows=20.00 loops=1)\n        Buffers: shared hit=191\n        ->  Index Scan using resource_search_documents_stars_idx on resource_search_documents sd  (cost=0.27..83.21 rows=400 width=50) (actual time=0.238..0.242 rows=20.00 loops=1)\n              Filter: (search_vector @@ '''benchmark'''::tsquery)\n              Rows Removed by Filter: 64\n              Index Searches: 1\n              Buffers: shared hit=131\n        ->  Index Scan using resources_pkey on resources r  (cost=0.27..0.42 rows=1 width=16) (actual time=0.001..0.001 rows=1.00 loops=20)\n              Index Cond: (id = sd.resource_id)\n              Filter: ((deleted_at IS NULL) AND (visibility = 'public'::text))\n              Index Searches: 20\n              Buffers: shared hit=60\nPlanning:\n  Buffers: shared hit=521\nPlanning Time: 1.602 ms\nExecution Time: 0.330 ms\n",
+  "outbox_plan": "Limit  (cost=12.66..12.67 rows=4 width=72) (actual time=0.051..0.053 rows=0.00 loops=1)\n  Buffers: shared hit=5\n  ->  Sort  (cost=12.66..12.67 rows=4 width=72) (actual time=0.050..0.050 rows=0.00 loops=1)\n        Sort Key: event_id\n        Sort Method: quicksort  Memory: 25kB\n        Buffers: shared hit=5\n        ->  Bitmap Heap Scan on outbox_events  (cost=4.17..12.62 rows=4 width=72) (actual time=0.023..0.023 rows=0.00 loops=1)\n              Recheck Cond: (dispatched_at IS NULL)\n              Heap Blocks: exact=1\n              Buffers: shared hit=2\n              ->  Bitmap Index Scan on outbox_events_pending_idx  (cost=0.00..4.16 rows=4 width=0) (actual time=0.011..0.011 rows=4.00 loops=1)\n                    Index Searches: 1\n                    Buffers: shared hit=1\nPlanning:\n  Buffers: shared hit=90\nPlanning Time: 0.280 ms\nExecution Time: 0.084 ms\n"
+}

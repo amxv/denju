@@ -1,0 +1,5 @@
+963d4067d8faf44a79e800464fd65ba25ff94c312bc0b08db3ec656d696c8a3d  spec/fixtures/object-v1.json
+519903575495de1910555251f5a6672f8d01dbaf2a672f5254081ec28fa4ae5d  spec/fixtures/portable-profile-v1.json
+6a1f97158ab6d23a08d8206590847562f2db4741fea8fcfbe9d5db27f8965f21  spec/fixtures/skills/valid-full/SKILL.md
+8b7979b743a7489b773cb98a114704eb2acf40e2a4a9212f0e2a3f4fd548c0f8  spec/fixtures/skills/valid-full/scripts/run.sh
+ca7b1eb4098e545a1019a1f38d03391e85360724f803c2d409bfdbb1b4097913  spec/fixtures/snapshot-v1.json
