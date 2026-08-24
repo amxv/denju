@@ -4,10 +4,10 @@ use denju_client::RegistryClient;
 use denju_core::{OperationId, ResourceId, RevisionId};
 use denju_local::{
     DesiredSkillMaterialization, LocalDatabase, LocalPaths, ManagedDesiredKind, ManagedSkillRecord,
-    SubscriptionRecord, journaled_remove_managed_skill, materialize_skill_snapshot,
-    prepare_harness_roots, preserve_quarantined_managed_skill, reconcile_canonical_links,
-    reconcile_harness_projections, recover_local_lifecycle, recover_materializations,
-    resolve_harness_roots,
+    OwnedSkillRecord, SubscriptionRecord, journaled_remove_managed_skill,
+    materialize_skill_snapshot, prepare_harness_roots, preserve_quarantined_managed_skill,
+    reconcile_canonical_links, reconcile_harness_projections, recover_local_lifecycle,
+    recover_materializations, resolve_harness_roots,
 };
 use denju_wire::{
     CliErrorCode, SubscribedSkill, SubscriptionContent, SubscriptionMutationKind,
@@ -691,28 +691,7 @@ async fn sync_with_context(
                     .map_err(local_error)?;
                 continue;
             }
-            let managed = context
-                .db
-                .managed_skills()
-                .await
-                .map_err(local_error)?
-                .into_iter()
-                .find(|managed| managed.resource_id == record.resource_id)
-                .ok_or_else(|| {
-                    RuntimeError::new(
-                        CliErrorCode::LocalState,
-                        format!("owned resource {} lost managed state", record.resource_id),
-                    )
-                })?;
-            journaled_remove_managed_skill(
-                &context.paths,
-                &context.db,
-                &context.roots,
-                &managed,
-                ManagedDesiredKind::Owned,
-            )
-            .await
-            .map_err(local_error)?;
+            remove_disappeared_owned(&context.paths, &context.db, &context.roots, record).await?;
             removed += 1;
         }
         for remote in &owned.skills {
@@ -835,6 +814,33 @@ async fn sync_with_context(
     ))
 }
 
+async fn remove_disappeared_owned(
+    paths: &LocalPaths,
+    db: &LocalDatabase,
+    roots: &denju_local::ResolvedHarnessRoots,
+    record: &OwnedSkillRecord,
+) -> Result<(), RuntimeError> {
+    // A policy source can disappear in the same reconciliation that removes this owned
+    // workspace (team deletion is the important example). `refresh_catalog()` deliberately
+    // clears the old source suppression before the stale pack materialization is journaled
+    // away. During that short transition the global `managed_skills()` view quite correctly
+    // sees two local owners for the same resource and rejects the state as ambiguous. We do
+    // not need that global lookup here: the disappearing owned row itself contains the exact
+    // local projection identity that must be removed. The later pack apply then removes its
+    // stale materialization through its own journal.
+    let managed = ManagedSkillRecord {
+        resource_id: record.resource_id.clone(),
+        locator: record.locator.clone(),
+        owner: record.owner.clone(),
+        skill_name: record.skill_name.clone(),
+        harness_name: record.harness_name.clone(),
+        materialized_revision_id: record.materialized_revision_id.clone(),
+    };
+    journaled_remove_managed_skill(paths, db, roots, &managed, ManagedDesiredKind::Owned)
+        .await
+        .map_err(local_error)
+}
+
 fn canonical_targets_revision(
     context: &InstalledContext,
     resource_id: &str,
@@ -935,3 +941,7 @@ pub(crate) use crate::context::{
     CatalogContext, InstalledContext, catalog_context, client_error, installed_context,
     local_error, now_unix_ms,
 };
+
+#[cfg(test)]
+#[path = "public_tests.rs"]
+mod tests;
