@@ -19,7 +19,7 @@
     },
     "packages/npm": {
       "name": "denju-cli",
-      "version": "0.3.0-development",
+      "version": "0.3.0",
       "bin": {
         "denju": "bin/denju.js",
       },
