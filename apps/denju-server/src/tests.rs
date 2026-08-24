@@ -6,7 +6,7 @@ use tokio::sync::broadcast;
 
 use crate::{
     http::realtime_routes::next_sync_hint, parse_http_url, parse_http_url_with_http,
-    public_origin_from,
+    public_origin_from, s3_presign_endpoint_from,
 };
 
 #[test]
@@ -24,6 +24,22 @@ fn hosted_service_urls_require_tls_but_loopback_development_stays_available() {
         )
         .is_err()
     );
+}
+
+#[test]
+fn client_facing_s3_presign_origin_is_explicit_for_private_http_backends() {
+    let internal = url::Url::parse("http://garage:3900").unwrap();
+    assert!(s3_presign_endpoint_from(&internal, None).is_err());
+    assert_eq!(
+        s3_presign_endpoint_from(&internal, Some("http://127.0.0.1:53900"))
+            .unwrap()
+            .as_str(),
+        "http://127.0.0.1:53900/"
+    );
+    assert!(s3_presign_endpoint_from(&internal, Some("http://objects.example.com")).is_err());
+
+    let hosted = url::Url::parse("https://account.r2.cloudflarestorage.com").unwrap();
+    assert_eq!(s3_presign_endpoint_from(&hosted, None).unwrap(), hosted);
 }
 
 #[test]

@@ -70,6 +70,7 @@ pub(super) fn registry_settings(port: u16) -> RegistrySettings {
         database_listen_url: Some(database_url("denju_app", "denju-app-dev-only")),
         public_origin: Url::parse(&format!("http://127.0.0.1:{port}/")).expect("load URL"),
         object_store_endpoint: Url::parse("http://127.0.0.1:53900").expect("Garage URL"),
+        object_store_presign_endpoint: Url::parse("http://127.0.0.1:53900").expect("Garage URL"),
         object_store_bucket: "denju-dev".to_owned(),
         object_store_region: "garage".to_owned(),
         object_store_access_key_id: "GK1234567890ABCDEFGH".to_owned(),

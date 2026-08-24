@@ -191,6 +191,7 @@ pub(crate) struct ServerConfig {
     database_listen_url: Option<String>,
     s3_bucket: String,
     s3_endpoint: Url,
+    s3_presign_endpoint: Url,
     s3_region: String,
     s3_access_key_id: String,
     s3_secret_access_key: String,
@@ -219,6 +220,7 @@ impl ServerConfig {
             &required_env("DENJU_S3_ENDPOINT")?,
             s3_allow_http,
         )?;
+        let s3_presign_endpoint = s3_presign_endpoint(&s3_endpoint)?;
         let s3_region = required_env("DENJU_S3_REGION")?;
         let s3_access_key_id = required_env("DENJU_S3_ACCESS_KEY_ID")?;
         let s3_secret_access_key = required_env("DENJU_S3_SECRET_ACCESS_KEY")?;
@@ -237,6 +239,7 @@ impl ServerConfig {
             database_listen_url,
             s3_bucket,
             s3_endpoint,
+            s3_presign_endpoint,
             s3_region,
             s3_access_key_id,
             s3_secret_access_key,
@@ -261,6 +264,7 @@ impl ServerConfig {
             database_listen_url: self.database_listen_url.clone(),
             public_origin: self.public_origin.clone(),
             object_store_endpoint: self.s3_endpoint.clone(),
+            object_store_presign_endpoint: self.s3_presign_endpoint.clone(),
             object_store_bucket: self.s3_bucket.clone(),
             object_store_region: self.s3_region.clone(),
             object_store_access_key_id: self.s3_access_key_id.clone(),
@@ -333,6 +337,26 @@ fn url_is_loopback(url: &Url) -> bool {
         Host::Ipv4(address) => address.is_loopback(),
         Host::Ipv6(address) => address.is_loopback(),
     })
+}
+
+fn s3_presign_endpoint(internal: &Url) -> Result<Url, String> {
+    let explicit = std::env::var("DENJU_S3_PRESIGN_ENDPOINT")
+        .ok()
+        .filter(|value| !value.is_empty());
+    s3_presign_endpoint_from(internal, explicit.as_deref())
+}
+
+fn s3_presign_endpoint_from(internal: &Url, explicit: Option<&str>) -> Result<Url, String> {
+    if let Some(value) = explicit {
+        return parse_http_url("DENJU_S3_PRESIGN_ENDPOINT", value);
+    }
+    if internal.scheme() == "http" && !url_is_loopback(internal) {
+        return Err(
+            "DENJU_S3_PRESIGN_ENDPOINT is required when DENJU_S3_ENDPOINT is a non-loopback HTTP endpoint"
+                .to_owned(),
+        );
+    }
+    Ok(internal.clone())
 }
 
 fn required_env(name: &str) -> Result<String, String> {

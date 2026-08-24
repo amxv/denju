@@ -91,7 +91,11 @@ pub struct RegistrySettings {
     /// directly as `denju_app`, like the request pool.
     pub database_listen_url: Option<String>,
     pub public_origin: Url,
+    /// S3 endpoint used by the registry process for SDK reads/writes.
     pub object_store_endpoint: Url,
+    /// S3 endpoint embedded in product presigned URLs returned to clients. This may differ
+    /// from the registry-internal endpoint when the object store lives on a private network.
+    pub object_store_presign_endpoint: Url,
     pub object_store_bucket: String,
     pub object_store_region: String,
     pub object_store_access_key_id: String,
@@ -190,9 +194,13 @@ impl Registry {
         let staging_key = format!("conformance/{run}/staging/{payload_hash}");
         let canonical_key = format!("conformance/{run}/canonical/{payload_hash}");
 
+        // The provider probe executes from the registry process itself, so use the internal
+        // endpoint here. Product presigned URLs may intentionally point at a client-facing
+        // hostname that is not routable from the server container (for example the bundled
+        // loopback-only Garage publication in the reference self-host stack).
         let upload_url = self
             .objects
-            .presign_put(&staging_key, payload.len() as u64)
+            .presign_put_internal(&staging_key, payload.len() as u64)
             .await?;
         let upload = reqwest::Client::new()
             .put(upload_url)
@@ -216,7 +224,7 @@ impl Registry {
         self.objects.put(&canonical_key, &staged).await?;
         // A retry of the canonical write must remain safe for immutable content.
         self.objects.put(&canonical_key, &staged).await?;
-        let download_url = self.objects.presign_get(&canonical_key).await?;
+        let download_url = self.objects.presign_get_internal(&canonical_key).await?;
         let downloaded = reqwest::get(download_url)
             .await
             .map_err(|error| RegistryError::ObjectStore(error.to_string()))?;
@@ -468,27 +476,17 @@ async fn validate_direct_database_role(
 #[derive(Clone)]
 struct ObjectStore {
     client: S3Client,
+    presign_client: S3Client,
     bucket: String,
 }
 
 impl ObjectStore {
     fn new(settings: &RegistrySettings) -> Self {
-        let credentials = Credentials::new(
-            settings.object_store_access_key_id.clone(),
-            settings.object_store_secret_access_key.clone(),
-            None,
-            None,
-            "denju-static",
-        );
-        let config = aws_sdk_s3::Config::builder()
-            .behavior_version_latest()
-            .region(Region::new(settings.object_store_region.clone()))
-            .credentials_provider(credentials)
-            .endpoint_url(settings.object_store_endpoint.to_string())
-            .force_path_style(settings.object_store_force_path_style)
-            .build();
+        let client = object_store_client(settings, &settings.object_store_endpoint);
+        let presign_client = object_store_client(settings, &settings.object_store_presign_endpoint);
         Self {
-            client: S3Client::from_conf(config),
+            client,
+            presign_client,
             bucket: settings.object_store_bucket.clone(),
         }
     }
@@ -547,12 +545,29 @@ impl ObjectStore {
     }
 
     async fn presign_put(&self, key: &str, size_bytes: u64) -> Result<String, RegistryError> {
+        self.presign_put_with(&self.presign_client, key, size_bytes)
+            .await
+    }
+
+    async fn presign_put_internal(
+        &self,
+        key: &str,
+        size_bytes: u64,
+    ) -> Result<String, RegistryError> {
+        self.presign_put_with(&self.client, key, size_bytes).await
+    }
+
+    async fn presign_put_with(
+        &self,
+        client: &S3Client,
+        key: &str,
+        size_bytes: u64,
+    ) -> Result<String, RegistryError> {
         let config = PresigningConfig::expires_in(STAGING_URL_TTL)
             .map_err(|error| RegistryError::ObjectStore(error.to_string()))?;
         let size = i64::try_from(size_bytes)
             .map_err(|_| RegistryError::ObjectStore("object is too large to upload".to_owned()))?;
-        let request = self
-            .client
+        let request = client
             .put_object()
             .bucket(&self.bucket)
             .key(key)
@@ -564,10 +579,21 @@ impl ObjectStore {
     }
 
     async fn presign_get(&self, key: &str) -> Result<String, RegistryError> {
+        self.presign_get_with(&self.presign_client, key).await
+    }
+
+    async fn presign_get_internal(&self, key: &str) -> Result<String, RegistryError> {
+        self.presign_get_with(&self.client, key).await
+    }
+
+    async fn presign_get_with(
+        &self,
+        client: &S3Client,
+        key: &str,
+    ) -> Result<String, RegistryError> {
         let config = PresigningConfig::expires_in(SNAPSHOT_URL_TTL)
             .map_err(|error| RegistryError::ObjectStore(error.to_string()))?;
-        let request = self
-            .client
+        let request = client
             .get_object()
             .bucket(&self.bucket)
             .key(key)
@@ -575,6 +601,70 @@ impl ObjectStore {
             .await
             .map_err(object_store_error)?;
         Ok(request.uri().to_string())
+    }
+}
+
+fn object_store_client(settings: &RegistrySettings, endpoint: &Url) -> S3Client {
+    let credentials = Credentials::new(
+        settings.object_store_access_key_id.clone(),
+        settings.object_store_secret_access_key.clone(),
+        None,
+        None,
+        "denju-static",
+    );
+    let config = aws_sdk_s3::Config::builder()
+        .behavior_version_latest()
+        .region(Region::new(settings.object_store_region.clone()))
+        .credentials_provider(credentials)
+        .endpoint_url(endpoint.to_string())
+        .force_path_style(settings.object_store_force_path_style)
+        .build();
+    S3Client::from_conf(config)
+}
+
+#[cfg(test)]
+mod object_store_tests {
+    use super::*;
+
+    fn settings() -> RegistrySettings {
+        RegistrySettings {
+            database_url: "postgresql://app@localhost/denju".to_owned(),
+            database_worker_url: "postgresql://worker@localhost/denju".to_owned(),
+            database_listen_url: None,
+            public_origin: Url::parse("http://127.0.0.1:7788").unwrap(),
+            object_store_endpoint: Url::parse("http://garage:3900").unwrap(),
+            object_store_presign_endpoint: Url::parse("http://127.0.0.1:53900").unwrap(),
+            object_store_bucket: "denju".to_owned(),
+            object_store_region: "garage".to_owned(),
+            object_store_access_key_id: "GK1234567890ABCDEFGH".to_owned(),
+            object_store_secret_access_key:
+                "0000000000000000000000000000000000000000000000000000000000000000".to_owned(),
+            object_store_force_path_style: true,
+            limits: RegistryLimits {
+                max_object_bytes: 16 * 1024 * 1024,
+                max_release_bytes: 10 * 1024 * 1024,
+                namespace_storage_bytes: 512 * 1024 * 1024,
+                max_transfer_bytes: 16 * 1024 * 1024,
+            },
+            gc_grace: Duration::from_secs(86_400),
+        }
+    }
+
+    #[tokio::test]
+    async fn product_presigns_use_the_client_facing_endpoint() {
+        let store = ObjectStore::new(&settings());
+        for uri in [
+            store.presign_put("staging/blob", 3).await.unwrap(),
+            store.presign_get("canonical/snapshot").await.unwrap(),
+        ] {
+            let url = Url::parse(&uri).unwrap();
+            assert_eq!(url.host_str(), Some("127.0.0.1"));
+            assert_eq!(url.port(), Some(53_900));
+        }
+
+        let internal = Url::parse(&store.presign_get_internal("probe").await.unwrap()).unwrap();
+        assert_eq!(internal.host_str(), Some("garage"));
+        assert_eq!(internal.port(), Some(3900));
     }
 }
 

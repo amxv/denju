@@ -27,8 +27,12 @@ the restricted `denju_app` login; background/recovery work uses `denju_worker`. 
 Garage instance also requires its own RPC secret and S3 access key pair.
 
 The bundled Compose file sets `DENJU_S3_ALLOW_HTTP=true` only for the `garage` hostname on its
-private Docker network. External object-store endpoints stay HTTPS-by-default; opt into HTTP only
-for an equivalently isolated network you control.
+private Docker network. It publishes Garage's S3 port on host loopback and separately sets
+`DENJU_S3_PRESIGN_ENDPOINT=http://127.0.0.1:3900`, so a Denju client running on that same host can
+use the signed upload/download URLs even though the server itself talks to `http://garage:3900`.
+If you change `DENJU_S3_PORT`, change the loopback presign endpoint to the same port. External
+object-store endpoints stay HTTPS-by-default; opt into internal HTTP only for an equivalently
+isolated network you control.
 
 ## Use external PostgreSQL or object storage
 
@@ -39,7 +43,11 @@ The container contract is deployment-neutral. Instead of the reference dependenc
 - `DENJU_DATABASE_DIRECT_URL` for the session connection used by LISTEN/NOTIFY.
 - `DENJU_DATABASE_MIGRATION_URL` only when running `denju-server migrate`.
 - `DENJU_S3_ENDPOINT`, bucket, region, access key ID, secret access key, and path-style setting for
-  an S3-compatible provider.
+  an S3-compatible provider. `DENJU_S3_ENDPOINT` is the registry process's own SDK endpoint.
+- `DENJU_S3_PRESIGN_ENDPOINT` when clients reach the object store through a different origin than
+  the registry process. Denju signs product transfer URLs for this origin, so it must be reachable
+  by every client. Remote clients require HTTPS; the bundled `127.0.0.1` value is only for clients
+  running on the Compose host.
 - `DENJU_S3_ALLOW_HTTP=true` only when an intentionally private self-host network terminates no TLS
   between Denju and that object store.
 
@@ -62,6 +70,8 @@ Before treating a provider as production-ready, run the ordinary provider confor
 denju-server check-object-store
 ```
 
-The probe exercises SDK writes/reads, immutable canonical retry, presigned PUT/GET, and deletion
-through the same adapter used by the service. Garage and Cloudflare R2 are intentionally expected
+The probe exercises SDK writes/reads, immutable canonical retry, internal presigned PUT/GET, and
+deletion through the same adapter used by the service. The release self-host smoke additionally
+subscribes from the host through a client-facing presigned URL, which verifies that the externally
+reachable transfer origin is wired correctly. Garage and Cloudflare R2 are intentionally expected
 to satisfy one domain contract rather than separate provider-specific behavior.

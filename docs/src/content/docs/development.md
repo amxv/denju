@@ -51,7 +51,7 @@ DENJU_TEST_HOME="$TEST_HOME" \
 
 In test-home mode Denju ignores inherited custom harness roots, keeps Codex and Claude fixtures beneath the marked directory, forces file-backed test credentials, and never starts the real per-user background service. Tests must never use, scan, migrate, project into, or clean a developer's real `~/.agents`, `~/.codex`, `~/.claude`, or custom harness trees.
 
-Phase-scoped integration fixtures may seed public releases through the hidden `denju-server seed-public` development command. That command writes the same PostgreSQL/S3 release model read by the public HTTP API; it is not a second in-memory catalog or a user-facing publishing path.
+Integration fixtures may seed public releases through the hidden `denju-server seed-public` development command. That command writes the same PostgreSQL/S3 release model read by the public HTTP API; it is not a second in-memory catalog or a user-facing publishing path.
 
 The hidden provider-conformance probe exercises the exact generic object-store adapter used by the registry. With the normal `cargo xtask dev` environment values exported, run:
 

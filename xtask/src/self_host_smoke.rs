@@ -8,10 +8,17 @@ use std::{
     time::{Duration, Instant},
 };
 
+use denju_wire::{
+    CreateInstallationRequest, SubscriptionCatalog, SubscriptionMutationKind,
+    SubscriptionMutationRequest, SubscriptionTarget, create_installation_request_hash,
+    subscription_request_hash,
+};
 use rand::RngExt;
 use reqwest::blocking::Client;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use tempfile::TempDir;
+use url::Url;
 use uuid::Uuid;
 
 const DEFAULT_IMAGE: &str = "denju-server:release-smoke";
@@ -19,10 +26,11 @@ const DEFAULT_IMAGE: &str = "denju-server:release-smoke";
 pub(crate) fn run(root: &Path) -> Result<(), String> {
     let image = parse_image()?;
     let port = reserve_loopback_port()?;
+    let s3_port = reserve_distinct_loopback_port(port)?;
     let project = format!("denju-self-host-smoke-{}", Uuid::now_v7().simple());
     let temporary = tempfile::tempdir().map_err(io_error("create self-host smoke directory"))?;
     let recovery_token = secret_hex(32);
-    let env = SmokeEnvironment::write(temporary, port, &image, &recovery_token)?;
+    let env = SmokeEnvironment::write(temporary, port, s3_port, &image, &recovery_token)?;
     let stack = SmokeStack::new(root, env.path(), project);
 
     stack.run(&["config", "--quiet"])?;
@@ -31,6 +39,7 @@ pub(crate) fn run(root: &Path) -> Result<(), String> {
     assert_capabilities(port)?;
 
     stack.run(&["run", "--rm", "--no-deps", "server", "check-object-store"])?;
+    assert_client_facing_presigned_download(&stack, env.root(), port, s3_port)?;
     assert_recovery(port, &recovery_token)?;
 
     stack.run(&["restart", "server"])?;
@@ -38,7 +47,9 @@ pub(crate) fn run(root: &Path) -> Result<(), String> {
     stack.run(&["run", "--rm", "--no-deps", "migrate"])?;
     wait_for_ready(port)?;
 
-    println!("self-host smoke: empty start, provider, recovery, restart, and migration passed");
+    println!(
+        "self-host smoke: empty start, provider, client presign, recovery, restart, and migration passed"
+    );
     Ok(())
 }
 
@@ -68,6 +79,15 @@ fn reserve_loopback_port() -> Result<u16, String> {
         .map_err(io_error("read self-host smoke port"))
 }
 
+fn reserve_distinct_loopback_port(other: u16) -> Result<u16, String> {
+    loop {
+        let port = reserve_loopback_port()?;
+        if port != other {
+            return Ok(port);
+        }
+    }
+}
+
 struct SmokeEnvironment {
     _temporary: TempDir,
     path: PathBuf,
@@ -77,6 +97,7 @@ impl SmokeEnvironment {
     fn write(
         temporary: TempDir,
         port: u16,
+        s3_port: u16,
         image: &str,
         recovery_token: &str,
     ) -> Result<Self, String> {
@@ -103,6 +124,11 @@ impl SmokeEnvironment {
             ),
             ("DENJU_S3_SECRET_ACCESS_KEY", secret_hex(32)),
             ("DENJU_S3_BUCKET", "denju-self-host-smoke".to_owned()),
+            ("DENJU_S3_PORT", s3_port.to_string()),
+            (
+                "DENJU_S3_PRESIGN_ENDPOINT",
+                format!("http://127.0.0.1:{s3_port}"),
+            ),
             ("DENJU_RECOVERY_TOKEN", recovery_token.to_owned()),
             ("DENJU_PUBLIC_URL", format!("http://127.0.0.1:{port}")),
             ("DENJU_PORT", port.to_string()),
@@ -123,6 +149,10 @@ impl SmokeEnvironment {
 
     fn path(&self) -> &Path {
         &self.path
+    }
+
+    fn root(&self) -> &Path {
+        self._temporary.path()
     }
 }
 
@@ -174,6 +204,35 @@ impl<'a> SmokeStack<'a> {
             Ok(())
         } else {
             Err(format!("self-host docker compose exited with {status}"))
+        }
+    }
+
+    fn seed_public(&self, owner: &str, fixture: &Path) -> Result<(), String> {
+        let fixture_name = fixture
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| "self-host public fixture must have a UTF-8 basename".to_owned())?;
+        let container_path = format!("/fixtures/{fixture_name}");
+        let mount = format!("{}:{container_path}:ro", fixture.display());
+        eprintln!("+ docker compose run --rm --no-deps -v <fixture> server seed-public");
+        let status = self
+            .command()
+            .args(["run", "--rm", "--no-deps", "-v"])
+            .arg(mount)
+            .args([
+                "server",
+                "seed-public",
+                "--owner",
+                owner,
+                "--path",
+                &container_path,
+            ])
+            .status()
+            .map_err(|error| format!("failed to seed self-host public fixture: {error}"))?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(format!("self-host public seed exited with {status}"))
         }
     }
 
@@ -230,6 +289,117 @@ fn assert_capabilities(port: u16) -> Result<(), String> {
     Ok(())
 }
 
+fn assert_client_facing_presigned_download(
+    stack: &SmokeStack<'_>,
+    temporary: &Path,
+    port: u16,
+    s3_port: u16,
+) -> Result<(), String> {
+    const OWNER: &str = "self-host-smoke";
+    const NAME: &str = "presign-smoke";
+    let fixture = temporary.join(NAME);
+    fs::create_dir(&fixture).map_err(io_error("create self-host presign fixture"))?;
+    fs::write(
+        fixture.join("SKILL.md"),
+        b"---\nname: presign-smoke\ndescription: Self-host client presign regression fixture.\n---\n# Presign smoke\n",
+    )
+    .map_err(io_error("write self-host presign fixture"))?;
+    stack.seed_public(OWNER, &fixture)?;
+
+    let origin = format!("http://127.0.0.1:{port}");
+    let client = smoke_client()?;
+    let bearer = secret_hex(32);
+    let raw_bearer = hex::decode(&bearer).map_err(|error| error.to_string())?;
+    let credential_hash = hex::encode(Sha256::digest(&raw_bearer));
+    let operation_id = Uuid::now_v7().to_string();
+    let request_hash = create_installation_request_hash(&operation_id, &credential_hash)
+        .map_err(|error| error.to_string())?;
+    client
+        .post(format!("{origin}/v1/installations"))
+        .json(&CreateInstallationRequest {
+            operation_id,
+            credential_hash,
+            request_hash: request_hash.to_string(),
+        })
+        .send()
+        .map_err(http_error("create self-host presign installation"))?
+        .error_for_status()
+        .map_err(http_error("validate self-host presign installation"))?;
+
+    let locator = format!("@{OWNER}/{NAME}");
+    let target: SubscriptionTarget = client
+        .get(format!("{origin}/v1/subscriptions/resolve"))
+        .bearer_auth(&bearer)
+        .query(&[("locator", &locator)])
+        .send()
+        .map_err(http_error("resolve self-host presign subscription"))?
+        .error_for_status()
+        .map_err(http_error("validate self-host presign subscription target"))?
+        .json()
+        .map_err(http_error("decode self-host presign subscription target"))?;
+    let operation_id = Uuid::now_v7().to_string();
+    let request_hash = subscription_request_hash(
+        SubscriptionMutationKind::Subscribe,
+        &operation_id,
+        &target.resource_id,
+        target.generation,
+        None,
+        false,
+    )
+    .map_err(|error| error.to_string())?;
+    client
+        .post(format!("{origin}/v1/subscriptions"))
+        .bearer_auth(&bearer)
+        .json(&SubscriptionMutationRequest {
+            operation_id,
+            resource_id: target.resource_id,
+            expected_generation: target.generation,
+            release_version: None,
+            retain_on_delete: false,
+            request_hash: request_hash.to_string(),
+        })
+        .send()
+        .map_err(http_error("create self-host presign subscription"))?
+        .error_for_status()
+        .map_err(http_error("validate self-host presign subscription"))?;
+    let catalog: SubscriptionCatalog = client
+        .get(format!("{origin}/v1/subscriptions"))
+        .bearer_auth(&bearer)
+        .send()
+        .map_err(http_error("read self-host presign catalog"))?
+        .error_for_status()
+        .map_err(http_error("validate self-host presign catalog"))?
+        .json()
+        .map_err(http_error("decode self-host presign catalog"))?;
+    let skill = catalog
+        .skills
+        .iter()
+        .find(|skill| skill.locator == locator)
+        .ok_or_else(|| "self-host presign subscription missing from catalog".to_owned())?;
+    let download = Url::parse(&skill.snapshot.url)
+        .map_err(|error| format!("invalid self-host presigned download URL: {error}"))?;
+    if download.host_str() != Some("127.0.0.1") || download.port() != Some(s3_port) {
+        return Err(format!(
+            "self-host product presign leaked a non-client endpoint: {}",
+            download.origin().ascii_serialization()
+        ));
+    }
+    let bytes = client
+        .get(download)
+        .send()
+        .map_err(http_error("download self-host presigned snapshot"))?
+        .error_for_status()
+        .map_err(http_error("validate self-host presigned snapshot"))?
+        .bytes()
+        .map_err(http_error("read self-host presigned snapshot"))?;
+    if bytes.len() as u64 != skill.snapshot.size_bytes
+        || hex::encode(Sha256::digest(&bytes)) != skill.snapshot.sha256
+    {
+        return Err("self-host presigned snapshot bytes did not match the catalog".to_owned());
+    }
+    Ok(())
+}
+
 fn assert_recovery(port: u16, token: &str) -> Result<(), String> {
     let client = smoke_client()?;
     let url = format!("http://127.0.0.1:{port}/v1/internal/recover");
@@ -267,6 +437,7 @@ fn assert_recovery(port: u16, token: &str) -> Result<(), String> {
 
 fn smoke_client() -> Result<Client, String> {
     Client::builder()
+        .no_proxy()
         .connect_timeout(Duration::from_secs(2))
         .timeout(Duration::from_secs(10))
         .build()

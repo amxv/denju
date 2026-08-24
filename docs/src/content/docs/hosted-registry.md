@@ -14,6 +14,10 @@ reads Vercel's `PORT` and does not depend on writable local disk or process memo
 `deploy/vercel.registry.json` carries the registry-specific, non-secret region/cron configuration
 without replacing the root docs project's Astro configuration.
 
+The production custom domain is already attached to the dedicated `denju-registry` Vercel project.
+Routine releases replace the production deployment behind that domain; they do not require a DNS
+cutover. DNS only needs to change if the registry moves to a different hosting boundary.
+
 Because the docs and registry are separate Vercel projects rooted at the same repository,
 deploying the registry directly from the repository root would pick up the docs `vercel.json`.
 Stage an exact registry deployment context through the canonical xtask first:
@@ -60,9 +64,8 @@ installation/session/automation credential.
 4. Stage a registry-only Vercel context with `cargo xtask vercel-context`, deploy a preview, and
    verify health, anonymous reads, authenticated mutations, object transfer,
    recycle/recovery, and two-instance wake behavior.
-5. Only after release authorization, deploy production and repoint/verify the official registry
-   domain. Production DNS, package publication, and release tagging are release actions rather
-   than implementation-test side effects.
+5. Deploy production, then verify the existing `registry.denju.ashray.xyz` alias, TLS, liveness,
+   readiness, capabilities, and representative client reconciliation against the new process.
 
 The GitHub release workflow publishes the six native client binaries, the shared release manifest,
 install scripts, npm launcher, and the multi-architecture GHCR `denju-server` image from one tag.

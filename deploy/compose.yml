@@ -7,6 +7,7 @@ x-denju-server-environment: &denju-server-environment
   DENJU_DATABASE_DIRECT_URL: postgresql://denju_app:${DENJU_DB_APP_PASSWORD:?set DENJU_DB_APP_PASSWORD}@postgres:5432/denju
   DENJU_S3_BUCKET: ${DENJU_S3_BUCKET:-denju}
   DENJU_S3_ENDPOINT: http://garage:3900
+  DENJU_S3_PRESIGN_ENDPOINT: ${DENJU_S3_PRESIGN_ENDPOINT:-http://127.0.0.1:3900}
   DENJU_S3_ALLOW_HTTP: "true"
   DENJU_S3_REGION: garage
   DENJU_S3_ACCESS_KEY_ID: ${DENJU_S3_ACCESS_KEY_ID:?set DENJU_S3_ACCESS_KEY_ID}
@@ -45,6 +46,8 @@ services:
       interval: 2s
       timeout: 5s
       retries: 30
+    ports:
+      - "127.0.0.1:${DENJU_S3_PORT:-3900}:3900"
     volumes:
       - ./self-host/garage.toml:/etc/garage.toml:ro
       - denju-garage-meta:/var/lib/garage/meta
