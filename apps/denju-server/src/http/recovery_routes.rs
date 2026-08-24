@@ -2,28 +2,12 @@ use std::sync::Arc;
 
 use axum::{Json, extract::State, http::HeaderMap};
 use denju_registry::Registry;
-use denju_wire::{PackDrainRequest, PackDrainResponse};
-use serde::{Deserialize, Serialize};
+use denju_wire::{
+    OutboxDrainRequest, OutboxDrainResponse, PackDrainRequest, PackDrainResponse,
+    RecoveryDrainResponse,
+};
 
 use super::{ApiResponseError, auth::recovery_bearer_token};
-
-#[derive(Debug, Deserialize)]
-pub(super) struct OutboxDrainRequest {
-    limit: u32,
-}
-
-#[derive(Debug, Serialize)]
-pub(super) struct OutboxDrainResponse {
-    dispatched: usize,
-}
-
-#[derive(Debug, Serialize)]
-pub(super) struct RecoveryDrainResponse {
-    outbox_dispatched: usize,
-    pack_revisions_processed: u64,
-    pack_release_events_completed: u64,
-    pack_release_event_pending: bool,
-}
 
 pub(super) async fn recover(
     State(registry): State<Arc<Registry>>,

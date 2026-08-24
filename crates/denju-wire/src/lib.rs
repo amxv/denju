@@ -8,6 +8,7 @@ mod identity;
 mod ingest;
 mod lifecycle;
 mod mutation;
+mod openapi;
 mod packs;
 mod proposals;
 mod public;
@@ -23,7 +24,8 @@ pub use admin::{
 };
 pub use api::{
     ApiError, ApiErrorCode, CreateInstallationRequest, CreateInstallationResponse,
-    RegistryCapabilities, RegistryLimits,
+    OutboxDrainRequest, OutboxDrainResponse, RecoveryDrainResponse, RegistryCapabilities,
+    RegistryLimits,
 };
 pub use cli::{CLI_ENVELOPE_VERSION, CliEnvelope, CliError, CliErrorCode};
 pub use discovery::{
@@ -71,6 +73,7 @@ pub use mutation::{
     team_owner_transfer_request_hash, team_pack_assignment_request_hash,
     team_settings_request_hash, unpublish_skill_request_hash,
 };
+pub use openapi::{ApiAuth, ApiMethod, ApiRoute, OPENAPI_V1_ROUTES};
 pub use packs::{
     PackCreateRequest, PackCreateResponse, PackDetail, PackDrainRequest, PackDrainResponse,
     PackLifecycleRequest, PackLifecycleResponse, PackMember, PackMemberTarget, PackMutationRequest,

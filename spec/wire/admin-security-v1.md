@@ -1,6 +1,6 @@
 # Denju operator and quarantine wire contract v1
 
-Phase 16 adds a registry-operator authority surface without adding operator powers to the end-user `denju` CLI. PostgreSQL/current refs remain authoritative; quarantine uses the same resource generation, durable authority-event, outbox, SSE wake, and reconciliation model as other authority changes.
+The registry exposes a dedicated operator authority surface without adding operator powers to the end-user `denju` CLI. PostgreSQL/current refs remain authoritative; quarantine uses the same resource generation, durable authority-event, outbox, SSE wake, and reconciliation model as other authority changes.
 
 ## Operator credentials
 
@@ -59,7 +59,7 @@ Retain-on-delete grants read authority only to the deleted resource's exact tomb
 
 ## Database isolation contract
 
-The Phase-16 security migrations establish separate direct login roles for ordinary request SQL (`denju_app`) and durable worker/recovery SQL (`denju_worker`). Both are `NOSUPERUSER`, `NOCREATEROLE`, and `NOBYPASSRLS`; runtime startup rejects role switching/bypass-capable connection identities. Actor user/installation context is stored with transaction-local PostgreSQL settings only.
+The security migrations establish separate direct login roles for ordinary request SQL (`denju_app`) and durable worker/recovery SQL (`denju_worker`). Both are `NOSUPERUSER`, `NOCREATEROLE`, and `NOBYPASSRLS`; runtime startup rejects role switching/bypass-capable connection identities. Actor user/installation context is stored with transaction-local PostgreSQL settings only.
 
 RLS is defense in depth for private/team/resource/object relationships. Security-definer helpers do not become generic read APIs. They expose only narrowly required capabilities such as exact bearer-hash authentication, exact semantic object persistence, pack-specific pending release-event catch-up for a pack the actor may manage, and tombstone-release reads for an actor with a retained direct subscription.
 

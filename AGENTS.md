@@ -25,7 +25,7 @@ Denju is a greenfield Rust implementation. The former Go/Agentbox product is pre
 - `Justfile` — thin discoverable aliases only; recipes delegate to Cargo/xtask/Bun and contain no build logic.
 - `packages/npm/` — thin binary installer/launcher; never a source-build fallback.
 - `docs/` — Astro/ZueDocs site.
-- `deploy/dev.compose.yml` — pinned local PostgreSQL + S3-compatible dependencies; Phase 2 makes `cargo xtask dev` own their lifecycle plus the registry process.
+- `deploy/dev.compose.yml` — pinned local PostgreSQL + S3-compatible dependencies; `cargo xtask dev` owns their lifecycle plus the registry process.
 
 Keep dependencies one-way toward `denju-core`; binaries wire product logic rather than owning it. Do not introduce generic utility crates or traits without a real ownership/I/O boundary.
 

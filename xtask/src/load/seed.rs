@@ -18,7 +18,7 @@ pub(super) async fn seed_public_catalog(
     for index in 0..count {
         let name = format!("load-skill-{index:04}");
         let skill_md = format!(
-            "---\nname: {name}\ndescription: Phase 17 benchmark catalog skill {index}.\n---\n# Load skill {index}\n"
+            "---\nname: {name}\ndescription: Denju benchmark catalog skill {index}.\n---\n# Load skill {index}\n"
         );
         let entries = vec![
             OwnedSkillEntry::File {

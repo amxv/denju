@@ -1,7 +1,7 @@
-# Phase 17 load and stateless lifecycle harness
+# Load and stateless lifecycle harness
 
 `cargo xtask load` is the canonical non-CI performance/resilience harness. It uses the pinned
-PostgreSQL 18.6 + Garage 2.3.0 development services, creates a fresh `denju_phase17_load`
+PostgreSQL 18.6 + Garage 2.3.0 development services, creates a fresh isolated load-test
 database, seeds a real public catalog, and starts ordinary release `denju-server` processes.
 
 The harness measures registry search/show p95, horizontal two-instance traffic, isolated release

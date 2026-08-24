@@ -1,0 +1,3422 @@
+{
+  "components": {
+    "schemas": {
+      "ApiError": {
+        "properties": {
+          "code": {
+            "enum": [
+              "invalid_request",
+              "invalid_request_hash",
+              "operation_conflict",
+              "generation_conflict",
+              "unauthorized",
+              "not_found",
+              "quota_exceeded",
+              "internal",
+              "unavailable"
+            ],
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      }
+    },
+    "securitySchemes": {
+      "bearerAuth": {
+        "description": "Installation, user-session, or scoped automation bearer as permitted by the endpoint.",
+        "scheme": "bearer",
+        "type": "http"
+      },
+      "operatorBearer": {
+        "description": "Registry-operator bearer. End-user credentials are rejected.",
+        "scheme": "bearer",
+        "type": "http"
+      },
+      "recoveryBearer": {
+        "description": "Deployment recovery bearer. Client and operator credentials are rejected.",
+        "scheme": "bearer",
+        "type": "http"
+      }
+    }
+  },
+  "info": {
+    "description": "Generated inspection contract for Denju's versioned /v1 method, path, and authentication surface. Exact JSON request/response shapes are the Rust DTOs in denju-wire and the checked spec/wire contract notes; Rust client/server code shares those DTOs directly rather than generating types from OpenAPI.",
+    "title": "Denju Registry API",
+    "version": "v1"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/v1/account/delete": {
+      "post": {
+        "operationId": "post_v1_account_delete",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          },
+          "description": "Exact fields are defined by the denju-wire request DTO used by this endpoint.",
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "POST /v1/account/delete",
+        "tags": [
+          "account"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/admin/quarantine": {
+      "post": {
+        "operationId": "post_v1_admin_quarantine",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          },
+          "description": "Exact fields are defined by the denju-wire request DTO used by this endpoint.",
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {
+            "operatorBearer": []
+          }
+        ],
+        "summary": "POST /v1/admin/quarantine",
+        "tags": [
+          "admin"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/admin/reports": {
+      "get": {
+        "operationId": "get_v1_admin_reports",
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {
+            "operatorBearer": []
+          }
+        ],
+        "summary": "GET /v1/admin/reports",
+        "tags": [
+          "admin"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/admin/resources/resolve": {
+      "get": {
+        "operationId": "get_v1_admin_resources_resolve",
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {
+            "operatorBearer": []
+          }
+        ],
+        "summary": "GET /v1/admin/resources/resolve",
+        "tags": [
+          "admin"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/admin/unquarantine": {
+      "post": {
+        "operationId": "post_v1_admin_unquarantine",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          },
+          "description": "Exact fields are defined by the denju-wire request DTO used by this endpoint.",
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {
+            "operatorBearer": []
+          }
+        ],
+        "summary": "POST /v1/admin/unquarantine",
+        "tags": [
+          "admin"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/capabilities": {
+      "get": {
+        "operationId": "get_v1_capabilities",
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [],
+        "summary": "GET /v1/capabilities",
+        "tags": [
+          "capabilities"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/devices": {
+      "get": {
+        "operationId": "get_v1_devices",
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "GET /v1/devices",
+        "tags": [
+          "devices"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/devices/revoke": {
+      "post": {
+        "operationId": "post_v1_devices_revoke",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          },
+          "description": "Exact fields are defined by the denju-wire request DTO used by this endpoint.",
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "POST /v1/devices/revoke",
+        "tags": [
+          "devices"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/events": {
+      "get": {
+        "operationId": "get_v1_events",
+        "responses": {
+          "2XX": {
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Authenticated server-sent sync hints and keepalives."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "GET /v1/events",
+        "tags": [
+          "events"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/follows": {
+      "post": {
+        "operationId": "post_v1_follows",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          },
+          "description": "Exact fields are defined by the denju-wire request DTO used by this endpoint.",
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "POST /v1/follows",
+        "tags": [
+          "follows"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/follows/remove": {
+      "post": {
+        "operationId": "post_v1_follows_remove",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          },
+          "description": "Exact fields are defined by the denju-wire request DTO used by this endpoint.",
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "POST /v1/follows/remove",
+        "tags": [
+          "follows"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/identity": {
+      "get": {
+        "operationId": "get_v1_identity",
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "GET /v1/identity",
+        "tags": [
+          "identity"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/identity/backup": {
+      "post": {
+        "operationId": "post_v1_identity_backup",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          },
+          "description": "Exact fields are defined by the denju-wire request DTO used by this endpoint.",
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "POST /v1/identity/backup",
+        "tags": [
+          "identity"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/identity/claim": {
+      "post": {
+        "operationId": "post_v1_identity_claim",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          },
+          "description": "Exact fields are defined by the denju-wire request DTO used by this endpoint.",
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "POST /v1/identity/claim",
+        "tags": [
+          "identity"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/identity/login": {
+      "post": {
+        "operationId": "post_v1_identity_login",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          },
+          "description": "Exact fields are defined by the denju-wire request DTO used by this endpoint.",
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "POST /v1/identity/login",
+        "tags": [
+          "identity"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/identity/recover": {
+      "post": {
+        "operationId": "post_v1_identity_recover",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          },
+          "description": "Exact fields are defined by the denju-wire request DTO used by this endpoint.",
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "POST /v1/identity/recover",
+        "tags": [
+          "identity"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/installations": {
+      "post": {
+        "operationId": "post_v1_installations",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          },
+          "description": "Exact fields are defined by the denju-wire request DTO used by this endpoint.",
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [],
+        "summary": "POST /v1/installations",
+        "tags": [
+          "installations"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/internal/outbox/drain": {
+      "post": {
+        "operationId": "post_v1_internal_outbox_drain",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          },
+          "description": "Exact fields are defined by the denju-wire request DTO used by this endpoint.",
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {
+            "recoveryBearer": []
+          }
+        ],
+        "summary": "POST /v1/internal/outbox/drain",
+        "tags": [
+          "internal"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/internal/packs/drain": {
+      "post": {
+        "operationId": "post_v1_internal_packs_drain",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          },
+          "description": "Exact fields are defined by the denju-wire request DTO used by this endpoint.",
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {
+            "recoveryBearer": []
+          }
+        ],
+        "summary": "POST /v1/internal/packs/drain",
+        "tags": [
+          "internal"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/internal/recover": {
+      "get": {
+        "operationId": "get_v1_internal_recover",
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {
+            "recoveryBearer": []
+          }
+        ],
+        "summary": "GET /v1/internal/recover",
+        "tags": [
+          "internal"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/pack-subscriptions": {
+      "get": {
+        "operationId": "get_v1_pack_subscriptions",
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "GET /v1/pack-subscriptions",
+        "tags": [
+          "pack-subscriptions"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      },
+      "post": {
+        "operationId": "post_v1_pack_subscriptions",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          },
+          "description": "Exact fields are defined by the denju-wire request DTO used by this endpoint.",
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "POST /v1/pack-subscriptions",
+        "tags": [
+          "pack-subscriptions"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/pack-subscriptions/remove": {
+      "post": {
+        "operationId": "post_v1_pack_subscriptions_remove",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          },
+          "description": "Exact fields are defined by the denju-wire request DTO used by this endpoint.",
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "POST /v1/pack-subscriptions/remove",
+        "tags": [
+          "pack-subscriptions"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/packs": {
+      "get": {
+        "operationId": "get_v1_packs",
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {},
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "GET /v1/packs",
+        "tags": [
+          "packs"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      },
+      "post": {
+        "operationId": "post_v1_packs",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          },
+          "description": "Exact fields are defined by the denju-wire request DTO used by this endpoint.",
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "POST /v1/packs",
+        "tags": [
+          "packs"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/packs/add": {
+      "post": {
+        "operationId": "post_v1_packs_add",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          },
+          "description": "Exact fields are defined by the denju-wire request DTO used by this endpoint.",
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "POST /v1/packs/add",
+        "tags": [
+          "packs"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/packs/delete": {
+      "post": {
+        "operationId": "post_v1_packs_delete",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          },
+          "description": "Exact fields are defined by the denju-wire request DTO used by this endpoint.",
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "POST /v1/packs/delete",
+        "tags": [
+          "packs"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/packs/publish": {
+      "post": {
+        "operationId": "post_v1_packs_publish",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          },
+          "description": "Exact fields are defined by the denju-wire request DTO used by this endpoint.",
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "POST /v1/packs/publish",
+        "tags": [
+          "packs"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/packs/remove": {
+      "post": {
+        "operationId": "post_v1_packs_remove",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          },
+          "description": "Exact fields are defined by the denju-wire request DTO used by this endpoint.",
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "POST /v1/packs/remove",
+        "tags": [
+          "packs"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/packs/rename": {
+      "post": {
+        "operationId": "post_v1_packs_rename",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          },
+          "description": "Exact fields are defined by the denju-wire request DTO used by this endpoint.",
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "POST /v1/packs/rename",
+        "tags": [
+          "packs"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/packs/unpublish": {
+      "post": {
+        "operationId": "post_v1_packs_unpublish",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          },
+          "description": "Exact fields are defined by the denju-wire request DTO used by this endpoint.",
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "POST /v1/packs/unpublish",
+        "tags": [
+          "packs"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/private-skills": {
+      "get": {
+        "operationId": "get_v1_private_skills",
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "GET /v1/private-skills",
+        "tags": [
+          "private-skills"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/private-skills/imports/commit": {
+      "post": {
+        "operationId": "post_v1_private_skills_imports_commit",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          },
+          "description": "Exact fields are defined by the denju-wire request DTO used by this endpoint.",
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "POST /v1/private-skills/imports/commit",
+        "tags": [
+          "private-skills"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/private-skills/imports/prepare": {
+      "post": {
+        "operationId": "post_v1_private_skills_imports_prepare",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          },
+          "description": "Exact fields are defined by the denju-wire request DTO used by this endpoint.",
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "POST /v1/private-skills/imports/prepare",
+        "tags": [
+          "private-skills"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/private-skills/revisions/commit": {
+      "post": {
+        "operationId": "post_v1_private_skills_revisions_commit",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          },
+          "description": "Exact fields are defined by the denju-wire request DTO used by this endpoint.",
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "POST /v1/private-skills/revisions/commit",
+        "tags": [
+          "private-skills"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/private-skills/revisions/prepare": {
+      "post": {
+        "operationId": "post_v1_private_skills_revisions_prepare",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          },
+          "description": "Exact fields are defined by the denju-wire request DTO used by this endpoint.",
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "POST /v1/private-skills/revisions/prepare",
+        "tags": [
+          "private-skills"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/profile": {
+      "post": {
+        "operationId": "post_v1_profile",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          },
+          "description": "Exact fields are defined by the denju-wire request DTO used by this endpoint.",
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "POST /v1/profile",
+        "tags": [
+          "profile"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/proposals": {
+      "get": {
+        "operationId": "get_v1_proposals",
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "GET /v1/proposals",
+        "tags": [
+          "proposals"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      },
+      "post": {
+        "operationId": "post_v1_proposals",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          },
+          "description": "Exact fields are defined by the denju-wire request DTO used by this endpoint.",
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "POST /v1/proposals",
+        "tags": [
+          "proposals"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/proposals/accept": {
+      "post": {
+        "operationId": "post_v1_proposals_accept",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          },
+          "description": "Exact fields are defined by the denju-wire request DTO used by this endpoint.",
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "POST /v1/proposals/accept",
+        "tags": [
+          "proposals"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/proposals/reject": {
+      "post": {
+        "operationId": "post_v1_proposals_reject",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          },
+          "description": "Exact fields are defined by the denju-wire request DTO used by this endpoint.",
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "POST /v1/proposals/reject",
+        "tags": [
+          "proposals"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/proposals/show": {
+      "get": {
+        "operationId": "get_v1_proposals_show",
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "GET /v1/proposals/show",
+        "tags": [
+          "proposals"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/proposals/withdraw": {
+      "post": {
+        "operationId": "post_v1_proposals_withdraw",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          },
+          "description": "Exact fields are defined by the denju-wire request DTO used by this endpoint.",
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "POST /v1/proposals/withdraw",
+        "tags": [
+          "proposals"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/reports": {
+      "post": {
+        "operationId": "post_v1_reports",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          },
+          "description": "Exact fields are defined by the denju-wire request DTO used by this endpoint.",
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "POST /v1/reports",
+        "tags": [
+          "reports"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/resources/topics": {
+      "post": {
+        "operationId": "post_v1_resources_topics",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          },
+          "description": "Exact fields are defined by the denju-wire request DTO used by this endpoint.",
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "POST /v1/resources/topics",
+        "tags": [
+          "resources"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/resources/transfer": {
+      "post": {
+        "operationId": "post_v1_resources_transfer",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          },
+          "description": "Exact fields are defined by the denju-wire request DTO used by this endpoint.",
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "POST /v1/resources/transfer",
+        "tags": [
+          "resources"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/search": {
+      "get": {
+        "operationId": "get_v1_search",
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {},
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "GET /v1/search",
+        "tags": [
+          "search"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/shares": {
+      "post": {
+        "operationId": "post_v1_shares",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          },
+          "description": "Exact fields are defined by the denju-wire request DTO used by this endpoint.",
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "POST /v1/shares",
+        "tags": [
+          "shares"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/shares/remove": {
+      "post": {
+        "operationId": "post_v1_shares_remove",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          },
+          "description": "Exact fields are defined by the denju-wire request DTO used by this endpoint.",
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "POST /v1/shares/remove",
+        "tags": [
+          "shares"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/show": {
+      "get": {
+        "operationId": "get_v1_show",
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {},
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "GET /v1/show",
+        "tags": [
+          "show"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/skills/delete": {
+      "post": {
+        "operationId": "post_v1_skills_delete",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          },
+          "description": "Exact fields are defined by the denju-wire request DTO used by this endpoint.",
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "POST /v1/skills/delete",
+        "tags": [
+          "skills"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/skills/deprecate": {
+      "post": {
+        "operationId": "post_v1_skills_deprecate",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          },
+          "description": "Exact fields are defined by the denju-wire request DTO used by this endpoint.",
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "POST /v1/skills/deprecate",
+        "tags": [
+          "skills"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/skills/history": {
+      "get": {
+        "operationId": "get_v1_skills_history",
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {},
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "GET /v1/skills/history",
+        "tags": [
+          "skills"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/skills/history/prune": {
+      "post": {
+        "operationId": "post_v1_skills_history_prune",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          },
+          "description": "Exact fields are defined by the denju-wire request DTO used by this endpoint.",
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "POST /v1/skills/history/prune",
+        "tags": [
+          "skills"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/skills/publish": {
+      "post": {
+        "operationId": "post_v1_skills_publish",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          },
+          "description": "Exact fields are defined by the denju-wire request DTO used by this endpoint.",
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "POST /v1/skills/publish",
+        "tags": [
+          "skills"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/skills/rename": {
+      "post": {
+        "operationId": "post_v1_skills_rename",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          },
+          "description": "Exact fields are defined by the denju-wire request DTO used by this endpoint.",
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "POST /v1/skills/rename",
+        "tags": [
+          "skills"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/skills/restore": {
+      "post": {
+        "operationId": "post_v1_skills_restore",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          },
+          "description": "Exact fields are defined by the denju-wire request DTO used by this endpoint.",
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "POST /v1/skills/restore",
+        "tags": [
+          "skills"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/skills/revision": {
+      "get": {
+        "operationId": "get_v1_skills_revision",
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {},
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "GET /v1/skills/revision",
+        "tags": [
+          "skills"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/skills/show": {
+      "get": {
+        "operationId": "get_v1_skills_show",
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {},
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "GET /v1/skills/show",
+        "tags": [
+          "skills"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/skills/unpublish": {
+      "post": {
+        "operationId": "post_v1_skills_unpublish",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          },
+          "description": "Exact fields are defined by the denju-wire request DTO used by this endpoint.",
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "POST /v1/skills/unpublish",
+        "tags": [
+          "skills"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/stars": {
+      "post": {
+        "operationId": "post_v1_stars",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          },
+          "description": "Exact fields are defined by the denju-wire request DTO used by this endpoint.",
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "POST /v1/stars",
+        "tags": [
+          "stars"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/stars/remove": {
+      "post": {
+        "operationId": "post_v1_stars_remove",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          },
+          "description": "Exact fields are defined by the denju-wire request DTO used by this endpoint.",
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "POST /v1/stars/remove",
+        "tags": [
+          "stars"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/subscriptions": {
+      "get": {
+        "operationId": "get_v1_subscriptions",
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "GET /v1/subscriptions",
+        "tags": [
+          "subscriptions"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      },
+      "post": {
+        "operationId": "post_v1_subscriptions",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          },
+          "description": "Exact fields are defined by the denju-wire request DTO used by this endpoint.",
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "POST /v1/subscriptions",
+        "tags": [
+          "subscriptions"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/subscriptions/remove": {
+      "post": {
+        "operationId": "post_v1_subscriptions_remove",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          },
+          "description": "Exact fields are defined by the denju-wire request DTO used by this endpoint.",
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "POST /v1/subscriptions/remove",
+        "tags": [
+          "subscriptions"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/subscriptions/resolve": {
+      "get": {
+        "operationId": "get_v1_subscriptions_resolve",
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "GET /v1/subscriptions/resolve",
+        "tags": [
+          "subscriptions"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/sync/reconcile": {
+      "post": {
+        "operationId": "post_v1_sync_reconcile",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          },
+          "description": "Exact fields are defined by the denju-wire request DTO used by this endpoint.",
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "POST /v1/sync/reconcile",
+        "tags": [
+          "sync"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/teams": {
+      "get": {
+        "operationId": "get_v1_teams",
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "GET /v1/teams",
+        "tags": [
+          "teams"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      },
+      "post": {
+        "operationId": "post_v1_teams",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          },
+          "description": "Exact fields are defined by the denju-wire request DTO used by this endpoint.",
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "POST /v1/teams",
+        "tags": [
+          "teams"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/teams/delete": {
+      "post": {
+        "operationId": "post_v1_teams_delete",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          },
+          "description": "Exact fields are defined by the denju-wire request DTO used by this endpoint.",
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "POST /v1/teams/delete",
+        "tags": [
+          "teams"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/teams/invites": {
+      "post": {
+        "operationId": "post_v1_teams_invites",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          },
+          "description": "Exact fields are defined by the denju-wire request DTO used by this endpoint.",
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "POST /v1/teams/invites",
+        "tags": [
+          "teams"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/teams/invites/revoke": {
+      "post": {
+        "operationId": "post_v1_teams_invites_revoke",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          },
+          "description": "Exact fields are defined by the denju-wire request DTO used by this endpoint.",
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "POST /v1/teams/invites/revoke",
+        "tags": [
+          "teams"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/teams/join": {
+      "post": {
+        "operationId": "post_v1_teams_join",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          },
+          "description": "Exact fields are defined by the denju-wire request DTO used by this endpoint.",
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "POST /v1/teams/join",
+        "tags": [
+          "teams"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/teams/leave": {
+      "post": {
+        "operationId": "post_v1_teams_leave",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          },
+          "description": "Exact fields are defined by the denju-wire request DTO used by this endpoint.",
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "POST /v1/teams/leave",
+        "tags": [
+          "teams"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/teams/members/remove": {
+      "post": {
+        "operationId": "post_v1_teams_members_remove",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          },
+          "description": "Exact fields are defined by the denju-wire request DTO used by this endpoint.",
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "POST /v1/teams/members/remove",
+        "tags": [
+          "teams"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/teams/members/role": {
+      "post": {
+        "operationId": "post_v1_teams_members_role",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          },
+          "description": "Exact fields are defined by the denju-wire request DTO used by this endpoint.",
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "POST /v1/teams/members/role",
+        "tags": [
+          "teams"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/teams/owner-transfer": {
+      "post": {
+        "operationId": "post_v1_teams_owner_transfer",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          },
+          "description": "Exact fields are defined by the denju-wire request DTO used by this endpoint.",
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "POST /v1/teams/owner-transfer",
+        "tags": [
+          "teams"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/teams/owner-transfer/accept": {
+      "post": {
+        "operationId": "post_v1_teams_owner_transfer_accept",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          },
+          "description": "Exact fields are defined by the denju-wire request DTO used by this endpoint.",
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "POST /v1/teams/owner-transfer/accept",
+        "tags": [
+          "teams"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/teams/packs/assign": {
+      "post": {
+        "operationId": "post_v1_teams_packs_assign",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          },
+          "description": "Exact fields are defined by the denju-wire request DTO used by this endpoint.",
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "POST /v1/teams/packs/assign",
+        "tags": [
+          "teams"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/teams/packs/unassign": {
+      "post": {
+        "operationId": "post_v1_teams_packs_unassign",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          },
+          "description": "Exact fields are defined by the denju-wire request DTO used by this endpoint.",
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "POST /v1/teams/packs/unassign",
+        "tags": [
+          "teams"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/teams/settings": {
+      "post": {
+        "operationId": "post_v1_teams_settings",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          },
+          "description": "Exact fields are defined by the denju-wire request DTO used by this endpoint.",
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "POST /v1/teams/settings",
+        "tags": [
+          "teams"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/teams/show": {
+      "get": {
+        "operationId": "get_v1_teams_show",
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "GET /v1/teams/show",
+        "tags": [
+          "teams"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/tokens": {
+      "get": {
+        "operationId": "get_v1_tokens",
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "GET /v1/tokens",
+        "tags": [
+          "tokens"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      },
+      "post": {
+        "operationId": "post_v1_tokens",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          },
+          "description": "Exact fields are defined by the denju-wire request DTO used by this endpoint.",
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "POST /v1/tokens",
+        "tags": [
+          "tokens"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/tokens/revoke": {
+      "post": {
+        "operationId": "post_v1_tokens_revoke",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          },
+          "description": "Exact fields are defined by the denju-wire request DTO used by this endpoint.",
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "POST /v1/tokens/revoke",
+        "tags": [
+          "tokens"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/top": {
+      "get": {
+        "operationId": "get_v1_top",
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {},
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "GET /v1/top",
+        "tags": [
+          "top"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    },
+    "/v1/usage": {
+      "get": {
+        "operationId": "get_v1_usage",
+        "responses": {
+          "2XX": {
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Versioned Denju API error."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "GET /v1/usage",
+        "tags": [
+          "usage"
+        ],
+        "x-denju-wire-contract": "denju-wire"
+      }
+    }
+  },
+  "servers": [
+    {
+      "url": "https://registry.denju.ashray.xyz"
+    }
+  ]
+}

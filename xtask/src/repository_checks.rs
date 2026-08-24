@@ -1,26 +1,35 @@
 use std::{
+    collections::BTreeSet,
     fs,
     path::{Path, PathBuf},
 };
 
+use denju_wire::{ApiAuth, ApiRoute, OPENAPI_V1_ROUTES};
+use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
 const FIXTURE_CHECKSUMS: &str = "spec/fixtures/checksums.sha256";
+const OPENAPI_V1: &str = "spec/wire/openapi-v1.json";
 
 pub(crate) fn check(root: &Path) -> Result<(), String> {
     check_fixture_checksums(root)?;
     check_fixture_coverage(root)?;
     check_sqlx_offline_policy(root)?;
+    check_openapi_contract(root)?;
     check_automation_authority(root)?;
     println!("repository contracts: passed");
     Ok(())
 }
 
-pub(crate) fn update_fixture_checksums(root: &Path) -> Result<(), String> {
+pub(crate) fn update_contract_artifacts(root: &Path) -> Result<(), String> {
     let manifest = fixture_checksum_manifest(root)?;
     fs::write(root.join(FIXTURE_CHECKSUMS), manifest)
         .map_err(|error| format!("failed to update {FIXTURE_CHECKSUMS}: {error}"))?;
     println!("updated {FIXTURE_CHECKSUMS}");
+    let openapi = openapi_v1_document()?;
+    fs::write(root.join(OPENAPI_V1), openapi)
+        .map_err(|error| format!("failed to update {OPENAPI_V1}: {error}"))?;
+    println!("updated {OPENAPI_V1}");
     Ok(())
 }
 
@@ -143,6 +152,254 @@ fn check_sqlx_offline_policy(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+fn check_openapi_contract(root: &Path) -> Result<(), String> {
+    check_server_route_catalog(root)?;
+    let expected = fs::read_to_string(root.join(OPENAPI_V1))
+        .map_err(|error| format!("failed to read {OPENAPI_V1}: {error}"))?;
+    let actual = openapi_v1_document()?;
+    if normalize_newlines(&expected) == actual {
+        Ok(())
+    } else {
+        Err(format!(
+            "OpenAPI contract drift detected; regenerate {OPENAPI_V1} with `cargo xtask contracts --update` after intentionally reviewing the /v1 route/auth change"
+        ))
+    }
+}
+
+fn check_server_route_catalog(root: &Path) -> Result<(), String> {
+    let declared = OPENAPI_V1_ROUTES
+        .iter()
+        .map(|route| (route.method.as_str().to_owned(), route.path.to_owned()))
+        .collect::<BTreeSet<_>>();
+    let actual = server_v1_routes(root)?;
+    if declared == actual {
+        return Ok(());
+    }
+    let missing = declared
+        .difference(&actual)
+        .map(|(method, path)| format!("{method} {path}"))
+        .collect::<Vec<_>>();
+    let undocumented = actual
+        .difference(&declared)
+        .map(|(method, path)| format!("{method} {path}"))
+        .collect::<Vec<_>>();
+    Err(format!(
+        "denju-wire /v1 route catalog does not match the Axum router; missing from server: [{}]; missing from wire catalog: [{}]",
+        missing.join(", "),
+        undocumented.join(", ")
+    ))
+}
+
+fn server_v1_routes(root: &Path) -> Result<BTreeSet<(String, String)>, String> {
+    let mut files = vec![root.join("apps/denju-server/src/http.rs")];
+    collect_rust_files(&root.join("apps/denju-server/src/http"), &mut files)?;
+    files.sort();
+    files.dedup();
+    let mut routes = BTreeSet::new();
+    for path in files {
+        let source = fs::read_to_string(&path)
+            .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
+        parse_axum_routes(&source, &mut routes)?;
+    }
+    Ok(routes)
+}
+
+fn parse_axum_routes(source: &str, output: &mut BTreeSet<(String, String)>) -> Result<(), String> {
+    const NEEDLE: &str = ".route(";
+    let mut cursor = 0;
+    while let Some(relative) = source[cursor..].find(NEEDLE) {
+        let call = cursor + relative;
+        let body_start = call + NEEDLE.len();
+        let body_end = matching_route_call_end(source, body_start)
+            .ok_or_else(|| "unterminated Axum .route(...) call".to_owned())?;
+        let body = &source[body_start..body_end];
+        let trimmed = body.trim_start();
+        if let Some(rest) = trimmed.strip_prefix('"')
+            && let Some(quote) = rest.find('"')
+        {
+            let route_path = &rest[..quote];
+            if route_path.starts_with("/v1/") {
+                if contains_call(body, "get") {
+                    output.insert(("get".to_owned(), route_path.to_owned()));
+                }
+                if contains_call(body, "post") {
+                    output.insert(("post".to_owned(), route_path.to_owned()));
+                }
+            }
+        }
+        cursor = body_end + 1;
+    }
+    Ok(())
+}
+
+fn matching_route_call_end(source: &str, body_start: usize) -> Option<usize> {
+    let bytes = source.as_bytes();
+    let mut depth = 1_u32;
+    let mut quote = None;
+    let mut escaped = false;
+    let mut index = body_start;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if let Some(active_quote) = quote {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == active_quote {
+                quote = None;
+            }
+        } else {
+            match byte {
+                b'"' | b'\'' => quote = Some(byte),
+                b'(' => depth += 1,
+                b')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(index);
+                    }
+                }
+                _ => {}
+            }
+        }
+        index += 1;
+    }
+    None
+}
+
+fn contains_call(source: &str, name: &str) -> bool {
+    let bytes = source.as_bytes();
+    let needle = name.as_bytes();
+    let mut start = 0;
+    while start + needle.len() <= bytes.len() {
+        let Some(relative) = source[start..].find(name) else {
+            return false;
+        };
+        let index = start + relative;
+        let before_is_ident =
+            index > 0 && (bytes[index - 1].is_ascii_alphanumeric() || bytes[index - 1] == b'_');
+        let mut after = index + needle.len();
+        while after < bytes.len() && bytes[after].is_ascii_whitespace() {
+            after += 1;
+        }
+        if !before_is_ident && after < bytes.len() && bytes[after] == b'(' {
+            return true;
+        }
+        start = index + needle.len();
+    }
+    false
+}
+
+fn openapi_v1_document() -> Result<String, String> {
+    let mut paths = Map::<String, Value>::new();
+    for route in OPENAPI_V1_ROUTES {
+        let operation = openapi_operation(route);
+        let entry = paths
+            .entry(route.path.to_owned())
+            .or_insert_with(|| Value::Object(Map::new()));
+        entry
+            .as_object_mut()
+            .expect("OpenAPI path item is always an object")
+            .insert(route.method.as_str().to_owned(), operation);
+    }
+    let document = json!({
+        "openapi": "3.1.0",
+        "info": {
+            "title": "Denju Registry API",
+            "version": "v1",
+            "description": "Generated inspection contract for Denju's versioned /v1 method, path, and authentication surface. Exact JSON request/response shapes are the Rust DTOs in denju-wire and the checked spec/wire contract notes; Rust client/server code shares those DTOs directly rather than generating types from OpenAPI."
+        },
+        "servers": [{ "url": "https://registry.denju.ashray.xyz" }],
+        "paths": paths,
+        "components": {
+            "securitySchemes": {
+                "bearerAuth": { "type": "http", "scheme": "bearer", "description": "Installation, user-session, or scoped automation bearer as permitted by the endpoint." },
+                "operatorBearer": { "type": "http", "scheme": "bearer", "description": "Registry-operator bearer. End-user credentials are rejected." },
+                "recoveryBearer": { "type": "http", "scheme": "bearer", "description": "Deployment recovery bearer. Client and operator credentials are rejected." }
+            },
+            "schemas": {
+                "ApiError": {
+                    "type": "object",
+                    "required": ["code", "message"],
+                    "properties": {
+                        "code": {
+                            "type": "string",
+                            "enum": ["invalid_request", "invalid_request_hash", "operation_conflict", "generation_conflict", "unauthorized", "not_found", "quota_exceeded", "internal", "unavailable"]
+                        },
+                        "message": { "type": "string" }
+                    }
+                }
+            }
+        }
+    });
+    serde_json::to_string_pretty(&document)
+        .map(|mut value| {
+            value.push('\n');
+            value
+        })
+        .map_err(|error| format!("failed to serialize OpenAPI contract: {error}"))
+}
+
+fn openapi_operation(route: &ApiRoute) -> Value {
+    let success = if route.path == "/v1/events" {
+        json!({
+            "description": "Authenticated server-sent sync hints and keepalives.",
+            "content": { "text/event-stream": { "schema": { "type": "string" } } }
+        })
+    } else {
+        json!({
+            "description": "Successful response. Exact status and JSON body shape are defined by the shared denju-wire DTO contract."
+        })
+    };
+    let mut operation = json!({
+        "operationId": operation_id(route),
+        "summary": format!("{} {}", route.method.as_str().to_ascii_uppercase(), route.path),
+        "tags": [route_tag(route.path)],
+        "x-denju-wire-contract": "denju-wire",
+        "responses": {
+            "2XX": success,
+            "default": {
+                "description": "Versioned Denju API error.",
+                "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ApiError" } } }
+            }
+        }
+    });
+    if route.method.as_str() == "post" {
+        operation["requestBody"] = json!({
+            "required": true,
+            "description": "Exact fields are defined by the denju-wire request DTO used by this endpoint.",
+            "content": {
+                "application/json": {
+                    "schema": { "type": "object", "additionalProperties": true }
+                }
+            }
+        });
+    }
+    operation["security"] = match route.auth {
+        ApiAuth::Public => json!([]),
+        ApiAuth::OptionalBearer => json!([{}, { "bearerAuth": [] }]),
+        ApiAuth::Bearer => json!([{ "bearerAuth": [] }]),
+        ApiAuth::Operator => json!([{ "operatorBearer": [] }]),
+        ApiAuth::Recovery => json!([{ "recoveryBearer": [] }]),
+    };
+    operation
+}
+
+fn operation_id(route: &ApiRoute) -> String {
+    let mut id = route.method.as_str().to_owned();
+    for part in route.path.trim_start_matches('/').split('/') {
+        id.push('_');
+        id.push_str(&part.replace('-', "_"));
+    }
+    id
+}
+
+fn route_tag(path: &str) -> &str {
+    path.trim_start_matches("/v1/")
+        .split('/')
+        .next()
+        .unwrap_or("registry")
+}
+
 fn check_automation_authority(root: &Path) -> Result<(), String> {
     for forbidden in ["Makefile", "makefile", "GNUmakefile"] {
         if root.join(forbidden).exists() {
@@ -178,4 +435,32 @@ fn collect_files(directory: &Path, output: &mut Vec<PathBuf>) -> Result<(), Stri
 
 fn normalize_newlines(value: &str) -> String {
     value.replace("\r\n", "\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn axum_route_parser_handles_chained_and_multiline_methods() {
+        let source = r#"
+            Router::new()
+                .route("/v1/example", get(show).post(create))
+                .route(
+                    "/v1/other",
+                    post(update),
+                )
+                .route("/health/live", get(health));
+        "#;
+        let mut routes = BTreeSet::new();
+        parse_axum_routes(source, &mut routes).unwrap();
+        assert_eq!(
+            routes,
+            BTreeSet::from([
+                ("get".to_owned(), "/v1/example".to_owned()),
+                ("post".to_owned(), "/v1/example".to_owned()),
+                ("post".to_owned(), "/v1/other".to_owned()),
+            ])
+        );
+    }
 }

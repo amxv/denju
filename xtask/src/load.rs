@@ -97,13 +97,13 @@ pub(crate) fn run(root: &Path) -> Result<(), String> {
     let catalog_size = env_usize("DENJU_LOAD_CATALOG_SIZE", DEFAULT_CATALOG_SIZE)?;
     let samples = env_usize("DENJU_LOAD_SAMPLES", DEFAULT_REQUEST_SAMPLES)?;
     if catalog_size < 200 {
-        return Err("DENJU_LOAD_CATALOG_SIZE must be at least 200 for Phase 17".to_owned());
+        return Err("DENJU_LOAD_CATALOG_SIZE must be at least 200".to_owned());
     }
     if samples < 20 {
         return Err("DENJU_LOAD_SAMPLES must be at least 20".to_owned());
     }
 
-    eprintln!("phase17 load: infrastructure");
+    eprintln!("load: infrastructure");
     ensure_infrastructure(root)?;
     reset_database(root)?;
     super::run(
@@ -119,7 +119,7 @@ pub(crate) fn run(root: &Path) -> Result<(), String> {
     let registry = runtime
         .block_on(Registry::connect(registry_settings(SERVER_ONE_PORT)))
         .map_err(|error| format!("connect load registry: {error}"))?;
-    eprintln!("phase17 load: seed public catalog ({catalog_size})");
+    eprintln!("load: seed public catalog ({catalog_size})");
     let seeded = runtime
         .block_on(seed_public_catalog(&registry, OWNER, catalog_size))
         .map_err(|error| format!("seed load catalog: {error}"))?;
@@ -130,7 +130,7 @@ pub(crate) fn run(root: &Path) -> Result<(), String> {
         .build()
         .map_err(|error| error.to_string())?;
 
-    eprintln!("phase17 load: cold starts and HTTP latency");
+    eprintln!("load: cold starts and HTTP latency");
     let cold_start_samples_ms =
         bench::repeated_cold_starts(&server_binary, &blocking, SERVER_ONE_PORT, 3)?;
     let cold_start_ms = bench::max_ms(&cold_start_samples_ms)?;
@@ -146,7 +146,7 @@ pub(crate) fn run(root: &Path) -> Result<(), String> {
     wait_ready(&blocking, SERVER_TWO_PORT)?;
     let horizontal_p95 = benchmark_horizontal_search(&blocking, samples)?;
 
-    eprintln!("phase17 load: isolated normal-use CLI and daemon");
+    eprintln!("load: isolated normal-use CLI and daemon");
     let (cli_status_latency, cli_search_latency, daemon_runtime) = {
         let cli_home = IsolatedCliHome::create(root)?;
         run_cli_setup(&cli_binary, &cli_home, SERVER_ONE_PORT)?;
@@ -161,27 +161,27 @@ pub(crate) fn run(root: &Path) -> Result<(), String> {
         (cli_status_latency, cli_search_latency, daemon_runtime)
     };
 
-    eprintln!("phase17 load: reconcile and missed-event scaling");
+    eprintln!("load: reconcile and missed-event scaling");
     let reconcile = runtime.block_on(benchmark_reconcile(&registry, &seeded))?;
     let missed_event_reconcile =
         benchmark_missed_event_reconcile(&runtime, &registry, root, &seeded)?;
     let fanout_target = seeded
         .last()
         .ok_or_else(|| "load catalog unexpectedly empty".to_owned())?;
-    eprintln!("phase17 load: publish and pack fanout");
+    eprintln!("load: publish and pack fanout");
     let pack_fanout = runtime.block_on(fanout::exercise_pack_fanout(
         &registry,
         root,
         fanout_target,
         64,
     ))?;
-    eprintln!("phase17 load: object-store concurrency and restart");
+    eprintln!("load: object-store concurrency and restart");
     let object_store_concurrency =
         runtime.block_on(object_store::exercise_concurrent_provider(&registry, root))?;
-    eprintln!("phase17 load: team scale");
+    eprintln!("load: team scale");
     let team_scale = runtime.block_on(team_scale::exercise_team_scale(&registry, root, 500))?;
 
-    eprintln!("phase17 load: SSE recycle/reconnect");
+    eprintln!("load: SSE recycle/reconnect");
     let (sse_disconnect_observed, sse_reconnect_observed) = exercise_sse_reconnect(
         &runtime,
         root,
@@ -192,9 +192,9 @@ pub(crate) fn run(root: &Path) -> Result<(), String> {
         &mut server_two,
     )?;
 
-    eprintln!("phase17 load: SIGTERM and arbitrary process death");
+    eprintln!("load: SIGTERM and arbitrary process death");
     let sigterm_started = Instant::now();
-    eprintln!("phase17 load: scale-to-zero outbox recovery");
+    eprintln!("load: scale-to-zero outbox recovery");
     server_one.terminate()?;
     let sigterm_exit_ms = millis(sigterm_started.elapsed());
     server_one = ServerProcess::start(&server_binary, SERVER_ONE_PORT)?;
@@ -223,7 +223,7 @@ pub(crate) fn run(root: &Path) -> Result<(), String> {
         ));
     }
 
-    eprintln!("phase17 load: cross-instance PostgreSQL wake");
+    eprintln!("load: cross-instance PostgreSQL wake");
     let _wake_server_two = ServerProcess::start(&server_binary, SERVER_TWO_PORT)?;
     wait_ready(&blocking, SERVER_TWO_PORT)?;
     let observer = runtime
@@ -244,7 +244,7 @@ pub(crate) fn run(root: &Path) -> Result<(), String> {
     }
     let cross_instance_wake_ms = millis(wake_started.elapsed());
 
-    eprintln!("phase17 load: forced LISTEN reconnect");
+    eprintln!("load: forced LISTEN reconnect");
     let listener_reconnected = exercise_listener_reconnect(&runtime, root, &observer)?;
     if !listener_reconnected {
         return Err(
@@ -252,7 +252,7 @@ pub(crate) fn run(root: &Path) -> Result<(), String> {
         );
     }
 
-    eprintln!("phase17 load: query plans and environment report");
+    eprintln!("load: query plans and environment report");
     let search_plan = explain_search(root)?;
     let outbox_plan = explain_outbox(root)?;
     let environment = environment_report(root)?;
@@ -286,7 +286,7 @@ pub(crate) fn run(root: &Path) -> Result<(), String> {
     };
     write_report(root, &report)?;
     enforce_targets(&report)?;
-    println!("Phase 17 load/stateless harness passed");
+    println!("load/stateless harness passed");
     Ok(())
 }
 

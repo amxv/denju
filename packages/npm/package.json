@@ -1,6 +1,6 @@
 {
   "name": "denju-cli",
-  "version": "0.0.0-development",
+  "version": "0.3.0-development",
   "description": "Native Denju CLI installer",
   "license": "Apache-2.0",
   "author": "amxv",

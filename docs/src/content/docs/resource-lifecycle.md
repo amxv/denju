@@ -60,7 +60,7 @@ denju delete @alice/code-review --yes
 
 Delete tombstones the resource and removes active canonical/projection state. Published history needed for integrity and retained direct subscriptions remains immutable in the registry. Redirects targeting the deleted resource are removed, and its locator becomes available for a new resource with a new resource ID.
 
-Team resource deletion is intentionally blocked until the owner-only team deletion and ownership-succession rules are implemented. Team rename, publish, unpublish, and deprecation already use team publishing authority.
+Team resource deletion uses the same publishing authority as other team resource lifecycle operations. Deleting an entire team is a separate owner-only operation: Denju first enforces explicit ownership succession rules so a team cannot become ownerless, and team deletion then tombstones the team's remaining resources and removes its membership and assigned-pack state.
 
 ## Transfer into a team
 

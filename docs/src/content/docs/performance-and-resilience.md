@@ -17,10 +17,10 @@ cargo xtask contracts
 cargo xtask check
 ```
 
-If an intentionally reviewed conformance vector changes, regenerate only its checksum manifest
-with `cargo xtask contracts --update` and review the resulting diff. Denju currently uses SQLx's
-runtime query APIs, so ordinary compilation does not require a live database or `.sqlx/query-*.json`
-files; introducing compile-time query macros must also introduce checked offline metadata.
+If an intentionally reviewed contract changes, run `cargo xtask contracts --update` and review the
+resulting fixture-checksum and `spec/wire/openapi-v1.json` diff. Denju currently uses SQLx's runtime
+query APIs, so ordinary compilation does not require a live database or `.sqlx/query-*.json` files;
+introducing compile-time query macros must also introduce checked offline metadata.
 
 ## Exercise the property corpus
 
@@ -38,7 +38,7 @@ property that found them.
 ## Run the stateless load harness
 
 `cargo xtask load` is an explicit non-CI integration/load command. It starts the pinned PostgreSQL
-18.6 and Garage 2.3.0 dependencies, creates a fresh Phase-17 database, builds release binaries,
+18.6 and Garage 2.3.0 dependencies, creates a fresh isolated load-test database, builds release binaries,
 seeds a public catalog, and runs ordinary `denju-server` processes.
 
 ```bash

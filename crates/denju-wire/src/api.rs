@@ -30,6 +30,24 @@ pub struct CreateInstallationResponse {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OutboxDrainRequest {
+    pub limit: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OutboxDrainResponse {
+    pub dispatched: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecoveryDrainResponse {
+    pub outbox_dispatched: usize,
+    pub pack_revisions_processed: u64,
+    pub pack_release_events_completed: u64,
+    pub pack_release_event_pending: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ApiError {
     pub code: ApiErrorCode,
     pub message: String,

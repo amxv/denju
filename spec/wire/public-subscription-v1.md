@@ -1,6 +1,6 @@
 # Denju public discovery and direct-subscription wire contract v1
 
-The Rust DTOs in `denju-wire` are authoritative. This document records the Phase-3 `/v1` surface so external callers can inspect the current compatibility boundary while the complete generated OpenAPI artifact is built out alongside later write APIs.
+The Rust DTOs in `denju-wire` are authoritative. This document records the public-subscription compatibility boundary alongside the checked `spec/wire/openapi-v1.json` artifact, which enumerates the complete current `/v1` method/path/authentication surface. Rust client and server code share the DTOs directly rather than generating types from OpenAPI.
 
 Public reads:
 

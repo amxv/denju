@@ -47,6 +47,4 @@ bun run docs:build
 
 ## Release shape
 
-A `vX.Y.Z` tag runs the release workflow. It builds native `denju` binaries for macOS, Linux, and Windows on x64 and arm64 runners, publishes a SHA-256 manifest with the GitHub Release, and then publishes the matching `denju-cli` npm wrapper. The npm installer verifies the downloaded binary against that manifest and never compiles from source as a fallback.
-
-The former Go/Agentbox implementation is historical only. Implementation work must not inspect its branch/source for parity, examples, tests, or architecture. Work from current `main`, the product specification, and the current workstream plan.
+A `vX.Y.Z` tag runs the release workflow. It builds native `denju` binaries for macOS, Linux, and Windows on x64 and arm64 runners, assembles the shared SHA-256/size manifest plus POSIX and PowerShell installers, publishes the multi-architecture `denju-server` container, creates the GitHub Release, and publishes the matching `denju-cli` npm wrapper. Installer, npm, and `denju upgrade` paths consume the same release contract and never compile from source as a fallback.

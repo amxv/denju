@@ -1,6 +1,6 @@
 # Denju social discovery wire contract v1
 
-Phase 15 extends `/v1` with a metadata-only discovery surface. PostgreSQL remains authoritative for profiles, relationships, social counts, resource access, and report records. `resource_search_documents` is derived metadata that can be rebuilt from authoritative rows; it never contains skill bodies, scripts, blobs, snapshot bytes, or object-store locations.
+The `/v1` API includes a metadata-only discovery surface. PostgreSQL remains authoritative for profiles, relationships, social counts, resource access, and report records. `resource_search_documents` is derived metadata that can be rebuilt from authoritative rows; it never contains skill bodies, scripts, blobs, snapshot bytes, or object-store locations.
 
 ## Read endpoints
 
@@ -42,7 +42,7 @@ Unpublishing does not remove `resource_stars`; public reads expose zero/no count
 
 ## Reports
 
-`POST /v1/reports` accepts a claimed user's private moderation report for a currently public resource. The reason is 1–64 characters. Reports are not exposed through end-user discovery APIs and do not mutate resource visibility or availability. Phase 16 operator APIs consume this table.
+`POST /v1/reports` accepts a claimed user's private moderation report for a currently public resource. The reason is 1–64 characters. Reports are not exposed through end-user discovery APIs and do not mutate resource visibility or availability. The operator API consumes this table for review and quarantine decisions.
 
 ## Derived indexes and lifecycle
 

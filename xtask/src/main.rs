@@ -28,7 +28,7 @@ fn main() -> ExitCode {
         "docs" => run("bun", &["run", "docs:check"]),
         "contracts" => match std::env::args().nth(2).as_deref() {
             None => repository_checks::check(&repo_root()),
-            Some("--update") => repository_checks::update_fixture_checksums(&repo_root()),
+            Some("--update") => repository_checks::update_contract_artifacts(&repo_root()),
             Some(other) => Err(format!("unknown contracts option: {other}")),
         },
         "fuzz" => fuzz_properties(),

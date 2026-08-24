@@ -2,8 +2,6 @@
 
 Denju is an agent-native social registry and near-real-time synchronization system for Agent Skills.
 
-`main` is the native Rust implementation. The former Go/Agentbox implementation is historical only and is deliberately excluded from the implementation workflow.
-
 ## Workspace
 
 ```text

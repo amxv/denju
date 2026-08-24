@@ -1,10 +1,13 @@
 use std::{
     collections::BTreeSet,
-    fs::{self, File, OpenOptions},
+    fs::{self, OpenOptions},
     io::{self, Write},
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
+
+#[cfg(unix)]
+use std::fs::File;
 
 use denju_core::{
     BlobId, OperationId, OwnedSkillEntry, ResourceId, RevisionId, SkillManifest, SnapshotError,
@@ -194,7 +197,7 @@ fn write_unmanaged_entries(
             OwnedSkillEntry::File {
                 path,
                 bytes,
-                executable,
+                executable: _executable,
             } => {
                 let destination = root.join(path);
                 if let Some(parent) = destination.parent() {
@@ -206,7 +209,7 @@ fn write_unmanaged_entries(
                     use std::os::unix::fs::PermissionsExt;
                     fs::set_permissions(
                         &destination,
-                        fs::Permissions::from_mode(if *executable { 0o755 } else { 0o644 }),
+                        fs::Permissions::from_mode(if *_executable { 0o755 } else { 0o644 }),
                     )?;
                 }
             }
@@ -482,7 +485,7 @@ pub(crate) fn write_generation(
             OwnedSkillEntry::File {
                 path,
                 bytes,
-                executable,
+                executable: _executable,
             } => {
                 let cas = store_cas_blob(paths, bytes)?;
                 let destination = root.join(path);
@@ -495,7 +498,7 @@ pub(crate) fn write_generation(
                     use std::os::unix::fs::PermissionsExt;
                     fs::set_permissions(
                         &destination,
-                        fs::Permissions::from_mode(if *executable { 0o755 } else { 0o644 }),
+                        fs::Permissions::from_mode(if *_executable { 0o755 } else { 0o644 }),
                     )?;
                 }
             }
@@ -667,10 +670,10 @@ fn create_relative_symlink(target: &str, link: &Path) -> io::Result<()> {
     std::os::windows::fs::symlink_file(target, link)
 }
 
-fn sync_parent(path: &Path) -> Result<(), MaterializationError> {
+fn sync_parent(_path: &Path) -> Result<(), MaterializationError> {
     #[cfg(unix)]
     {
-        let directory = File::open(path)?;
+        let directory = File::open(_path)?;
         directory.sync_all()?;
     }
     Ok(())

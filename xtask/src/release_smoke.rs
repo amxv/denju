@@ -17,9 +17,9 @@ use uuid::Uuid;
 
 use crate::release_artifacts::{self, CLIENT_ASSETS};
 
-const SMOKE_VERSION: &str = "0.0.0-smoke";
-const SMOKE_NEXT_VERSION: &str = "0.0.0-smoke-next";
-const SMOKE_FAILED_VERSION: &str = "0.0.0-smoke-failed";
+const SMOKE_VERSION: &str = "0.3.0-smoke";
+const SMOKE_NEXT_VERSION: &str = "0.3.0-smoke-next";
+const SMOKE_FAILED_VERSION: &str = "0.3.0-smoke-failed";
 
 pub(crate) fn run(root: &Path) -> Result<(), String> {
     let temporary = SmokeDirectory::new()?;
@@ -27,7 +27,7 @@ pub(crate) fn run(root: &Path) -> Result<(), String> {
     let dist = temporary.path().join("dist");
     fs::create_dir_all(&home).map_err(io_error("create release-smoke home"))?;
     fs::create_dir_all(&dist).map_err(io_error("create release-smoke dist"))?;
-    fs::write(home.join(".denju-test-home-v1"), b"phase18 release smoke\n")
+    fs::write(home.join(".denju-test-home-v1"), b"release smoke\n")
         .map_err(io_error("write release-smoke home marker"))?;
 
     let native = build_native_client(root, SMOKE_VERSION)?;
@@ -41,16 +41,30 @@ pub(crate) fn run(root: &Path) -> Result<(), String> {
     #[cfg(windows)]
     let standalone = smoke_powershell_installer(root, &home, &base, &native_bytes)?;
     smoke_npm_installer(root, temporary.path(), &home, &base, &native_bytes)?;
-    smoke_standalone_upgrade(root, &home, &dist, &base, &standalone)?;
+    smoke_standalone_upgrade(
+        temporary.path(),
+        &home,
+        &dist,
+        &base,
+        &standalone,
+        &native_bytes,
+    )?;
 
     println!("release smoke: installers, manifest, upgrade, and rollback passed");
     Ok(())
 }
 
 fn build_native_client(root: &Path, version: &str) -> Result<PathBuf, String> {
-    eprintln!("+ DENJU_BUILD_VERSION={version} cargo build -p denju --target-dir target");
+    eprintln!("+ DENJU_BUILD_VERSION={version} cargo build --release -p denju --target-dir target");
     let status = Command::new("cargo")
-        .args(["build", "-p", "denju", "--target-dir", "target"])
+        .args([
+            "build",
+            "--release",
+            "-p",
+            "denju",
+            "--target-dir",
+            "target",
+        ])
         .env("DENJU_BUILD_VERSION", version)
         .current_dir(root)
         .status()
@@ -59,7 +73,7 @@ fn build_native_client(root: &Path, version: &str) -> Result<PathBuf, String> {
         return Err(format!("release-smoke client build exited with {status}"));
     }
     let extension = if cfg!(windows) { ".exe" } else { "" };
-    let path = root.join(format!("target/debug/denju{extension}"));
+    let path = root.join(format!("target/release/denju{extension}"));
     if path.is_file() {
         Ok(path)
     } else {
@@ -268,14 +282,39 @@ fn npm_global_package_path(prefix: &Path) -> PathBuf {
 }
 
 fn smoke_standalone_upgrade(
-    root: &Path,
+    temporary: &Path,
     home: &Path,
     dist: &Path,
     base: &str,
     target: &Path,
+    initial_bytes: &[u8],
 ) -> Result<(), String> {
-    let next = build_native_client(root, SMOKE_NEXT_VERSION)?;
-    let next_bytes = fs::read(&next).map_err(io_error("read upgraded smoke client"))?;
+    // Exercise rollback first while the installed target is still the real Denju binary. The
+    // replacement fixtures only need to implement the two probes the updater itself performs;
+    // compiling two additional optimized Denju binaries would make this six-platform smoke much
+    // slower without testing any additional updater behavior.
+    let failed_bytes = build_upgrade_fixture(temporary, SMOKE_FAILED_VERSION, false)?;
+    stage_release(dist, SMOKE_FAILED_VERSION, &failed_bytes)?;
+    let failure = safe_command(Command::new(target), home)
+        .arg("upgrade")
+        .env("DENJU_RELEASE_BASE_URL", base)
+        .env("DENJU_INSTALL_TARGET", target)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_err(|error| format!("failed to execute rollback smoke: {error}"))?;
+    if failure.success() {
+        return Err("standalone upgrade unexpectedly accepted an unhealthy replacement".to_owned());
+    }
+    assert_installed_bytes(target, initial_bytes, "failed-health standalone rollback")?;
+    assert_binary_version_value(
+        target,
+        home,
+        "failed-health standalone rollback",
+        SMOKE_VERSION,
+    )?;
+
+    let next_bytes = build_upgrade_fixture(temporary, SMOKE_NEXT_VERSION, true)?;
     stage_release(dist, SMOKE_NEXT_VERSION, &next_bytes)?;
     let success = safe_command(Command::new(target), home)
         .arg("upgrade")
@@ -292,33 +331,48 @@ fn smoke_standalone_upgrade(
         home,
         "successful standalone upgrade",
         SMOKE_NEXT_VERSION,
-    )?;
-
-    let failed = build_native_client(root, SMOKE_FAILED_VERSION)?;
-    let failed_bytes = fs::read(&failed).map_err(io_error("read failed-health smoke client"))?;
-    stage_release(dist, SMOKE_FAILED_VERSION, &failed_bytes)?;
-    let failure = safe_command(Command::new(target), home)
-        .arg("upgrade")
-        .env("DENJU_RELEASE_BASE_URL", base)
-        .env("DENJU_INSTALL_TARGET", target)
-        .env("DENJU_TEST_UPGRADE_HEALTH_FAIL", "1")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map_err(|error| format!("failed to execute rollback smoke: {error}"))?;
-    if failure.success() {
-        return Err(
-            "standalone upgrade unexpectedly survived injected new-binary health failure"
-                .to_owned(),
-        );
-    }
-    assert_installed_bytes(target, &next_bytes, "failed-health standalone rollback")?;
-    assert_binary_version_value(
-        target,
-        home,
-        "failed-health standalone rollback",
-        SMOKE_NEXT_VERSION,
     )
+}
+
+fn build_upgrade_fixture(
+    temporary: &Path,
+    version: &str,
+    healthy: bool,
+) -> Result<Vec<u8>, String> {
+    let label = if healthy { "healthy" } else { "unhealthy" };
+    let source = temporary.join(format!("upgrade-fixture-{label}.rs"));
+    let extension = if cfg!(windows) { ".exe" } else { "" };
+    let binary = temporary.join(format!("upgrade-fixture-{label}{extension}"));
+    let health_exit = if healthy { 0 } else { 1 };
+    let source_text = format!(
+        r#"const VERSION: &str = {version:?};
+const HEALTH_EXIT: u8 = {health_exit};
+
+fn main() -> std::process::ExitCode {{
+    match std::env::args().nth(1).as_deref() {{
+        Some("--version") => {{
+            println!("denju {{VERSION}}");
+            std::process::ExitCode::SUCCESS
+        }}
+        Some("upgrade-health") => std::process::ExitCode::from(HEALTH_EXIT),
+        _ => std::process::ExitCode::from(2),
+    }}
+}}
+"#
+    );
+    fs::write(&source, source_text).map_err(io_error("write upgrade fixture source"))?;
+    let status = Command::new("rustc")
+        .arg("--edition=2024")
+        .args(["-C", "opt-level=0", "-C", "strip=debuginfo"])
+        .arg("-o")
+        .arg(&binary)
+        .arg(&source)
+        .status()
+        .map_err(|error| format!("failed to compile upgrade fixture: {error}"))?;
+    if !status.success() {
+        return Err(format!("upgrade fixture compile exited with {status}"));
+    }
+    fs::read(&binary).map_err(io_error("read compiled upgrade fixture"))
 }
 
 fn assert_installed_bytes(path: &Path, expected: &[u8], label: &str) -> Result<(), String> {

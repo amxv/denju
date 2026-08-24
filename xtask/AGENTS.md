@@ -7,7 +7,7 @@ Root `AGENTS.md` applies. `xtask` is the canonical repository automation, genera
 - nontrivial repository automation has one owner here rather than duplicated shell/Just/Make logic
 - `Justfile` may expose thin aliases only
 - `cargo xtask check` remains the comprehensive deterministic handoff/CI gate
-- Phase 2 adds the repeatable `cargo xtask dev` lifecycle around the pinned Compose dependencies and registry process
+- `cargo xtask dev` owns the repeatable lifecycle around the pinned Compose dependencies and registry process
 
 Keep runtime product logic out of xtask.
 

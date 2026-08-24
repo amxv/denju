@@ -811,7 +811,7 @@ impl LocalDatabase {
     }
 
     /// Marks a locally queued revision as durably stored by the registry without moving this
-    /// device's authoritative workspace baseline. Phase-9 CAS divergence uses this for the
+    /// device's authoritative workspace baseline. CAS divergence uses this for the
     /// detached head: the immutable revision is safe remotely, but the active ref still points
     /// at the other head until a merge resolves the conflict.
     pub async fn mark_local_revision_detached_stored(

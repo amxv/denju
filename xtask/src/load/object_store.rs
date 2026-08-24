@@ -78,7 +78,7 @@ async fn exercise_provider_restart(root: &Path) -> Result<(u64, bool), String> {
     let restarted = Instant::now();
     garage.start_service()?;
     crate::wait_for_tcp(
-        "Phase 17 isolated Garage",
+        "isolated Garage load harness",
         format!("127.0.0.1:{CHAOS_S3_PORT}")
             .parse()
             .map_err(|error| format!("invalid isolated Garage address: {error}"))?,
@@ -115,7 +115,7 @@ impl ChaosGarage {
         garage.cleanup()?;
         garage.start_service()?;
         crate::wait_for_tcp(
-            "Phase 17 isolated Garage",
+            "isolated Garage load harness",
             format!("127.0.0.1:{CHAOS_S3_PORT}")
                 .parse()
                 .map_err(|error| format!("invalid isolated Garage address: {error}"))?,

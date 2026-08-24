@@ -1,9 +1,13 @@
 use std::{
-    fs::{File, OpenOptions},
     io::{self, Write},
-    process::{Command, Stdio},
     str::FromStr,
     time::{SystemTime, UNIX_EPOCH},
+};
+
+#[cfg(unix)]
+use std::{
+    fs::{File, OpenOptions},
+    process::{Command, Stdio},
 };
 
 use denju_client::{ClientError, RegistryClient};

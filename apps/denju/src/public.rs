@@ -188,7 +188,7 @@ pub(crate) async fn sync_once() -> Result<SyncOutcome, RuntimeError> {
         blockers.extend(local_blockers);
     }
     let context = installed_context(true).await?;
-    // An upgraded Phase-5 identity may only learn its user author-principal from the registry
+    // An upgraded pre-claim identity may only learn its user author-principal from the registry
     // above, so run the idempotent capture once more after authenticated context hydration.
     let (_workspace_pass, hydrated_blockers) =
         crate::workspace::capture_local_edits(&context.paths, &context.db, false).await?;
