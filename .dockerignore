@@ -1,0 +1,15 @@
+.git
+.github
+.vercel
+target
+tmp
+node_modules
+docs/dist
+docs/node_modules
+tests
+fuzz
+packages
+install
+*.log
+*.db
+*.sqlite

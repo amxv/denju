@@ -239,8 +239,12 @@ fn install_systemd_user(
         "systemctl --user daemon-reload",
     )?;
     run_checked(
-        Command::new("systemctl").args(["--user", "enable", "--now", "denju.service"]),
-        "systemctl --user enable --now denju.service",
+        Command::new("systemctl").args(["--user", "enable", "denju.service"]),
+        "systemctl --user enable denju.service",
+    )?;
+    run_checked(
+        Command::new("systemctl").args(["--user", "restart", "denju.service"]),
+        "systemctl --user restart denju.service",
     )?;
     Ok(ServiceStatus {
         kind: ServiceKind::SystemdUser,
@@ -288,6 +292,11 @@ fn install_windows_task(
             detail: Some("installed without starting (test mode)".to_owned()),
         });
     }
+    let _ = Command::new("schtasks")
+        .args(["/End", "/TN", WINDOWS_TASK])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
     run_checked(
         Command::new("schtasks").args(["/Run", "/TN", WINDOWS_TASK]),
         "schtasks /Run",
@@ -317,6 +326,8 @@ fn start_session_daemon(
             ),
         });
     }
+    #[cfg(target_os = "linux")]
+    stop_matching_session_daemon(paths, executable)?;
     fs::create_dir_all(&paths.logs)?;
     let stdout = File::create(paths.logs.join("daemon.log"))?;
     let stderr = File::create(paths.logs.join("daemon.err.log"))?;
@@ -335,6 +346,47 @@ fn start_session_daemon(
             "persistent user service unavailable; running for the current session".to_owned(),
         ),
     })
+}
+
+#[cfg(target_os = "linux")]
+fn stop_matching_session_daemon(paths: &LocalPaths, executable: &Path) -> Result<(), ServiceError> {
+    let pid_path = paths.run.join("daemon.pid");
+    let Ok(pid_text) = fs::read_to_string(&pid_path) else {
+        return Ok(());
+    };
+    let Ok(pid) = pid_text.trim().parse::<u32>() else {
+        return Ok(());
+    };
+    let process_executable = fs::read_link(format!("/proc/{pid}/exe"));
+    let Ok(process_executable) = process_executable else {
+        return Ok(());
+    };
+    let expected = executable.canonicalize()?;
+    if !process_executable_matches(&process_executable, &expected) {
+        return Ok(());
+    }
+    run_checked(
+        Command::new("kill").args(["-TERM", &pid.to_string()]),
+        "kill -TERM denju session daemon",
+    )?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        if !pid_path.is_file() {
+            return Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    Err(ServiceError::CommandFailed {
+        command: "stop Denju session daemon".to_owned(),
+        status: "daemon did not exit within 5 seconds".to_owned(),
+    })
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn process_executable_matches(process_executable: &Path, expected: &Path) -> bool {
+    let actual = process_executable.to_string_lossy();
+    let actual = actual.strip_suffix(" (deleted)").unwrap_or(&actual);
+    Path::new(actual) == expected
 }
 
 fn run_checked(command: &mut Command, name: &str) -> Result<(), ServiceError> {
@@ -423,5 +475,19 @@ mod tests {
         if status.kind == ServiceKind::SystemdUser {
             assert!(systemd_unit_path(&paths).is_file());
         }
+    }
+
+    #[test]
+    fn replaced_running_executable_keeps_its_linux_procfs_identity() {
+        let expected = Path::new("/opt/denju/bin/denju");
+        assert!(process_executable_matches(expected, expected));
+        assert!(process_executable_matches(
+            Path::new("/opt/denju/bin/denju (deleted)"),
+            expected
+        ));
+        assert!(!process_executable_matches(
+            Path::new("/usr/bin/something-else (deleted)"),
+            expected
+        ));
     }
 }

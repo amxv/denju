@@ -17,32 +17,32 @@ use denju_wire::{
     DeprecateSkillRequest, DeprecateSkillResponse, DeviceList, DeviceRevokeRequest,
     DeviceRevokeResponse, HistoryPruneResponse, IdentityBackupRequest, IdentityInfo,
     IdentitySessionResponse, LoginRequest, PackCreateRequest, PackCreateResponse, PackDetail,
-    PackDrainRequest, PackDrainResponse, PackLifecycleRequest, PackLifecycleResponse,
-    PackMutationKind, PackMutationRequest, PackMutationResponse, PackPublishRequest,
-    PackRenameRequest, PackSubscriptionCatalog, PackSubscriptionMutationKind,
-    PackSubscriptionRequest, PackSubscriptionResponse, PrivateRevisionCommitRequest,
-    PrivateRevisionCommitResponse, PrivateRevisionPrepareResponse, PrivateRevisionRequest,
-    PrivateSkillCatalog, PrivateSkillImportCommitRequest, PrivateSkillImportPrepareResponse,
-    PrivateSkillImportRequest, PrivateSkillImportResponse, ProposalAcceptRequest,
-    ProposalCloseRequest, ProposalCreateRequest, PublicSkillDetail, PublishSkillRequest,
-    PublishSkillResponse, RecoveryResetRequest, RegistryCapabilities, RenameSkillRequest,
-    RenameSkillResponse, ResourceLifecycleRequest, RestoreSkillRequest, RestoreSkillResponse,
-    ShareMutationKind, ShareSkillRequest, ShareSkillResponse, SkillHistoryResponse, SkillProposal,
-    SkillProposalDetail, SkillProposalList, SkillRevisionDetail, SubscriptionCatalog,
-    SubscriptionMutationKind, SubscriptionMutationRequest, SubscriptionMutationResponse,
-    SubscriptionTarget, SyncReconcileRequest, SyncReconcileResponse, UnpublishSkillResponse,
-    UsageResponse,
+    PackLifecycleRequest, PackLifecycleResponse, PackMutationKind, PackMutationRequest,
+    PackMutationResponse, PackPublishRequest, PackRenameRequest, PackSubscriptionCatalog,
+    PackSubscriptionMutationKind, PackSubscriptionRequest, PackSubscriptionResponse,
+    PrivateRevisionCommitRequest, PrivateRevisionCommitResponse, PrivateRevisionPrepareResponse,
+    PrivateRevisionRequest, PrivateSkillCatalog, PrivateSkillImportCommitRequest,
+    PrivateSkillImportPrepareResponse, PrivateSkillImportRequest, PrivateSkillImportResponse,
+    ProposalAcceptRequest, ProposalCloseRequest, ProposalCreateRequest, PublicSkillDetail,
+    PublishSkillRequest, PublishSkillResponse, RecoveryResetRequest, RegistryCapabilities,
+    RenameSkillRequest, RenameSkillResponse, ResourceLifecycleRequest, RestoreSkillRequest,
+    RestoreSkillResponse, ShareMutationKind, ShareSkillRequest, ShareSkillResponse,
+    SkillHistoryResponse, SkillProposal, SkillProposalDetail, SkillProposalList,
+    SkillRevisionDetail, SubscriptionCatalog, SubscriptionMutationKind,
+    SubscriptionMutationRequest, SubscriptionMutationResponse, SubscriptionTarget,
+    SyncReconcileRequest, SyncReconcileResponse, UnpublishSkillResponse, UsageResponse,
 };
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 mod admin_routes;
 mod auth;
 mod discovery_routes;
 pub(crate) mod realtime_routes;
+mod recovery_routes;
 mod team_routes;
 
 use crate::observability::HttpMetrics;
-use auth::{bearer_token, optional_bearer_token, recovery_bearer_token};
+use auth::{bearer_token, optional_bearer_token};
 
 pub(super) fn router(registry: Arc<Registry>) -> Router {
     let metrics = Arc::new(HttpMetrics::new());
@@ -121,8 +121,15 @@ pub(super) fn router(registry: Arc<Registry>) -> Router {
             get(pack_subscriptions).post(subscribe_pack),
         )
         .route("/v1/pack-subscriptions/remove", post(unsubscribe_pack))
-        .route("/v1/internal/outbox/drain", post(drain_outbox))
-        .route("/v1/internal/packs/drain", post(drain_packs))
+        .route("/v1/internal/recover", get(recovery_routes::recover))
+        .route(
+            "/v1/internal/outbox/drain",
+            post(recovery_routes::drain_outbox),
+        )
+        .route(
+            "/v1/internal/packs/drain",
+            post(recovery_routes::drain_packs),
+        )
         .route("/v1/sync/reconcile", post(sync_reconcile))
         .route("/v1/events", get(realtime_routes::events))
         .layer(DefaultBodyLimit::max(2 * 1024 * 1024))
@@ -789,42 +796,6 @@ async fn pack_subscriptions(
         .pack_subscription_catalog(bearer)
         .await
         .map(Json)
-        .map_err(ApiResponseError)
-}
-
-async fn drain_packs(
-    State(registry): State<Arc<Registry>>,
-    headers: HeaderMap,
-    Json(request): Json<PackDrainRequest>,
-) -> Result<Json<PackDrainResponse>, ApiResponseError> {
-    recovery_bearer_token(&headers)?;
-    registry
-        .drain_pack_release_events(request.limit)
-        .await
-        .map(Json)
-        .map_err(ApiResponseError)
-}
-
-#[derive(Debug, Deserialize)]
-struct OutboxDrainRequest {
-    limit: u32,
-}
-
-#[derive(Debug, Serialize)]
-struct OutboxDrainResponse {
-    dispatched: usize,
-}
-
-async fn drain_outbox(
-    State(registry): State<Arc<Registry>>,
-    headers: HeaderMap,
-    Json(request): Json<OutboxDrainRequest>,
-) -> Result<Json<OutboxDrainResponse>, ApiResponseError> {
-    recovery_bearer_token(&headers)?;
-    registry
-        .drain_outbox(request.limit)
-        .await
-        .map(|dispatched| Json(OutboxDrainResponse { dispatched }))
         .map_err(ApiResponseError)
 }
 

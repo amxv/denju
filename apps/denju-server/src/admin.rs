@@ -36,10 +36,11 @@ pub(crate) enum AdminCommand {
     },
 }
 
-pub(crate) async fn run(config: &ServerConfig, command: AdminCommand) -> Result<(), String> {
+pub(crate) async fn run(command: AdminCommand) -> Result<(), String> {
     match command {
         AdminCommand::Bootstrap { name } => {
-            let credential = Registry::bootstrap_operator(admin_database_url(config)?, &name)
+            let database_url = admin_database_url()?;
+            let credential = Registry::bootstrap_operator(&database_url, &name)
                 .await
                 .map_err(api_error)?;
             println!(
@@ -48,13 +49,15 @@ pub(crate) async fn run(config: &ServerConfig, command: AdminCommand) -> Result<
             );
         }
         AdminCommand::Revoke { operator_id } => {
-            let outcome = Registry::revoke_operator(admin_database_url(config)?, &operator_id)
+            let database_url = admin_database_url()?;
+            let outcome = Registry::revoke_operator(&database_url, &operator_id)
                 .await
                 .map_err(api_error)?;
             println!("revoked_operator={}", outcome.operator_id);
         }
         AdminCommand::Reports { limit, cursor } => {
-            let registry = runtime_registry(config).await?;
+            let config = ServerConfig::from_env()?;
+            let registry = runtime_registry(&config).await?;
             let token = operator_token()?;
             let outcome = registry
                 .admin_reports(&token, limit, cursor.as_deref())
@@ -70,7 +73,8 @@ pub(crate) async fn run(config: &ServerConfig, command: AdminCommand) -> Result<
             release_version,
             reason,
         } => {
-            let registry = runtime_registry(config).await?;
+            let config = ServerConfig::from_env()?;
+            let registry = runtime_registry(&config).await?;
             mutate(
                 &registry,
                 AdminQuarantineMutationKind::Quarantine,
@@ -84,7 +88,8 @@ pub(crate) async fn run(config: &ServerConfig, command: AdminCommand) -> Result<
             locator,
             release_version,
         } => {
-            let registry = runtime_registry(config).await?;
+            let config = ServerConfig::from_env()?;
+            let registry = runtime_registry(&config).await?;
             mutate(
                 &registry,
                 AdminQuarantineMutationKind::Unquarantine,
@@ -109,10 +114,13 @@ async fn runtime_registry(config: &ServerConfig) -> Result<Registry, String> {
     Ok(registry)
 }
 
-fn admin_database_url(config: &ServerConfig) -> Result<&str, String> {
-    config.database_migration_url.as_deref().ok_or_else(|| {
-        "DENJU_DATABASE_MIGRATION_URL is required for operator bootstrap/revoke and must not be present in the ordinary server runtime".to_owned()
-    })
+fn admin_database_url() -> Result<String, String> {
+    std::env::var("DENJU_DATABASE_MIGRATION_URL")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            "DENJU_DATABASE_MIGRATION_URL is required for operator bootstrap/revoke and must not be present in the ordinary server runtime".to_owned()
+        })
 }
 
 async fn mutate(

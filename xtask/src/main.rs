@@ -8,11 +8,17 @@ use std::{
 };
 
 mod load;
+mod release_artifacts;
+mod release_smoke;
 mod repository_checks;
+mod self_host_smoke;
+mod vercel_context;
+
+const USAGE: &str = "usage: cargo xtask <check|rust|docs|contracts|fuzz|load|release-manifest|release-smoke|self-host-smoke|vercel-context|dev>";
 
 fn main() -> ExitCode {
     let Some(command) = std::env::args().nth(1) else {
-        eprintln!("usage: cargo xtask <check|rust|docs|contracts|fuzz|load|dev>");
+        eprintln!("{USAGE}");
         return ExitCode::FAILURE;
     };
 
@@ -27,10 +33,14 @@ fn main() -> ExitCode {
         },
         "fuzz" => fuzz_properties(),
         "load" => load::run(&repo_root()),
+        "release-manifest" => release_artifacts::run(&repo_root()),
+        "release-smoke" => release_smoke::run(&repo_root()),
+        "self-host-smoke" => self_host_smoke::run(&repo_root()),
+        "vercel-context" => vercel_context::run(&repo_root()),
         "dev" => dev(),
         other => {
             eprintln!("unknown xtask command: {other}");
-            eprintln!("usage: cargo xtask <check|rust|docs|contracts|fuzz|load|dev>");
+            eprintln!("{USAGE}");
             return ExitCode::FAILURE;
         }
     };

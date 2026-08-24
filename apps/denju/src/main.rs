@@ -22,6 +22,7 @@ mod result;
 mod setup;
 mod sharing;
 mod team_commands;
+mod upgrade;
 mod workspace;
 mod workspace_merge;
 
@@ -792,7 +793,17 @@ async fn run(args: impl IntoIterator<Item = OsString>) -> ExitCode {
                 exit,
             }
         }),
+        Some(Command::Upgrade) => {
+            upgrade::upgrade(build_version())
+                .await
+                .map(|outcome| CommandOutput {
+                    text: upgrade::upgrade_text(&outcome),
+                    payload: ResultPayload::Upgrade { outcome },
+                    exit: ExitCode::SUCCESS,
+                })
+        }
         Some(Command::Daemon) => return daemon(cli.json).await,
+        Some(Command::UpgradeHealth) => return upgrade_health(cli.json).await,
         None => Ok(guidance_output(setup::guidance().await)),
     };
 
@@ -805,6 +816,13 @@ async fn run(args: impl IntoIterator<Item = OsString>) -> ExitCode {
 async fn daemon(json: bool) -> ExitCode {
     match setup::daemon().await {
         Ok(exit) => exit,
+        Err(error) => present_runtime_error(error, json),
+    }
+}
+
+async fn upgrade_health(json: bool) -> ExitCode {
+    match upgrade::health_check().await {
+        Ok(()) => ExitCode::SUCCESS,
         Err(error) => present_runtime_error(error, json),
     }
 }

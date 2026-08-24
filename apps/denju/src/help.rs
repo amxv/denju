@@ -43,6 +43,7 @@ Commands:\n\
   status  Show local synchronization and conflict state\n\
   sync    Reconcile subscriptions and harness projections\n\
   doctor  Check and repair the local Denju installation\n\
+  upgrade Upgrade the current installation source with verification and rollback\n\
 \n\
 Options:\n\
       --json     Emit one versioned JSON result on stdout\n\

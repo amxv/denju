@@ -60,22 +60,28 @@ enum Command {
 async fn main() -> ExitCode {
     init_tracing();
     let cli = Cli::parse();
-    let config = match ServerConfig::from_env() {
-        Ok(config) => config,
-        Err(error) => {
-            eprintln!("denju-server: {error}");
-            return ExitCode::FAILURE;
-        }
-    };
-
     let result = match cli.command.unwrap_or(Command::Serve) {
-        Command::Serve => serve(config).await,
-        Command::Migrate => migrate(&config).await,
-        Command::Admin { command } => admin::run(&config, command).await,
-        Command::CheckObjectStore => check_object_store(&config).await,
-        Command::Gc { limit } => maintenance::gc(&config, limit).await,
-        Command::DrainPacks { limit } => drain_packs(&config, limit).await,
-        Command::SeedPublic { owner, path } => seed_public(&config, &owner, &path).await,
+        Command::Migrate => migrate().await,
+        Command::Admin { command } => admin::run(command).await,
+        command => {
+            let config = match ServerConfig::from_env() {
+                Ok(config) => config,
+                Err(error) => {
+                    eprintln!("denju-server: {error}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            match command {
+                Command::Serve => serve(config).await,
+                Command::CheckObjectStore => check_object_store(&config).await,
+                Command::Gc { limit } => maintenance::gc(&config, limit).await,
+                Command::DrainPacks { limit } => drain_packs(&config, limit).await,
+                Command::SeedPublic { owner, path } => seed_public(&config, &owner, &path).await,
+                Command::Migrate | Command::Admin { .. } => {
+                    unreachable!("privileged command handled before runtime config")
+                }
+            }
+        }
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -145,11 +151,9 @@ async fn seed_public(config: &ServerConfig, owner: &str, path: &Path) -> Result<
     Ok(())
 }
 
-async fn migrate(config: &ServerConfig) -> Result<(), String> {
-    let database_url = config.database_migration_url.as_deref().ok_or_else(|| {
-        "DENJU_DATABASE_MIGRATION_URL is required for schema migrations and should not be present in the ordinary server runtime".to_owned()
-    })?;
-    Registry::migrate(database_url)
+async fn migrate() -> Result<(), String> {
+    let database_url = required_env("DENJU_DATABASE_MIGRATION_URL")?;
+    Registry::migrate(&database_url)
         .await
         .map_err(|error| error.to_string())?;
     println!("registry migrations applied");
@@ -185,7 +189,6 @@ pub(crate) struct ServerConfig {
     database_url: String,
     database_worker_url: String,
     database_listen_url: Option<String>,
-    database_migration_url: Option<String>,
     s3_bucket: String,
     s3_endpoint: Url,
     s3_region: String,
@@ -201,17 +204,21 @@ impl ServerConfig {
         let bind = bind_address()
             .parse()
             .map_err(|error| format!("invalid DENJU_BIND: {error}"))?;
-        let public_origin = parse_http_url("DENJU_PUBLIC_URL", &required_env("DENJU_PUBLIC_URL")?)?;
+        let public_origin = public_origin()?;
         let database_url = required_env("DENJU_DATABASE_URL")?;
         let database_worker_url = required_env("DENJU_DATABASE_WORKER_URL")?;
         let database_listen_url = std::env::var("DENJU_DATABASE_DIRECT_URL")
             .ok()
             .filter(|value| !value.is_empty());
-        let database_migration_url = std::env::var("DENJU_DATABASE_MIGRATION_URL")
-            .ok()
-            .filter(|value| !value.is_empty());
         let s3_bucket = required_env("DENJU_S3_BUCKET")?;
-        let s3_endpoint = parse_http_url("DENJU_S3_ENDPOINT", &required_env("DENJU_S3_ENDPOINT")?)?;
+        let s3_allow_http = env_or("DENJU_S3_ALLOW_HTTP", "false")
+            .parse::<bool>()
+            .map_err(|error| format!("invalid DENJU_S3_ALLOW_HTTP: {error}"))?;
+        let s3_endpoint = parse_http_url_with_http(
+            "DENJU_S3_ENDPOINT",
+            &required_env("DENJU_S3_ENDPOINT")?,
+            s3_allow_http,
+        )?;
         let s3_region = required_env("DENJU_S3_REGION")?;
         let s3_access_key_id = required_env("DENJU_S3_ACCESS_KEY_ID")?;
         let s3_secret_access_key = required_env("DENJU_S3_SECRET_ACCESS_KEY")?;
@@ -228,7 +235,6 @@ impl ServerConfig {
             database_url,
             database_worker_url,
             database_listen_url,
-            database_migration_url,
             s3_bucket,
             s3_endpoint,
             s3_region,
@@ -302,11 +308,15 @@ fn init_tracing() {
 }
 
 fn parse_http_url(name: &str, value: &str) -> Result<Url, String> {
+    parse_http_url_with_http(name, value, false)
+}
+
+fn parse_http_url_with_http(name: &str, value: &str, allow_http: bool) -> Result<Url, String> {
     let url = Url::parse(value).map_err(|error| format!("invalid {name}: {error}"))?;
     if !matches!(url.scheme(), "http" | "https") || url.cannot_be_a_base() {
         return Err(format!("{name} must be an http(s) origin"));
     }
-    if url.scheme() == "http" && !url_is_loopback(&url) {
+    if url.scheme() == "http" && !allow_http && !url_is_loopback(&url) {
         return Err(format!(
             "{name} must use https unless it targets a loopback development endpoint"
         ));
@@ -344,6 +354,25 @@ fn bind_address() -> String {
         return format!("0.0.0.0:{port}");
     }
     "127.0.0.1:7788".to_owned()
+}
+
+fn public_origin() -> Result<Url, String> {
+    let explicit = std::env::var("DENJU_PUBLIC_URL").ok();
+    let vercel_host = std::env::var("VERCEL_URL").ok();
+    public_origin_from(explicit.as_deref(), vercel_host.as_deref())
+}
+
+fn public_origin_from(explicit: Option<&str>, vercel_host: Option<&str>) -> Result<Url, String> {
+    if let Some(value) = explicit.filter(|value| !value.is_empty()) {
+        return parse_http_url("DENJU_PUBLIC_URL", value);
+    }
+    if let Some(host) = vercel_host.filter(|value| !value.is_empty()) {
+        if !matches!(Host::parse(host), Ok(Host::Domain(_))) {
+            return Err("VERCEL_URL must be a hostname".to_owned());
+        }
+        return parse_http_url("VERCEL_URL", &format!("https://{host}"));
+    }
+    Err("DENJU_PUBLIC_URL is required outside a Vercel deployment".to_owned())
 }
 
 fn read_skill_directory(root: &Path) -> Result<Vec<OwnedSkillEntry>, String> {

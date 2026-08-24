@@ -3,6 +3,12 @@ name: release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release-like version used only for the non-publishing dry run
+        required: true
+        default: 0.0.0-dry-run
 
 permissions:
   contents: write
@@ -10,6 +16,7 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  DENJU_RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
 
 jobs:
   quality:
@@ -53,21 +60,76 @@ jobs:
       - name: Build native client
         shell: bash
         env:
-          DENJU_BUILD_VERSION: ${{ github.ref_name }}
+          DENJU_BUILD_VERSION: ${{ env.DENJU_RELEASE_VERSION }}
         run: |
           export DENJU_BUILD_VERSION="${DENJU_BUILD_VERSION#v}"
           cargo build --release --package denju
           mkdir -p dist
           EXT=""
           if [ "${{ matrix.os }}" = "windows" ]; then EXT=".exe"; fi
+          ACTUAL_VERSION=$("target/release/denju${EXT}" --version)
+          test "$ACTUAL_VERSION" = "denju $DENJU_BUILD_VERSION"
           cp "target/release/denju${EXT}" "dist/denju_${{ matrix.os }}_${{ matrix.arch }}${EXT}"
       - uses: actions/upload-artifact@v4
         with:
           name: denju-${{ matrix.os }}-${{ matrix.arch }}
           path: dist/*
 
-  publish:
-    needs: binaries
+  server-image:
+    needs: quality
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Resolve release version
+        id: version
+        shell: bash
+        env:
+          VERSION: ${{ env.DENJU_RELEASE_VERSION }}
+        run: echo "version=${VERSION#v}" >> "$GITHUB_OUTPUT"
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.vercel
+          platforms: linux/amd64,linux/arm64
+          build-args: |
+            DENJU_BUILD_VERSION=${{ steps.version.outputs.version }}
+          push: false
+          outputs: type=cacheonly
+          cache-to: type=gha,mode=max,scope=denju-server
+      - name: Run native server container
+        shell: bash
+        run: |
+          docker build \
+            --build-arg "DENJU_BUILD_VERSION=${{ steps.version.outputs.version }}" \
+            -f Dockerfile.vercel \
+            -t denju-server:release-smoke .
+          test "$(docker run --rm denju-server:release-smoke --version)" = "denju-server ${{ steps.version.outputs.version }}"
+      - name: Smoke-test reference self-host stack
+        run: cargo xtask self-host-smoke --image denju-server:release-smoke
+
+  distribution-smoke:
+    needs: quality
+    strategy:
+      fail-fast: false
+      matrix:
+        runner:
+          - macos-15-intel
+          - macos-15
+          - ubuntu-24.04
+          - ubuntu-24.04-arm
+          - windows-2025
+          - windows-11-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - run: cargo xtask release-smoke
+
+  assemble:
+    needs: [binaries, server-image, distribution-smoke]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -75,8 +137,68 @@ jobs:
         with:
           path: dist
           merge-multiple: true
-      - name: Generate checksums
-        run: (cd dist && sha256sum denju_* > checksums.txt)
+      - name: Generate shared release manifest
+        id: version
+        shell: bash
+        env:
+          VERSION: ${{ env.DENJU_RELEASE_VERSION }}
+        run: |
+          VERSION="${VERSION#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          cargo xtask release-manifest --version "$VERSION" --dist dist
+          cp install/denju.sh dist/denju.sh
+          cp install/denju.ps1 dist/denju.ps1
+      - name: Dry-run npm package contents
+        working-directory: packages/npm
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          npm version "$VERSION" --no-git-tag-version
+          npm pack --dry-run
+      - uses: actions/upload-artifact@v4
+        with:
+          name: denju-release-bundle
+          path: dist/*
+
+  publish:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [assemble]
+    runs-on: ubuntu-24.04
+    env:
+      REGISTRY: ghcr.io
+      IMAGE_NAME: ${{ github.repository_owner }}/denju-server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: denju-release-bundle
+          path: dist
+      - name: Resolve release version
+        id: version
+        shell: bash
+        env:
+          VERSION: ${{ env.DENJU_RELEASE_VERSION }}
+        run: echo "version=${VERSION#v}" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish server image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.vercel
+          platforms: linux/amd64,linux/arm64
+          build-args: |
+            DENJU_BUILD_VERSION=${{ steps.version.outputs.version }}
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+          cache-from: type=gha,scope=denju-server
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
@@ -89,8 +211,7 @@ jobs:
         working-directory: packages/npm
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-          VERSION: ${{ github.ref_name }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          VERSION="${VERSION#v}"
           npm version "$VERSION" --no-git-tag-version
           npm publish --access public

@@ -24,6 +24,7 @@ use crate::{
     public::{SubscribeOutcome, SyncOutcome, UnsubscribeOutcome},
     release::{DiffOutcome, ExportOutcome, RestoreOutcome},
     setup::{DoctorOutcome, SetupOutcome},
+    upgrade::UpgradeOutcome,
     workspace,
 };
 
@@ -86,6 +87,10 @@ pub(crate) enum ResultPayload {
     Doctor {
         #[serde(flatten)]
         outcome: DoctorOutcome,
+    },
+    Upgrade {
+        #[serde(flatten)]
+        outcome: UpgradeOutcome,
     },
     Search {
         #[serde(flatten)]

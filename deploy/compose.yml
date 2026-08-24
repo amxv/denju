@@ -1,0 +1,90 @@
+name: denju
+
+x-denju-server-environment: &denju-server-environment
+  DENJU_PUBLIC_URL: ${DENJU_PUBLIC_URL:-http://127.0.0.1:7788}
+  DENJU_DATABASE_URL: postgresql://denju_app:${DENJU_DB_APP_PASSWORD:?set DENJU_DB_APP_PASSWORD}@postgres:5432/denju
+  DENJU_DATABASE_WORKER_URL: postgresql://denju_worker:${DENJU_DB_WORKER_PASSWORD:?set DENJU_DB_WORKER_PASSWORD}@postgres:5432/denju
+  DENJU_DATABASE_DIRECT_URL: postgresql://denju_app:${DENJU_DB_APP_PASSWORD:?set DENJU_DB_APP_PASSWORD}@postgres:5432/denju
+  DENJU_S3_BUCKET: ${DENJU_S3_BUCKET:-denju}
+  DENJU_S3_ENDPOINT: http://garage:3900
+  DENJU_S3_ALLOW_HTTP: "true"
+  DENJU_S3_REGION: garage
+  DENJU_S3_ACCESS_KEY_ID: ${DENJU_S3_ACCESS_KEY_ID:?set DENJU_S3_ACCESS_KEY_ID}
+  DENJU_S3_SECRET_ACCESS_KEY: ${DENJU_S3_SECRET_ACCESS_KEY:?set DENJU_S3_SECRET_ACCESS_KEY}
+  DENJU_S3_FORCE_PATH_STYLE: "true"
+  DENJU_RECOVERY_TOKEN: ${DENJU_RECOVERY_TOKEN:?set DENJU_RECOVERY_TOKEN}
+
+services:
+  postgres:
+    image: postgres:18.6
+    environment:
+      POSTGRES_DB: denju
+      POSTGRES_USER: denju
+      POSTGRES_PASSWORD: ${DENJU_DB_OWNER_PASSWORD:?set DENJU_DB_OWNER_PASSWORD}
+      DENJU_DB_APP_PASSWORD: ${DENJU_DB_APP_PASSWORD:?set DENJU_DB_APP_PASSWORD}
+      DENJU_DB_WORKER_PASSWORD: ${DENJU_DB_WORKER_PASSWORD:?set DENJU_DB_WORKER_PASSWORD}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U denju -d denju"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+    volumes:
+      - denju-postgres:/var/lib/postgresql
+      - ./self-host/init-roles.sh:/docker-entrypoint-initdb.d/10-denju-roles.sh:ro
+
+  garage:
+    image: dxflrs/garage:v2.3.0
+    command: ["/garage", "server", "--single-node", "--default-bucket"]
+    environment:
+      GARAGE_RPC_SECRET: ${DENJU_GARAGE_RPC_SECRET:?set DENJU_GARAGE_RPC_SECRET}
+      GARAGE_DEFAULT_ACCESS_KEY: ${DENJU_S3_ACCESS_KEY_ID:?set DENJU_S3_ACCESS_KEY_ID}
+      GARAGE_DEFAULT_SECRET_KEY: ${DENJU_S3_SECRET_ACCESS_KEY:?set DENJU_S3_SECRET_ACCESS_KEY}
+      GARAGE_DEFAULT_BUCKET: ${DENJU_S3_BUCKET:-denju}
+    healthcheck:
+      test: ["CMD", "/garage", "status"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+    volumes:
+      - ./self-host/garage.toml:/etc/garage.toml:ro
+      - denju-garage-meta:/var/lib/garage/meta
+      - denju-garage-data:/var/lib/garage/data
+
+  migrate:
+    image: ${DENJU_SERVER_IMAGE:-ghcr.io/amxv/denju-server:latest}
+    build:
+      context: ..
+      dockerfile: Dockerfile.vercel
+    command: ["migrate"]
+    environment:
+      DENJU_DATABASE_MIGRATION_URL: postgresql://denju:${DENJU_DB_OWNER_PASSWORD:?set DENJU_DB_OWNER_PASSWORD}@postgres:5432/denju
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  server:
+    image: ${DENJU_SERVER_IMAGE:-ghcr.io/amxv/denju-server:latest}
+    build:
+      context: ..
+      dockerfile: Dockerfile.vercel
+    environment:
+      <<: *denju-server-environment
+      PORT: "80"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      garage:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1/health/ready"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    ports:
+      - "127.0.0.1:${DENJU_PORT:-7788}:80"
+
+volumes:
+  denju-postgres:
+  denju-garage-meta:
+  denju-garage-data:

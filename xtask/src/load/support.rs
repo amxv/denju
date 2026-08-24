@@ -24,7 +24,16 @@ pub(super) struct EnvironmentReport {
 
 pub(super) fn ensure_infrastructure(root: &Path) -> Result<(), String> {
     let status = Command::new("docker")
-        .args(["compose", "-f", "deploy/dev.compose.yml", "up", "-d"])
+        .args([
+            "compose",
+            "-f",
+            "deploy/dev.compose.yml",
+            "up",
+            "-d",
+            "--wait",
+            "--wait-timeout",
+            "60",
+        ])
         .current_dir(root)
         .status()
         .map_err(|error| format!("failed to start dev infrastructure: {error}"))?;

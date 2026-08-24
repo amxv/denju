@@ -1,0 +1,26 @@
+# syntax=docker/dockerfile:1.7
+
+FROM rust:1.97.1-bookworm AS build
+
+WORKDIR /src
+ARG TARGETPLATFORM
+ARG DENJU_BUILD_VERSION=0.0.0
+COPY . .
+RUN --mount=type=cache,id=denju-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,id=denju-target-${TARGETPLATFORM},target=/src/target,sharing=locked \
+    DENJU_BUILD_VERSION="$DENJU_BUILD_VERSION" cargo build --release --locked -p denju-server \
+    && cp target/release/denju-server /denju-server
+
+FROM debian:bookworm-slim AS runtime
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --system --uid 10001 --no-create-home denju
+
+COPY --from=build /denju-server /usr/local/bin/denju-server
+
+USER denju
+EXPOSE 80
+ENTRYPOINT ["denju-server"]
+CMD ["serve"]

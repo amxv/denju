@@ -1,0 +1,12 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "container",
+  "fluid": true,
+  "regions": ["sin1"],
+  "crons": [
+    {
+      "path": "/v1/internal/recover",
+      "schedule": "17 3 * * *"
+    }
+  ]
+}

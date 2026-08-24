@@ -1057,6 +1057,7 @@ dependencies = [
  "denju-wire",
  "hex",
  "rand 0.10.2",
+ "reqwest",
  "rpassword",
  "serde",
  "serde_json",
@@ -2896,6 +2897,7 @@ checksum = "0283386ce02abc0151e1761d08802dfe86c173b0b494af5cbc086574e453da06"
 dependencies = [
  "aws-lc-rs",
  "once_cell",
+ "ring",
  "rustls-pki-types",
  "rustls-webpki 0.103.14",
  "subtle",
@@ -3364,6 +3366,7 @@ dependencies = [
  "log",
  "memchr",
  "percent-encoding",
+ "rustls 0.23.43",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -3374,6 +3377,7 @@ dependencies = [
  "tracing",
  "url",
  "uuid",
+ "webpki-roots",
 ]
 
 [[package]]
@@ -4174,6 +4178,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "webpki-roots"
+version = "1.0.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7dcd9d09a39985f5344844e66b0c530a33843579125f23e21e9f0f220850f22a"
+dependencies = [
+ "rustls-pki-types",
+]
+
+[[package]]
 name = "whoami"
 version = "2.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4343,10 +4356,12 @@ dependencies = [
  "denju-registry",
  "denju-wire",
  "hex",
+ "rand 0.10.2",
  "reqwest",
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "tempfile",
  "tokio",
  "url",
  "uuid",

@@ -195,8 +195,11 @@ pub(crate) enum Command {
     Status,
     Sync,
     Doctor,
+    Upgrade,
     #[command(hide = true)]
     Daemon,
+    #[command(hide = true)]
+    UpgradeHealth,
 }
 
 #[derive(Debug, Subcommand)]
@@ -459,5 +462,11 @@ mod tests {
                 }),
             }) if bio == "agent builder"
         ));
+    }
+
+    #[test]
+    fn upgrade_is_a_top_level_maintenance_command() {
+        let cli = Cli::try_parse_from(["denju", "upgrade"]).unwrap();
+        assert!(matches!(cli.command, Some(Command::Upgrade)));
     }
 }

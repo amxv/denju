@@ -22,6 +22,10 @@ Rust is the primary project. The root Bun workspace exists only for the document
 For the reproducible performance/stateless lifecycle harness, checked repository contracts, and
 extended property corpus, see [Performance and resilience](/docs/performance-and-resilience).
 
+Distribution and deployment use the same runtime contracts. See
+[Install and upgrade](/docs/install-and-upgrade), [Self-hosting](/docs/self-hosting), and
+[Hosted registry operations](/docs/hosted-registry).
+
 ## Run the local registry
 
 `cargo xtask dev` owns the local dependency and registry lifecycle. It starts the pinned PostgreSQL 18.6 and Garage 2.3.0 services, applies registry migrations, and runs the registry at `http://127.0.0.1:7788`. Re-running it while the registry is already live is safe.

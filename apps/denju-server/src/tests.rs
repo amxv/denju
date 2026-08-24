@@ -4,7 +4,10 @@ use denju_registry::RegistryWake;
 use denju_wire::SyncHint;
 use tokio::sync::broadcast;
 
-use crate::{http::realtime_routes::next_sync_hint, parse_http_url};
+use crate::{
+    http::realtime_routes::next_sync_hint, parse_http_url, parse_http_url_with_http,
+    public_origin_from,
+};
 
 #[test]
 fn hosted_service_urls_require_tls_but_loopback_development_stays_available() {
@@ -12,6 +15,8 @@ fn hosted_service_urls_require_tls_but_loopback_development_stays_available() {
     assert!(parse_http_url("DENJU_S3_ENDPOINT", "http://127.0.0.1:53900").is_ok());
     assert!(parse_http_url("DENJU_S3_ENDPOINT", "http://[::1]:53900").is_ok());
     assert!(parse_http_url("DENJU_PUBLIC_URL", "http://registry.example.com").is_err());
+    assert!(parse_http_url("DENJU_S3_ENDPOINT", "http://garage:3900").is_err());
+    assert!(parse_http_url_with_http("DENJU_S3_ENDPOINT", "http://garage:3900", true).is_ok());
     assert!(
         parse_http_url(
             "DENJU_S3_ENDPOINT",
@@ -19,6 +24,27 @@ fn hosted_service_urls_require_tls_but_loopback_development_stays_available() {
         )
         .is_err()
     );
+}
+
+#[test]
+fn explicit_public_origin_wins_and_vercel_preview_origin_is_derived_safely() {
+    assert_eq!(
+        public_origin_from(
+            Some("https://registry.denju.ashray.xyz"),
+            Some("preview.example.vercel.app")
+        )
+        .unwrap()
+        .as_str(),
+        "https://registry.denju.ashray.xyz/"
+    );
+    assert_eq!(
+        public_origin_from(None, Some("preview.example.vercel.app"))
+            .unwrap()
+            .as_str(),
+        "https://preview.example.vercel.app/"
+    );
+    assert!(public_origin_from(None, Some("http://bad.example.com")).is_err());
+    assert!(public_origin_from(None, None).is_err());
 }
 
 #[tokio::test]

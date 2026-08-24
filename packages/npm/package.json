@@ -28,7 +28,7 @@
   ],
   "scripts": {
     "postinstall": "node scripts/postinstall.js",
-    "check": "node --check bin/denju.js && node --check scripts/postinstall.js"
+    "check": "node --check bin/denju.js && node --check scripts/postinstall.js && node --test scripts/postinstall.test.js"
   },
   "engines": {
     "node": ">=18"
