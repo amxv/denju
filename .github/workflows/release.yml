@@ -16,7 +16,6 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  DENJU_RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
 
 jobs:
   quality:
@@ -32,6 +31,8 @@ jobs:
 
   binaries:
     needs: quality
+    env:
+      DENJU_RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
     strategy:
       fail-fast: false
       matrix:
@@ -77,6 +78,8 @@ jobs:
 
   server-image:
     needs: quality
+    env:
+      DENJU_RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
     strategy:
       fail-fast: false
       matrix:
@@ -157,6 +160,8 @@ jobs:
   assemble:
     needs: [binaries, server-image, distribution-smoke]
     runs-on: ubuntu-24.04
+    env:
+      DENJU_RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v4
@@ -194,6 +199,7 @@ jobs:
     env:
       REGISTRY: ghcr.io
       IMAGE_NAME: ${{ github.repository_owner }}/denju-server
+      DENJU_RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v4
