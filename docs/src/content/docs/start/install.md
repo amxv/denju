@@ -28,7 +28,7 @@ Setup is anonymous. It:
 
 - creates Denju's local state under `~/.denju`;
 - connects to the official registry at `https://registry.denju.ashray.xyz`;
-- configures managed projections for Codex and Claude Code;
+- makes Denju-managed skills available to Codex and Claude Code;
 - notices existing unmanaged skills without importing or modifying them;
 - installs the per-user background service where the platform supports it;
 - validates the result.
@@ -68,7 +68,7 @@ denju status
 denju doctor
 ```
 
-`status` is about synchronization and blocked resources. `doctor` checks and repairs the installation itself: local state, background service, harness projections, credentials, and registry connectivity.
+`status` shows skills or packs that are waiting, blocked, or in conflict. `doctor` checks and repairs Denju itself: local state, the background service, Codex/Claude skill links, credentials, and registry connectivity.
 
 ## Install your first skill
 
@@ -82,7 +82,7 @@ denju subscribe @owner/skill
 
 After subscription, the skill is managed under Denju's canonical tree and projected into the configured harness roots. You do not need to copy it into Codex or Claude Code yourself.
 
-When the publisher creates a new release, the background service normally updates the subscribed skill automatically. You can force one complete reconciliation at any time:
+When the publisher creates a new release, the background service normally updates the subscribed skill automatically. You can ask Denju to check and apply all current changes at any time:
 
 ```bash
 denju sync

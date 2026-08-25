@@ -6,11 +6,11 @@ category: Use Denju
 summary: "Local edits become independent forks instead of mutating upstream; proposals send a fork head back without inventing Git branches."
 ---
 
-A subscribed skill is somebody else's managed resource. If you edit it, Denju protects both your work and the upstream relationship by turning the edit into a fork.
+A subscribed skill still belongs to its publisher. If you edit your local copy, Denju protects both your work and the publisher's version by turning your edit into a fork.
 
 ## Automatic forks
 
-For a signed-in user, editing a subscription creates a private fork in your namespace and replaces the ordinary upstream subscription with that fork.
+For a signed-in user, editing a subscription creates a private fork under your Denju name and replaces the ordinary upstream subscription with that fork.
 
 For an anonymous user, Denju creates a device-local fork with revision history and upstream provenance. If you claim an identity later, that existing history can be promoted without rewriting its revision IDs.
 
@@ -31,7 +31,7 @@ denju fork sync @you/skill
 denju fork @owner/skill
 ```
 
-The new resource records immutable provenance back to the upstream resource and starting revision.
+The fork remembers which upstream skill and revision it started from, even after you change it further.
 
 ## Handle a fork-name collision
 
@@ -52,7 +52,7 @@ denju unshare @you/skill @alice
 
 Sharing grants read and subscription access. It does not auto-install the skill for the recipient and does not create an inbox. Send the recipient the `denju subscribe ...` command printed by `share`.
 
-A private subscription follows coherent private saves live, not only public releases. If access is revoked, Denju removes the upstream managed copy when no other source requires it. A fork the recipient already created remains theirs.
+A private subscription follows coherent private saves live, not only public releases. If access is revoked, Denju removes the upstream managed copy when nothing else still needs it. A fork the recipient already created remains theirs.
 
 ## Propose a fork upstream
 

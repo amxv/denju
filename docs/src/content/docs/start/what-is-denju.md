@@ -50,7 +50,7 @@ Subscriptions are intentionally separate from social follows. Following a person
 
 ### Packs
 
-A pack is a versioned set of skill requirements.
+A pack is a set of skills you want kept together.
 
 ```text
 @acme/packs/core
@@ -59,19 +59,21 @@ A pack is a versioned set of skill requirements.
   @owner/security        latest
 ```
 
-Subscribe to a pack and Denju keeps the whole set satisfied. Packs are flat—skills only, no packs-inside-packs—and every pack version records the exact skill revisions it resolved to.
+Subscribe to a pack and Denju keeps that whole set of skills installed and current. Add a skill, remove one, or publish a new release of a followed skill and subscribed machines update automatically. Packs are flat—skills only, no packs-inside-packs—and every pack version records the exact skill revisions it resolved to.
 
 ### Teams
 
-Teams own skills and packs in a shared namespace such as `@acme`. A team can also **assign** a pack to every member. Assigned packs are policy: current and future members receive the required skills, and Denju keeps them aligned as the pack changes.
+Teams own skills and packs under a shared name such as `@acme`. A team can **assign** a pack to its people. The pack contains the skills; team members are the people receiving them.
 
-That is the main team use case: make the team's preferred skills continuously true instead of writing an onboarding checklist that slowly becomes stale.
+For example, a legal organization can put its contract-review, research, citation, and drafting skills in one `legal-core` pack and assign that pack to the team. Current and future team members receive those skills, and Denju keeps everyone aligned whenever the pack changes.
+
+That is the main team use case: make the organization's approved skill set continuously true instead of maintaining an onboarding checklist that slowly becomes stale.
 
 ## Identity is optional until it is useful
 
 You do not need an account to set up Denju, search the public registry, inspect public skills, or subscribe to them.
 
-Identity enters when you want to do something that needs ownership or access control—publish a skill, synchronize private work across devices, share privately, star resources, or join a team.
+Identity enters when you want to do something that needs ownership or access control—publish a skill, synchronize private work across devices, share privately, star skills, or join a team.
 
 ```bash
 denju claim @alice
@@ -83,7 +85,7 @@ Denju uses a username, password, and one-time recovery secret. There is no email
 
 Denju manages **which Agent Skill directories should exist and which revisions they should contain**. Codex and Claude Code continue to discover and load those skills normally.
 
-On a configured machine, Denju keeps one canonical managed version of each installed resource and projects it into the supported harness roots. If two packages would expose the same Agent Skills name, Denju gives the conflicting local projections deterministic aliases so both can coexist.
+On a configured machine, Denju keeps one managed copy of each installed skill and makes it available to the supported harnesses. If two installed skills would use the same Agent Skills name, Denju gives them deterministic local aliases so both can coexist.
 
 ## Denju is also self-hostable
 

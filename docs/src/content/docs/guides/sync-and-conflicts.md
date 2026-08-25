@@ -1,28 +1,28 @@
 ---
 title: Sync, offline work, and conflicts
-description: Understand the background service, one-shot reconciliation, offline queues, multi-device merges, and explicit conflict resolution.
+description: Understand automatic sync, one-shot sync, offline edits, multi-device merges, team-policy disagreements, and conflict resolution.
 order: 12
 category: Use Denju
 summary: "Denju synchronizes automatically, remains correct without the daemon, and preserves both sides when concurrent edits really conflict."
 ---
 
-Most of the time, synchronization should be boring. The background service watches managed skills, receives registry wake hints, and keeps desired state current.
+Most of the time, synchronization should be boring. The background service watches your managed skills and keeps the versions you should have installed current.
 
-## Force a complete reconciliation
+## Force a complete sync
 
 ```bash
 denju sync
 ```
 
-`sync` is a one-shot operation. It settles currently known uploads, downloads, projection changes, pack changes, and removals, then exits.
+`sync` is a one-shot check of everything Denju currently knows about. It uploads pending edits, downloads updates, applies pack changes, repairs managed harness links, removes skills that are no longer needed, then exits.
 
-If one resource is blocked by validation, a content conflict, or incompatible desired-state sources, Denju reports that exact resource instead of waiting forever. Unrelated skills can continue synchronizing.
+If one skill is blocked by validation, an edit conflict, or two policies asking for different versions, Denju reports that skill instead of waiting forever. Unrelated skills can continue synchronizing.
 
 ## Work offline
 
 Owned skill edits are recorded locally first. If the registry is offline, valid private revisions remain queued and upload when connectivity returns.
 
-Likewise, a storage-quota problem does not block local editing. `denju usage` shows the namespace limit, current usage, and queued local bytes. Eligible unreleased private history can be pruned explicitly:
+Likewise, a storage-quota problem does not block local editing. `denju usage` shows the applicable storage limit, current usage, and queued local bytes. Eligible unreleased private history can be pruned explicitly:
 
 ```bash
 denju history prune @alice/my-skill
@@ -61,20 +61,20 @@ denju sync
 
 The resolved result becomes a new two-parent revision, so neither original head disappears from history.
 
-## Desired-state conflicts are different
+## When two install policies disagree
 
 A content conflict means two people or devices edited the same skill history.
 
-A desired-state conflict means two equally authoritative sources require different immutable revisions of the same resource—for example, two team assignments from two different teams.
+A policy conflict means two equally strong rules ask Denju to install different exact versions of the same skill—for example, two teams assign packs that pin that skill differently.
 
-Denju does not hide that disagreement by creating duplicate version aliases. It preserves the last valid visible revision, pauses only that resource, and shows the governing sources plus exact resolution commands in `denju status`.
+Denju does not guess which team should win. It keeps the last valid version visible when possible, pauses only that skill, and shows both policies plus exact resolution commands in `denju status`.
 
 ## Repair the installation itself
 
-Use `doctor` when the problem is the local Denju installation rather than one resource's desired state:
+Use `doctor` when the problem is the Denju installation itself rather than one skill or policy:
 
 ```bash
 denju doctor
 ```
 
-It checks local database health, the background service, stored credentials, harness roots, broken or duplicate Denju projections, registry connectivity, and interrupted local operations.
+It checks local database health, the background service, stored credentials, Codex/Claude skill locations, broken or duplicate Denju links, registry connectivity, and interrupted local work.

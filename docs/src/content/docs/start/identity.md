@@ -20,7 +20,7 @@ Denju prompts for a password using hidden terminal input. The registry stores an
 
 Claim also shows a recovery secret exactly once. Save it somewhere separate from the machine. Denju cannot retrieve an old recovery secret later.
 
-Usernames and team names share one registry-wide namespace and are lowercase. Names are immutable in v1.
+Usernames and team names come from the same registry-wide pool, are lowercase, and cannot be renamed in v1.
 
 ## Log in on another machine
 
@@ -31,7 +31,7 @@ denju setup
 denju login @alice
 ```
 
-After login, account-wide desired state reconciles to the new device. Direct subscriptions, personal packs, owned skills, and team assignments are account relationships rather than one-off copied folders.
+After login, Denju brings your account state onto the new machine: direct subscriptions, personal packs, owned skills, and team-assigned packs. These are durable account relationships, not folders you have to copy again on every computer.
 
 Anonymous state created on the installation before claim/login is adopted where appropriate. Existing anonymous direct subscriptions and local fork history do not need to be recreated.
 
@@ -80,6 +80,6 @@ For strict automation, add `--json` to non-interactive commands. Commands that r
 denju identity delete
 ```
 
-Deletion requires explicit confirmation and password input. It revokes credentials, removes account relationships, applies normal deletion semantics to personally owned resources, and preserves historical revision authorship under a deleted-user identity.
+Deletion requires explicit confirmation and password input. It revokes credentials, removes your subscriptions and other account relationships, deletes personally owned skills and packs using their normal rules, and preserves historical authorship without keeping the account active.
 
-An account that owns a team cannot be deleted until ownership is transferred or the team is deleted. A username released by deletion may later be claimed by a completely new internal identity; old subscriptions, resources, stars, and attribution do not attach to the new account.
+An account that owns a team cannot be deleted until ownership is transferred or the team is deleted. A username released by deletion may later be claimed by someone else, but the new account does not inherit the old account's subscriptions, skills, packs, stars, or attribution.

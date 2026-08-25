@@ -12,12 +12,12 @@ Denju can prove that you received the exact authorized revision it intended to d
 
 For managed content Denju verifies things such as:
 
-- resource authorization and access relationships;
+- whether you are allowed to access the skill or pack;
 - portable Agent Skills structure;
-- exact content hashes and immutable revision identity;
+- exact content hashes and revision identity;
 - downloaded snapshot size and SHA-256;
 - safe in-root paths and supported symlinks;
-- complete local materialization before making an update visible.
+- a complete verified local copy before making an update visible.
 
 ## What Denju does not do
 
@@ -35,17 +35,17 @@ A claimed user can send a private moderation signal:
 denju report @owner/skill --reason malicious
 ```
 
-Reports are operator input only. They do not automatically remove a resource.
+Reports are operator input only. They do not automatically remove a skill or pack.
 
 ## Security quarantine
 
-A registry operator can quarantine an exact release or an entire resource.
+A registry operator can quarantine one exact skill release or an entire skill.
 
 If a quarantined release is currently active, Denju removes it from the harness-visible managed state and preserves the existing local bytes under Denju's quarantine area for inspection. It never silently falls back to another version.
 
 Quarantining an old historical release does not disturb a different clean release that is active now.
 
-For packs, the authored member remains part of pack history but the pack becomes degraded with reason `quarantined`.
+For packs, the quarantined skill remains part of the pack's authored history, but the pack becomes degraded with reason `quarantined`.
 
 Retention after deletion cannot override security quarantine.
 

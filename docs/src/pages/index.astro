@@ -16,7 +16,7 @@ const productIdeas = [
   },
   {
     title: "Compose",
-    body: "A pack turns several skills into one versioned desired state. Follow latest where you want movement; pin exact releases where you need stability.",
+    body: "A pack turns several skills into one versioned set. Let a skill follow latest when you want updates, or pin an exact release when you need stability.",
     href: "/docs/guides/packs"
   },
   {
@@ -114,8 +114,8 @@ const architecturePoints = [
           </p>
           <p>
             Denju moves the unit of management up one level. Instead of remembering where you copied a
-            folder, you keep a relationship to a skill, a version, a pack, or a team policy. Denju reconciles
-            the filesystem from those relationships automatically.
+            folder, you subscribe to the skill, pack, or team policy you want. Denju keeps the right folders
+            and versions on each machine automatically.
           </p>
         </div>
       </div>
@@ -134,7 +134,7 @@ const architecturePoints = [
           <div class="desired-state-row"><span>MacBook</span><b>v4</b><em>current</em></div>
           <div class="desired-state-row"><span>Workstation</span><b>v4</b><em>current</em></div>
           <div class="desired-state-row"><span>teammate</span><b>v4</b><em>current</em></div>
-          <p>The relationship is durable. The local folders are the materialized result.</p>
+          <p>The subscription is what you keep. Denju keeps the local folders current for you.</p>
         </div>
       </div>
     </section>
@@ -158,17 +158,17 @@ const architecturePoints = [
         <article class="model-row">
           <div class="model-term">Subscription</div>
           <div class="model-example"><code>@alice/review</code><span class="operator">→</span><span class="active">latest</span></div>
-          <p>A durable request for filesystem presence. Follow latest by default, or pin one exact release.</p>
+          <p>A simple promise: keep this skill installed. Follow latest by default, or pin one exact release.</p>
         </article>
         <article class="model-row">
           <div class="model-term">Pack</div>
           <div class="model-example model-example-pack"><span>review · latest</span><span>testing · v3</span><span>security · latest</span></div>
-          <p>A flat, versioned set of skill requirements. One subscription can keep an entire working setup current.</p>
+          <p>A flat, versioned set of skills. One subscription can keep an entire working setup current.</p>
         </article>
         <article class="model-row">
           <div class="model-term">Team</div>
           <div class="model-example"><code>@acme/packs/core</code><span class="operator">→</span><span class="active">all members</span></div>
-          <p>A shared namespace plus policy. Assigned packs are enforced for current and future members.</p>
+          <p>A shared home for organization skills and packs. Assign a pack and its skills stay installed for current and future team members.</p>
         </article>
       </div>
     </section>
@@ -200,7 +200,7 @@ const architecturePoints = [
         <h2>Make your best practices self-installing.</h2>
         <p>
           Put approved skills into a pack and assign it to a team. Join the team on a new machine and
-          Denju reconciles the pack immediately. Change the pack later and everyone moves with it.
+          Denju installs those skills automatically. Change the pack later and everyone stays up to date.
         </p>
         <a class="inline-link" href="/docs/guides/teams">Teams and assigned packs →</a>
       </div>

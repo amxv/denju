@@ -81,7 +81,7 @@ The server remains much simpler: authenticate the actor, verify immutable object
 
 ## Packs use durable release events
 
-A follow-latest pack should advance when a member skill publishes a new immutable release. But a popular skill may appear in many packs, so publishing cannot synchronously rewrite every dependent pack inside one request.
+A follow-latest pack should advance when one of its skills publishes a new immutable release. But a popular skill may appear in many packs, so publishing cannot synchronously rewrite every dependent pack inside one request.
 
 Denju records the semantic release event durably and advances dependent packs in bounded idempotent work. If the process stops halfway through, a later request or recovery drain resumes from durable state.
 

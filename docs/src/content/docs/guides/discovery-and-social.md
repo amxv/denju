@@ -3,7 +3,7 @@ title: Discovery, profiles, follows, and stars
 description: Use Denju's metadata catalog and social signals without confusing discovery relationships with installed skill state.
 order: 16
 category: Use Denju
-summary: "Search one authorized metadata catalog, follow authors, star public skills, and browse rankings without changing local desired state."
+summary: "Search the catalog, follow authors, star public skills, and browse rankings without changing which skills are installed."
 ---
 
 Denju's discovery layer helps you find useful skills and authors. It is deliberately separate from synchronization.
@@ -22,13 +22,13 @@ denju search "agent performance" --topic rust
 Results can include:
 
 - your current local owned drafts;
-- private resources shared with you;
+- private skills shared with you;
 - team content you are allowed to read;
 - public registry metadata.
 
 Search indexes metadata only: locator, name, Agent Skills description, compatibility/license, topics, owner, public fork provenance, pack membership labels, and public star count. Skill instructions, scripts, and assets are not full-text indexed.
 
-## Inspect users and resources
+## Inspect users, skills, and packs
 
 ```bash
 denju show @alice
@@ -58,9 +58,9 @@ denju top
 denju top --topic rust
 ```
 
-Only claimed users can star, and only public skills are star-bearing resources. Packs are not starred in v1.
+Only claimed users can star, and only public skills can be starred. Packs are not starred in v1.
 
-Stars attach to the stable resource identity. Unpublishing hides the skill and its count from public discovery but preserves the relationships; republishing the same resource restores them. Delete-and-recreate creates a new identity and does not inherit old stars.
+Stars belong to the underlying skill, not just its current name. Unpublishing hides the skill and its count from public discovery but preserves its stars; republishing the same skill restores them. Deleting it and creating a new skill with the same name does not inherit the old stars.
 
 ## Discovery topics
 
@@ -72,10 +72,10 @@ denju topics @alice/review rust agent-infra
 
 Denju does not infer topics by scanning the skill body.
 
-## Report a public resource
+## Report a public skill
 
 ```bash
 denju report @alice/review --reason malicious
 ```
 
-A report is private moderation input. It does not automatically change ranking, availability, or desired state. Registry operators can investigate and apply quarantine separately.
+A report is private moderation input. It does not automatically change ranking, availability, or what is installed on anyone's machine. Registry operators can investigate and apply quarantine separately.

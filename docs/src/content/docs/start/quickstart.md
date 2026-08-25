@@ -16,7 +16,7 @@ denju show @owner/review
 denju subscribe @owner/review
 ```
 
-That subscription now controls the skill's managed presence on this machine. Denju follows the resource's latest published release by default.
+That subscription now keeps the skill installed on this machine. Denju follows the skill's latest published release by default.
 
 Check what Denju is managing:
 
@@ -46,7 +46,7 @@ denju claim @alice
 
 Denju prompts for a password and displays a recovery secret once. Save that recovery secret somewhere separate from the machine.
 
-Your existing anonymous direct subscriptions become account state. If you log in on another Denju installation later, those subscriptions reconcile there too.
+Your existing anonymous subscriptions become account state. If you log in on another Denju installation later, Denju brings those subscriptions onto that machine too.
 
 ## 4. Import one of your existing skills
 
@@ -65,9 +65,9 @@ Import it:
 denju import ~/.agents/skills/my-skill
 ```
 
-Import is a transfer into Denju's managed tree, not a blind copy. Denju validates and commits the skill first; only after the managed version and projections are ready does it remove the original discovery path.
+Import moves the skill under Denju management rather than making a second loose copy. Denju validates and stores the skill first; only after the managed version is ready for your agent harnesses does it remove the original discovery path.
 
-The new resource starts private at `@alice/my-skill`.
+The imported skill starts private at `@alice/my-skill`.
 
 ## 5. Edit normally
 
@@ -102,11 +102,11 @@ Someone else can now subscribe to the pack:
 denju subscribe @alice/packs/core
 ```
 
-The pack is one moving desired-state relationship whose immutable versions record the exact member revisions used at each point in time.
+That one pack subscription now keeps the whole set of skills current. Each immutable pack version records the exact skill revisions used at that point in time.
 
 ## Where next?
 
 - [Discover and subscribe](/docs/guides/discover-and-subscribe) for public consumption and pins.
 - [Publish and edit skills](/docs/guides/publish-and-edit) for owned workspaces and releases.
 - [Packs](/docs/guides/packs) for reusable skill sets.
-- [Teams](/docs/guides/teams) for shared namespaces and enforced packs.
+- [Teams](/docs/guides/teams) for organization-owned skills and assigned packs.
