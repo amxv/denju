@@ -2,39 +2,6 @@
 import BaseLayout from "zuedocs/layouts/BaseLayout.astro";
 import { primaryNav, siteConfig } from "../data/docs";
 import "../styles/landing.css";
-
-const productIdeas = [
-  {
-    index: "01",
-    title: "Find skills",
-    body: "Search the public registry, inspect releases and authors, and subscribe without creating an account.",
-    href: "/docs/guides/discover-and-subscribe"
-  },
-  {
-    index: "02",
-    title: "Sync private skills",
-    body: "Bring an existing skill into Denju and it stays private while valid saves follow you across your signed-in devices. Publish only if you want to.",
-    href: "/docs/guides/publish-and-edit"
-  },
-  {
-    index: "03",
-    title: "Bundle skills",
-    body: "Put related skills into a pack. Subscribe once and Denju keeps the whole set current as skills are added, removed, or updated.",
-    href: "/docs/guides/packs"
-  },
-  {
-    index: "04",
-    title: "Keep teams aligned",
-    body: "Assign a pack to a team and Denju keeps those approved skills on every current and future team member's computers.",
-    href: "/docs/guides/teams"
-  }
-];
-
-const architecturePoints = [
-  ["Changed file, changed bytes", "Denju reuses unchanged content, so editing one file does not turn the whole skill into a new transfer."],
-  ["Catch up to now", "After being offline, Denju asks what should be installed now instead of replaying every update that happened while you were away."],
-  ["Never half-updated", "A complete update is downloaded and verified before Denju exposes it to your agents."],
-];
 ---
 
 <BaseLayout
@@ -49,9 +16,8 @@ const architecturePoints = [
         <div class="hero-copy">
           <h1>The right skills, current everywhere.</h1>
           <p class="hero-lede">
-            Find useful Agent Skills or bring your own. Denju keeps public subscriptions and your private
-            skills current across your signed-in devices automatically. Teams get the same private sync
-            for team-owned skills—without setting up another file-sharing system.
+            Discover Agent Skills or bring your own. Denju keeps public subscriptions, private skills,
+            shared skills, packs, and team skill sets current wherever your agents run.
           </p>
           <p class="denju-meaning"><strong>denju · <span lang="ja">伝授</span></strong> — Japanese for passing on or transmitting knowledge or a skill.</p>
           <div class="hero-actions">
@@ -59,8 +25,8 @@ const architecturePoints = [
             <a class="button button-secondary" href="/docs/start/what-is-denju">How Denju works</a>
           </div>
           <div class="hero-facts">
-            <span>No account to search</span>
-            <span>Private skills sync across devices</span>
+            <span>Anonymous public use</span>
+            <span>Private sync built in</span>
             <span>Codex + Claude Code</span>
           </div>
         </div>
@@ -70,7 +36,6 @@ const architecturePoints = [
             <span>your private skill</span>
             <small>three machines</small>
           </div>
-
           <div class="demo-card demo-skill">
             <div class="demo-card-head">
               <div>
@@ -87,12 +52,10 @@ const architecturePoints = [
               <span>8m ago</span>
             </div>
           </div>
-
           <div class="sync-spine" aria-hidden="true">
             <span class="sync-spine__line"></span>
             <span class="sync-spine__pulse"></span>
           </div>
-
           <div class="device-list">
             <div class="device-row">
               <span class="device-icon">M</span>
@@ -117,185 +80,183 @@ const architecturePoints = [
       </div>
     </section>
 
-    <section class="problem shell">
-      <div class="problem-index" aria-hidden="true">01</div>
-      <div class="section-label">Why Denju exists</div>
-      <div class="problem-grid">
-        <h2>Folders are wonderfully simple.<br />Copies are not.</h2>
-        <div class="problem-copy">
-          <p>
-            Agent Skills are ordinary directories. That makes them portable and easy to inspect. But once
-            the same skill lives on two machines, in two harnesses, or across a team, those copies drift.
-          </p>
-          <p>
-            Denju keeps the relationship instead of the copy. Subscribe to a skill or pack once, and Denju
-            keeps the correct files and versions on each machine for you.
-          </p>
-        </div>
+    <section class="story-section problem shell">
+      <div class="story-number" aria-hidden="true">01</div>
+      <div class="story-copy">
+        <div class="section-label">Why Denju exists</div>
+        <h2>Folders are simple.<br />Copies drift.</h2>
+        <p>
+          Agent Skills are ordinary directories. That is great until the same skill exists on three machines,
+          in two harnesses, and on a teammate's laptop. Denju replaces manual copies with durable relationships.
+        </p>
       </div>
-
-      <div class="drift-story">
-        <div class="drift-side">
-          <span class="comparison-label">copied folders</span>
-          <div class="drift-files">
-            <div class="drift-file drift-file-a"><code>review/</code><b>v4</b><small>MacBook</small></div>
-            <div class="drift-file drift-file-b"><code>review/</code><b>v3</b><small>Workstation</small></div>
-            <div class="drift-file drift-file-c"><code>review-copy/</code><b>?</b><small>teammate</small></div>
-          </div>
-          <p>Three folders. Three states. No relationship between them.</p>
+      <div class="drift-visual">
+        <div class="drift-stack">
+          <div><code>review/</code><b>v4</b><small>MacBook</small></div>
+          <div><code>review/</code><b>v3</b><small>Workstation</small></div>
+          <div><code>review-copy/</code><b>?</b><small>teammate</small></div>
         </div>
-
-        <div class="drift-divider" aria-hidden="true"><span>becomes</span><i>→</i></div>
-
-        <div class="subscription-side">
-          <span class="comparison-label">one subscription</span>
-          <div class="subscription-source"><code>@alice/review</code><span>latest</span></div>
-          <div class="subscription-targets">
-            <div><span>MacBook</span><b>v4</b></div>
-            <div><span>Workstation</span><b>v4</b></div>
-            <div><span>teammate</span><b>v4</b></div>
-          </div>
-          <p>One relationship. Denju keeps every managed copy current.</p>
+        <div class="drift-arrow" aria-hidden="true">→</div>
+        <div class="relationship-card">
+          <span>one relationship</span>
+          <code>@alice/review → latest</code>
+          <small>Denju keeps the copies true.</small>
         </div>
       </div>
     </section>
 
-    <section class="private-sync shell">
-      <div class="section-label">Private sync</div>
-      <div class="private-sync-heading">
-        <h2>Private does not mean stuck on one machine.</h2>
+    <section class="story-section discovery shell">
+      <div class="story-copy">
+        <div class="section-label">Discover</div>
+        <h2>Find useful skills before you make your own.</h2>
         <p>
-          Denju is useful even if you never publish anything publicly. Private skills are first-class:
-          your own skills can follow you across devices, you can share one privately with another Denju
-          user, and team-private skills can follow the people who need them.
+          Search the public registry, inspect authors and releases, browse topics, and see what people star.
+          You do not need an account to search, inspect, or subscribe.
         </p>
+        <a class="inline-link" href="/docs/guides/discover-and-subscribe">Discover and subscribe <span>→</span></a>
       </div>
-
-      <div class="private-sync-grid">
-        <article class="private-sync-card">
-          <span class="private-sync-label">Your devices</span>
-          <h3>Private skills follow you.</h3>
-          <p>
-            Import a skill once. It starts private, and valid saves synchronize to your other signed-in
-            Denju devices automatically. There is no separate “private sync” mode and no need to publish.
-          </p>
-          <div class="private-sync-flow" aria-hidden="true">
-            <code>@alice/my-skill</code><i>→</i><span>MacBook</span><i>→</i><span>Workstation</span>
-          </div>
-        </article>
-
-        <article class="private-sync-card private-sync-card--share">
-          <span class="private-sync-label">One person</span>
-          <h3>Share privately. Stay private.</h3>
-          <p>
-            Give another Denju user access with <code>denju share</code>. The skill never enters the public
-            catalog. They choose whether to subscribe, and a private subscription follows your valid saves.
-          </p>
-          <div class="private-sync-flow" aria-hidden="true">
-            <code>@alice/my-skill</code><i>→</i><span>@bob</span><i>→</i><span>private subscription</span>
-          </div>
-          <small>Sharing grants access; it does not silently install anything on the recipient's machine.</small>
-        </article>
-
-        <article class="private-sync-card private-sync-card--team">
-          <span class="private-sync-label">Your team</span>
-          <h3>Team skills stay private to the team by default.</h3>
-          <p>
-            A normal team publish creates a team-only release. Put those private team skills in an assigned
-            pack and Denju keeps them current across current and future team members automatically.
-          </p>
-          <div class="private-sync-flow" aria-hidden="true">
-            <code>@northstar/legal-research</code><i>→</i><span>team-only</span><i>→</i><span>everyone</span>
-          </div>
-          <small>Unfinished maintainer edits remain private to that maintainer until a team release is published.</small>
-        </article>
+      <div class="search-visual">
+        <div class="search-box"><span aria-hidden="true">⌕</span><code>legal research</code><kbd>⌘ K</kbd></div>
+        <div class="search-result search-result--active">
+          <div><strong>@northstar/legal-research</strong><small>Deep legal research workflows and citation discipline.</small></div>
+          <span>★ 421</span>
+        </div>
+        <div class="search-result">
+          <div><strong>@maya/case-analysis</strong><small>Analyze facts, issues, and competing interpretations.</small></div>
+          <span>★ 188</span>
+        </div>
+        <div class="search-result">
+          <div><strong>@lex/contracts</strong><small>Contract review with structured risk checks.</small></div>
+          <span>★ 104</span>
+        </div>
+        <div class="search-foot"><span>public registry</span><span>no account required</span></div>
       </div>
     </section>
 
-    <section class="model shell" id="model">
-      <div class="section-label">The product model</div>
-      <div class="model-heading">
-        <h2>Four ideas.<br />That is almost all of Denju.</h2>
+    <section class="story-section subscriptions shell">
+      <div class="story-copy">
+        <div class="section-label">Subscribe</div>
+        <h2>Install once. Then stop thinking about updates.</h2>
         <p>
-          Denju does not turn skills into Git repositories or dependency graphs. The product stays small
-          enough to explain in one line: <strong>skills → subscriptions → packs → teams.</strong>
+          A subscription means “keep this skill here.” Follow <code>latest</code> for automatic updates or pin
+          one immutable release when stability matters.
         </p>
+        <a class="inline-link" href="/docs/guides/discover-and-subscribe#pin-an-exact-release">Subscriptions and pins <span>→</span></a>
       </div>
-
-      <div class="model-flow">
-        <article class="model-node model-node--skill">
-          <span class="model-number">01</span>
-          <h3>Skill</h3>
-          <div class="model-example"><code>@alice/review</code><span>v1</span><span>v2</span><span class="active">v3</span></div>
-          <p>An ordinary Agent Skill directory you can publish in numbered releases.</p>
-        </article>
-        <article class="model-node model-node--subscription">
-          <span class="model-number">02</span>
-          <h3>Subscription</h3>
-          <div class="model-example"><code>@alice/review</code><span class="operator">→</span><span class="active">latest</span></div>
-          <p>Keep this skill installed. Follow latest, or pin one exact release.</p>
-        </article>
-        <article class="model-node model-node--pack">
-          <span class="model-number">03</span>
-          <h3>Pack</h3>
-          <div class="model-example model-example-pack"><span>review</span><span>research</span><span>drafting</span></div>
-          <p>A set of skills that belong together. Subscribe once and keep the whole set current.</p>
-        </article>
-        <article class="model-node model-node--team">
-          <span class="model-number">04</span>
-          <h3>Team</h3>
-          <div class="model-example"><code>@acme/packs/core</code><span class="operator">→</span><span class="active">people</span></div>
-          <p>Assign a pack and Denju keeps those skills on every team member's computers.</p>
-        </article>
-        <div class="model-rail" aria-hidden="true"></div>
+      <div class="release-visual">
+        <div class="release-skill"><code>@alice/review</code><span>subscription</span></div>
+        <div class="release-track" aria-hidden="true">
+          <i></i><i></i><i></i><i class="release-track__current"></i>
+        </div>
+        <div class="release-labels"><span>v1</span><span>v2</span><span>v3</span><strong>v4 · latest</strong></div>
+        <div class="release-choice">
+          <div><small>default</small><strong>follow latest</strong><span>moves when the publisher releases</span></div>
+          <div><small>optional</small><strong>pin v3</strong><span>stays exactly where you put it</span></div>
+        </div>
       </div>
     </section>
 
-    <section class="product shell">
-      <div class="section-label">What you can do</div>
-      <div class="product-heading">
-        <h2>Start with one useful skill.<br />Grow only when you need to.</h2>
+    <section class="story-section personal-private shell">
+      <div class="story-copy">
+        <div class="section-label">Your private skills</div>
+        <h2>Keep it private.<br />Keep it everywhere.</h2>
         <p>
-          Public use is anonymous. Claim an identity when you want private skills to follow you across
-          devices, then publish publicly only when sharing with the wider registry becomes useful.
+          Import a skill once. It stays private, and your saved changes follow you across signed-in devices.
+          No publish step. No second sync tool.
         </p>
+        <a class="inline-link" href="/docs/guides/publish-and-edit#private-sync-works-before-you-publish">Private multi-device sync <span>→</span></a>
       </div>
+      <div class="private-device-visual">
+        <div class="private-skill-node"><span>private</span><code>@alice/my-skill</code></div>
+        <div class="private-device-rail" aria-hidden="true"></div>
+        <div class="private-device-list">
+          <div><b>M</b><span>MacBook</span><em>current</em></div>
+          <div><b>W</b><span>Workstation</span><em>current</em></div>
+          <div><b>L</b><span>Laptop</span><em>current</em></div>
+        </div>
+        <small>Valid saves sync automatically after you sign in.</small>
+      </div>
+    </section>
 
-      <div class="product-grid">
-        {productIdeas.map((item) => (
-          <a class={`product-item product-item--${item.index}`} href={item.href}>
-            <span class="product-index">{item.index}</span>
-            <div>
-              <h3>{item.title}</h3>
-              <p>{item.body}</p>
-            </div>
-            <span class="product-arrow" aria-hidden="true">↗</span>
-          </a>
-        ))}
+    <section class="story-section private-share shell">
+      <div class="story-copy">
+        <div class="section-label">Private sharing</div>
+        <h2>Share with one person,<br />not the internet.</h2>
+        <p>
+          Grant one Denju user access with <code>denju share</code>. They choose whether to subscribe; if they do,
+          their private copy follows your saved changes while the skill stays out of the public catalog.
+        </p>
+        <a class="inline-link" href="/docs/guides/forks-and-proposals#share-a-private-skill">Private sharing <span>→</span></a>
+      </div>
+      <div class="share-visual">
+        <div class="share-owner"><span>A</span><div><small>owner</small><strong>@alice/my-skill</strong></div></div>
+        <div class="share-command"><code>denju share @alice/my-skill @bob</code></div>
+        <div class="share-permission"><span>private access</span><i aria-hidden="true">→</i></div>
+        <div class="share-recipient"><span>B</span><div><small>recipient</small><strong>@bob</strong></div></div>
+        <div class="share-subscribe"><code>denju subscribe @alice/my-skill</code><small>Bob opts in</small></div>
+      </div>
+    </section>
+
+    <section class="story-section publishing shell">
+      <div class="story-copy">
+        <div class="section-label">Publish</div>
+        <h2>Private while you work.<br />Public when you decide.</h2>
+        <p>
+          Personal skills start private. Publishing turns the current private state into an immutable numbered
+          release for everyone else. Fix mistakes by publishing the next release, not by rewriting history.
+        </p>
+        <a class="inline-link" href="/docs/guides/publish-and-edit#publish-a-public-release-when-you-choose">Publishing releases <span>→</span></a>
+      </div>
+      <div class="publish-visual">
+        <div class="publish-draft"><span>private</span><code>@alice/review</code><small>saved changes</small></div>
+        <div class="publish-action"><code>denju publish @alice/review</code><i aria-hidden="true">→</i></div>
+        <div class="publish-history">
+          <div><small>release</small><strong>v1</strong></div>
+          <div><small>release</small><strong>v2</strong></div>
+          <div class="publish-history__latest"><small>latest</small><strong>v3</strong></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="story-section packs shell">
+      <div class="story-copy">
+        <div class="section-label">Packs</div>
+        <h2>A pack is just a set of skills.</h2>
+        <p>
+          Group the skills that belong together. Add one, remove one, follow latest, or pin a version.
+          One pack subscription keeps the whole set current.
+        </p>
+        <a class="inline-link" href="/docs/guides/packs">Packs <span>→</span></a>
+      </div>
+      <div class="pack-visual">
+        <div class="pack-visual__title"><code>@northstar/packs/legal-core</code><span>v18</span></div>
+        <div><span>contract-review</span><b>latest</b></div>
+        <div><span>legal-research</span><b>latest</b></div>
+        <div><span>citation-check</span><b>v3</b></div>
+        <div><span>client-letter-draft</span><b>latest</b></div>
+        <div class="pack-visual__change"><span>+ litigation-prep</span><small>added once → subscribers receive it</small></div>
       </div>
     </section>
 
     <section class="team-story shell">
       <div class="team-copy">
-        <div class="section-label">The team use case</div>
-        <h2>Change the pack once.<br />Everyone stays current.</h2>
+        <div class="section-label">Private teams</div>
+        <h2>Private to the team<br />by default.</h2>
         <p>
-          Imagine a legal team with approved skills for contract review, legal research, citation checking,
-          and drafting. Those skills can stay private to the team. Put them in one pack, assign it once, and
-          Denju keeps that private set on every team member's computers—including people who join later.
+          A normal team publish creates a team-only release. Put private team skills in an assigned pack and
+          Denju keeps the approved set on every current member's computers—and on future members when they join.
         </p>
         <a class="inline-link inline-link--light" href="/docs/guides/teams">Teams and assigned packs <span>→</span></a>
       </div>
-
       <div class="team-visual">
         <div class="pack-card">
-          <div class="pack-title"><span>@northstar/packs/legal-core</span><strong>v18</strong></div>
+          <div class="pack-title"><span>@northstar/packs/legal-core</span><strong>private</strong></div>
           <div><span>contract-review</span><b>latest</b></div>
           <div><span>legal-research</span><b>latest</b></div>
           <div><span>citation-check</span><b>v3</b></div>
           <div><span>client-letter-draft</span><b>latest</b></div>
         </div>
-        <div class="pack-assignment"><span>assigned once</span><i>→</i></div>
+        <div class="pack-assignment"><span>assign once</span><i>→</i></div>
         <div class="member-grid">
           <div><span>A</span><small>4 skills</small></div>
           <div><span>B</span><small>4 skills</small></div>
@@ -305,51 +266,109 @@ const architecturePoints = [
       </div>
     </section>
 
-    <section class="collaboration shell">
-      <div class="collaboration-copy">
+    <section class="story-section collaboration shell">
+      <div class="story-copy">
         <div class="section-label">Safe to edit</div>
-        <h2>Edit a subscribed skill.<br />Keep your work.</h2>
+        <h2>Edit somebody else's skill.<br />Keep your work.</h2>
         <p>
-          Denju never treats somebody else's subscription as an untouchable folder. If you edit it,
-          your change becomes your fork instead of silently changing upstream.
+          Editing a subscribed skill does not mutate upstream. Denju turns your change into a fork, lets you
+          sync upstream explicitly, and lets you propose the result back when it is ready.
         </p>
         <a class="inline-link" href="/docs/guides/forks-and-proposals">Forks and proposals <span>→</span></a>
       </div>
-      <div class="fork-flow">
-        <div><span>01</span><strong>Edit normally</strong><p>Change the skill through the filesystem your agent already uses.</p></div>
-        <div><span>02</span><strong>Your fork</strong><p>Denju preserves the edit as independent work with upstream history.</p></div>
-        <div><span>03</span><strong>Propose it</strong><p>Send the result upstream when you want the original author to take it.</p></div>
+      <div class="fork-visual">
+        <div><span>01</span><strong>Edit normally</strong><small>through the filesystem your agent already uses</small></div>
+        <i aria-hidden="true">↓</i>
+        <div><span>02</span><strong>Your fork</strong><small>your work is independent and preserved</small></div>
+        <i aria-hidden="true">↓</i>
+        <div><span>03</span><strong>Propose</strong><small>send the current result back upstream</small></div>
       </div>
     </section>
 
-    <section class="architecture shell">
-      <div class="architecture-head">
-        <div>
-          <div class="section-label">Under the hood · optional</div>
-          <h2>The architecture follows the product promise.</h2>
-        </div>
+    <section class="story-section sync-story shell">
+      <div class="story-copy">
+        <div class="section-label">Offline and conflicts</div>
+        <h2>Go offline. Come back.<br />Catch up to now.</h2>
         <p>
-          Users should not have to think about synchronization mechanics. Denju does the technical work so
-          “keep this skill current” remains a small, reliable promise.
+          Private edits queue locally. When connectivity returns, Denju syncs current state rather than replaying
+          every missed event. Concurrent edits merge when they can; real conflicts preserve both sides.
         </p>
+        <a class="inline-link" href="/docs/guides/sync-and-conflicts">Sync and conflicts <span>→</span></a>
       </div>
-      <div class="architecture-points">
-        {architecturePoints.map(([title, body], index) => (
-          <article><span>0{index + 1}</span><h3>{title}</h3><p>{body}</p></article>
-        ))}
+      <div class="sync-visual">
+        <div class="sync-device"><span>L</span><strong>offline laptop</strong><small>3 private saves queued</small></div>
+        <div class="sync-gap"><span>offline for 2 days</span><i aria-hidden="true"></i></div>
+        <div class="sync-registry"><span>R</span><strong>registry</strong><small>current heads</small></div>
+        <div class="sync-result"><span>reconnect</span><strong>compare what matters now</strong><small>merge clean edits · surface real conflicts</small></div>
       </div>
-      <a class="inline-link" href="/docs/architecture/overview">Read the architecture <span>→</span></a>
+    </section>
+
+    <section class="story-section social shell">
+      <div class="story-copy">
+        <div class="section-label">Discovery signals</div>
+        <h2>Follow people.<br />Star skills. Install nothing by accident.</h2>
+        <p>
+          Profiles, follows, stars, topics, and rankings help you discover good work. They are deliberately
+          separate from subscriptions: social actions never change your filesystem.
+        </p>
+        <a class="inline-link" href="/docs/guides/discovery-and-social">Discovery and social <span>→</span></a>
+      </div>
+      <div class="social-visual">
+        <div class="profile-card"><span class="profile-avatar">A</span><div><strong>@alice</strong><small>agent tooling · legal workflows</small></div><em>Following</em></div>
+        <div class="social-skill"><div><strong>@alice/review</strong><small>★ 482 · topic: review</small></div><span>starred</span></div>
+        <div class="social-divider"><span>social</span><i></i><span>installed</span></div>
+        <div class="social-note"><strong>Nothing changed on disk.</strong><small>Subscribe only when you want the skill installed.</small></div>
+      </div>
+    </section>
+
+    <section class="story-section lifecycle shell">
+      <div class="story-copy">
+        <div class="section-label">Manage over time</div>
+        <h2>Rename it. Move it.<br />Retire it without surprises.</h2>
+        <p>
+          Rename skills and packs, move them into teams, deprecate old ones, unpublish, export, or delete.
+          Existing relationships follow the underlying skill instead of breaking on every name change.
+        </p>
+        <a class="inline-link" href="/docs/guides/lifecycle">Manage skills and packs <span>→</span></a>
+      </div>
+      <div class="lifecycle-visual">
+        <div><code>@alice/review</code><span>rename</span><code>@alice/code-review</code></div>
+        <div><code>@alice/code-review</code><span>transfer</span><code>@acme/code-review</code></div>
+        <div><code>@acme/code-review</code><span>deprecate</span><code>→ @acme/review-v2</code></div>
+        <small>History, subscriptions, and provenance stay attached.</small>
+      </div>
+    </section>
+
+    <section class="story-section trust shell">
+      <div class="story-copy">
+        <div class="section-label">Trust and safety</div>
+        <h2>Verify what Denju can verify.</h2>
+        <p>
+          Denju verifies access, skill structure, hashes, and complete downloads before updates become visible.
+          It does not pretend to know whether arbitrary skill instructions are safe; subscribing remains a trust decision.
+        </p>
+        <a class="inline-link" href="/docs/guides/trust-and-safety">Trust and safety <span>→</span></a>
+      </div>
+      <div class="trust-visual">
+        <div class="trust-list trust-list--yes">
+          <span>Denju verifies</span>
+          <div>✓ authorized access</div><div>✓ Agent Skill structure</div><div>✓ content hashes</div><div>✓ complete update before switch</div>
+        </div>
+        <div class="trust-list trust-list--no">
+          <span>Denju does not claim</span>
+          <div>— malware scanning</div><div>— secret scanning</div><div>— runtime sandboxing</div><div>— instruction quality</div>
+        </div>
+      </div>
     </section>
 
     <section class="self-host shell">
       <div class="self-host-card">
         <div class="self-host-copy">
-          <div class="section-label">Your registry, if you want it</div>
-          <h2>Hosted by Denju.<br />Or hosted by you.</h2>
+          <div class="section-label">Self-host</div>
+          <h2>The hosted registry.<br />Or your registry.</h2>
           <p>
-            The official registry is the default. Organizations can run the same open-source
-            <code>denju-server</code> against PostgreSQL and S3-compatible storage. The client experience
-            stays the same.
+            Run the same open-source <code>denju-server</code> with PostgreSQL and S3-compatible storage.
+            The client experience stays the same; only the registry origin changes.
           </p>
           <div class="self-host-actions">
             <a class="button button-primary" href="/docs/self-host/quickstart">Self-host Denju <span>→</span></a>
@@ -372,7 +391,7 @@ const architecturePoints = [
         <div class="quickstart-copy">
           <div class="section-label">Start here</div>
           <h2>Your first skill is four commands away.</h2>
-          <p>Setup, search, and public subscriptions are anonymous. You can claim an identity later.</p>
+          <p>Setup, search, and public subscriptions are anonymous. Claim an identity later when you need private account features.</p>
         </div>
         <pre><code><span>$</span> denju setup
 <span>$</span> denju search "react performance"
