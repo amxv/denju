@@ -34,10 +34,8 @@
   body:has(.denju-landing) .brand__strapline { display: none; }
   .denju-hero { min-height: 0; padding-top: 3rem; }
   .problem,.model,.product,.collaboration,.architecture,.self-host,.quickstart { padding-top: 4.75rem; padding-bottom: 4.75rem; }
-  .hero-topline { align-items: flex-start; flex-direction: column; gap: .7rem; }
-  .hero-meta { align-items: flex-start; flex-direction: column; gap: .45rem; }
   .denju-meaning { white-space: normal; }
-  .hero-layout { padding-top: 3.4rem; }
+  .hero-layout { padding-top: 1.5rem; }
   .hero-copy h1 { font-size: clamp(3.4rem,15vw,5rem); }
   .hero-actions,.self-host-actions { display: grid; }
   .hero-actions .button,.self-host-actions .button { width: 100%; }

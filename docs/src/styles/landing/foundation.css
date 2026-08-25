@@ -145,22 +145,8 @@ body:has(.denju-landing) .site-nav__index { color: var(--muted); }
   padding-bottom: clamp(6rem, 10vw, 9rem);
 }
 
-.hero-topline {
-  display: flex;
-  justify-content: space-between;
-  gap: 2rem;
-  align-items: center;
-  padding-bottom: 1.15rem;
-  border-bottom: 1px solid var(--line);
-}
-
-.hero-meta {
-  display: flex;
-  gap: 1.1rem;
-  align-items: center;
-}
-
 .denju-meaning {
+  margin-top: .95rem;
   color: var(--muted);
   font-size: .67rem;
   white-space: nowrap;
@@ -172,28 +158,12 @@ body:has(.denju-landing) .site-nav__index { color: var(--muted); }
   letter-spacing: .02em;
 }
 
-.hero-live {
-  display: inline-flex;
-  gap: .5rem;
-  align-items: center;
-  color: var(--muted);
-  font-size: .72rem;
-}
-
-.hero-live i {
-  width: .42rem;
-  height: .42rem;
-  border-radius: 50%;
-  background: var(--green);
-  box-shadow: 0 0 0 4px color-mix(in srgb, var(--green-soft) 75%, transparent);
-}
-
 .hero-layout {
   display: grid;
   grid-template-columns: minmax(0, 1.08fr) minmax(25rem, .72fr);
   gap: clamp(3rem, 8vw, 7.5rem);
   align-items: center;
-  padding-top: clamp(4rem, 8vw, 7rem);
+  padding-top: clamp(2rem, 5vw, 4rem);
 }
 
 .hero-copy h1 {
