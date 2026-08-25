@@ -2,12 +2,13 @@
 import { getCollection } from "astro:content";
 import BaseLayout from "zuedocs/layouts/BaseLayout.astro";
 import DocsPageActions from "zuedocs/components/DocsPageActions.astro";
-import { docCategories, primaryNav, siteConfig } from "../../data/docs";
+import { docCategories, docCategoryDetails, primaryNav, siteConfig } from "../../data/docs";
 
 const entries = (await getCollection("docs")).sort((a, b) => a.data.order - b.data.order);
 const grouped = docCategories
   .map((category) => ({
     category,
+    description: docCategoryDetails[category],
     entries: entries.filter((entry) => entry.data.category === category)
   }))
   .filter((group) => group.entries.length > 0);
@@ -15,7 +16,7 @@ const grouped = docCategories
 
 <BaseLayout
   title={`${siteConfig.name} Docs`}
-  description={siteConfig.description}
+  description="Learn Denju from first subscription through publishing, teams, self-hosting, architecture, and repository development."
   siteConfig={siteConfig}
   primaryNav={primaryNav}
 >
@@ -23,13 +24,14 @@ const grouped = docCategories
     <div class="docs-index-hero__head">
       <div>
         <p class="section-label">Documentation</p>
-        <h1>Understand Denju from the product boundary inward.</h1>
+        <h1>Start with the workflow. Dive into the machinery only when you want to.</h1>
       </div>
       <DocsPageActions />
     </div>
     <p>
-      Start with the product model, use the development guide when working in the
-      repository, and keep the reference pages close when changing ownership boundaries.
+      New to Denju? Begin with Start, then use the task-focused guides as you need them. Running your
+      own registry has a separate path. Merkle objects, reconciliation, storage, and performance live
+      under Architecture so normal users never have to learn the implementation to get value from it.
     </p>
   </section>
 
@@ -37,13 +39,17 @@ const grouped = docCategories
     {grouped.map((group) => (
       <section class="docs-index__group">
         <div class="docs-index__group-head">
-          <p class="section-label">{group.category}</p>
+          <div>
+            <p class="section-label">{group.category}</p>
+            <p>{group.description}</p>
+          </div>
         </div>
         <div class="docs-index__cards">
           {group.entries.map((entry) => (
             <a class="docs-index__card" href={`/docs/${entry.id}`}>
               <h2>{entry.data.title}</h2>
               <p>{entry.data.description}</p>
+              <span>Open guide</span>
             </a>
           ))}
         </div>
