@@ -186,7 +186,7 @@ jobs:
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          npm version "$VERSION" --no-git-tag-version --ignore-scripts
+          npm version "$VERSION" --no-git-tag-version --ignore-scripts --allow-same-version
           npm pack --dry-run --ignore-scripts
       - uses: actions/upload-artifact@v4
         with:
@@ -242,5 +242,5 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          npm version "$VERSION" --no-git-tag-version --ignore-scripts
+          npm version "$VERSION" --no-git-tag-version --ignore-scripts --allow-same-version
           npm publish --access public --ignore-scripts
