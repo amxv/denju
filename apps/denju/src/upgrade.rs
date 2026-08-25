@@ -733,6 +733,12 @@ fn npm_install(
             allow_scripts.as_str(),
             &format!("{package}@{version}"),
         ])
+        // npm is an operational child process, not part of Denju's result stream. Keep both
+        // streams private so `denju --json upgrade` remains exactly one JSON envelope with no
+        // progress contamination; Denju reports the child exit status and recovery command on
+        // failure instead.
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .status()
         .map_err(service_error)
 }

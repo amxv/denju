@@ -338,6 +338,65 @@ fn legacy_test_knobs_cannot_run_without_an_explicit_marked_test_home() {
     assert!(!home.path().join(".denju").exists());
 }
 
+#[test]
+fn json_upgrade_suppresses_npm_child_output() {
+    let home = tempdir().expect("isolated test home");
+    std::fs::write(
+        home.path().join(denju_local::TEST_HOME_MARKER),
+        b"isolated\n",
+    )
+    .expect("mark isolated test home");
+
+    #[cfg(windows)]
+    let npm = home.path().join("fake-npm.cmd");
+    #[cfg(not(windows))]
+    let npm = home.path().join("fake-npm");
+
+    #[cfg(windows)]
+    let npm_script =
+        b"@echo off\r\necho npm-install-progress\r\necho npm-install-warning 1>&2\r\nexit /b 0\r\n"
+            .as_slice();
+    #[cfg(not(windows))]
+    let npm_script =
+        b"#!/bin/sh\necho npm-install-progress\necho npm-install-warning >&2\nexit 0\n".as_slice();
+
+    std::fs::write(&npm, npm_script).expect("write fake npm");
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mut permissions = std::fs::metadata(&npm).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&npm, permissions).expect("make fake npm executable");
+    }
+
+    let denju = env!("CARGO_BIN_EXE_denju");
+    let output = Command::new(denju)
+        .args(["--json", "upgrade"])
+        .env("HOME", home.path())
+        .env(denju_local::TEST_HOME_ENV, home.path())
+        .env("CODEX_HOME", "/developer-home/.gg/codex")
+        .env("CLAUDE_CONFIG_DIR", "/developer-home/.gg/claude")
+        .env("DENJU_INSTALL_SOURCE", "npm")
+        .env("DENJU_INSTALL_PACKAGE", "denju-cli")
+        .env("DENJU_INSTALL_VERSION", env!("CARGO_PKG_VERSION"))
+        .env("DENJU_INSTALL_TARGET", denju)
+        .env("DENJU_NPM_COMMAND", &npm)
+        .output()
+        .expect("run npm-source JSON upgrade");
+
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    assert_eq!(stdout(&output).lines().count(), 1);
+    let value: Value = serde_json::from_str(stdout(&output).trim()).expect("valid JSON upgrade");
+    assert_eq!(value["version"], 1);
+    assert_eq!(value["ok"], true);
+    assert_eq!(value["result"]["kind"], "upgrade");
+    assert_eq!(value["result"]["source"], "npm");
+    assert_eq!(value["result"]["state"], "up_to_date");
+    assert!(stderr(&output).is_empty());
+}
+
 fn denju(args: &[&str]) -> Output {
     let home = tempdir().expect("isolated test home");
     std::fs::write(

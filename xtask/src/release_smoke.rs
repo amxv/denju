@@ -229,6 +229,7 @@ fn smoke_npm_installer(
         prefix.join("bin/denju")
     };
     assert_binary_version(&launcher, home, "npm launcher")?;
+    assert_npm_json_upgrade_isolated(&launcher, home, base, &npm_registry_url, &prefix)?;
 
     let asset_path = temporary.join("dist").join(current_asset_name()?);
     let valid_asset = fs::read(&asset_path).map_err(io_error("read smoke release asset"))?;
@@ -271,6 +272,52 @@ fn smoke_npm_installer(
         return Err("npm installer accepted an invalid shared release manifest".to_owned());
     }
     assert_installed_bytes(&installed, expected, "failed npm reinstall")
+}
+
+fn assert_npm_json_upgrade_isolated(
+    launcher: &Path,
+    home: &Path,
+    release_base: &str,
+    npm_registry_url: &str,
+    prefix: &Path,
+) -> Result<(), String> {
+    let output = safe_command(Command::new(launcher), home)
+        .args(["--json", "upgrade"])
+        .env("DENJU_RELEASE_BASE_URL", release_base)
+        .env("npm_config_registry", npm_registry_url)
+        .env("npm_config_prefix", prefix)
+        .env("npm_config_audit", "false")
+        .env("npm_config_fund", "false")
+        .output()
+        .map_err(|error| format!("failed to execute npm JSON upgrade smoke: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "npm JSON upgrade smoke exited with {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let stdout = String::from_utf8(output.stdout)
+        .map_err(|_| "npm JSON upgrade smoke stdout was not UTF-8".to_owned())?;
+    if stdout.lines().count() != 1 {
+        return Err(format!(
+            "npm JSON upgrade emitted {} stdout lines instead of one: {stdout:?}",
+            stdout.lines().count()
+        ));
+    }
+    let result: Value = serde_json::from_str(stdout.trim())
+        .map_err(|error| format!("npm JSON upgrade emitted invalid JSON: {error}"))?;
+    if result["version"] != 1
+        || result["ok"] != true
+        || result["result"]["kind"] != "upgrade"
+        || result["result"]["source"] != "npm"
+        || result["result"]["state"] != "up_to_date"
+    {
+        return Err(format!(
+            "npm JSON upgrade returned an unexpected result: {result}"
+        ));
+    }
+    Ok(())
 }
 
 fn npm_global_package_path(prefix: &Path) -> PathBuf {
