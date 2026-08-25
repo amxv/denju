@@ -16,6 +16,7 @@ pub(crate) fn check(root: &Path) -> Result<(), String> {
     check_fixture_coverage(root)?;
     check_sqlx_offline_policy(root)?;
     check_openapi_contract(root)?;
+    check_release_version_coherence(root)?;
     check_automation_authority(root)?;
     println!("repository contracts: passed");
     Ok(())
@@ -400,6 +401,90 @@ fn route_tag(path: &str) -> &str {
         .unwrap_or("registry")
 }
 
+fn check_release_version_coherence(root: &Path) -> Result<(), String> {
+    let workspace_version = workspace_package_version(root)?;
+
+    let npm: Value = serde_json::from_slice(
+        &fs::read(root.join("packages/npm/package.json"))
+            .map_err(|error| format!("failed to read packages/npm/package.json: {error}"))?,
+    )
+    .map_err(|error| format!("failed to parse packages/npm/package.json: {error}"))?;
+    let npm_version = npm
+        .get("version")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "packages/npm/package.json is missing a string version".to_owned())?;
+    if npm_version != workspace_version {
+        return Err(format!(
+            "release version drift: Cargo workspace is {workspace_version}, npm package is {npm_version}"
+        ));
+    }
+
+    let dockerfile = fs::read_to_string(root.join("Dockerfile.vercel"))
+        .map_err(|error| format!("failed to read Dockerfile.vercel: {error}"))?;
+    let docker_version = dockerfile
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("ARG DENJU_BUILD_VERSION="))
+        .ok_or_else(|| {
+            "Dockerfile.vercel is missing ARG DENJU_BUILD_VERSION=<version>".to_owned()
+        })?;
+    if docker_version != workspace_version {
+        return Err(format!(
+            "release version drift: Cargo workspace is {workspace_version}, Dockerfile.vercel defaults DENJU_BUILD_VERSION={docker_version}"
+        ));
+    }
+
+    let release_workflow = fs::read_to_string(root.join(".github/workflows/release.yml"))
+        .map_err(|error| format!("failed to read .github/workflows/release.yml: {error}"))?;
+    let expected_default = format!("default: {workspace_version}-dry-run");
+    if !release_workflow
+        .lines()
+        .any(|line| line.trim() == expected_default)
+    {
+        return Err(format!(
+            "release version drift: .github/workflows/release.yml must contain `{expected_default}`"
+        ));
+    }
+    Ok(())
+}
+
+fn workspace_package_version(root: &Path) -> Result<String, String> {
+    let cargo = fs::read_to_string(root.join("Cargo.toml"))
+        .map_err(|error| format!("failed to read Cargo.toml: {error}"))?;
+    workspace_package_version_from_manifest(&cargo)
+}
+
+fn workspace_package_version_from_manifest(cargo: &str) -> Result<String, String> {
+    let mut in_workspace_package = false;
+    for line in cargo.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            in_workspace_package = trimmed == "[workspace.package]";
+            continue;
+        }
+        if !in_workspace_package {
+            continue;
+        }
+        let Some(value) = trimmed.strip_prefix("version") else {
+            continue;
+        };
+        let Some(value) = value.trim_start().strip_prefix('=') else {
+            continue;
+        };
+        let version = value.trim();
+        let Some(version) = version
+            .strip_prefix('"')
+            .and_then(|value| value.strip_suffix('"'))
+        else {
+            return Err("[workspace.package] version must be a quoted string".to_owned());
+        };
+        if version.is_empty() {
+            return Err("[workspace.package] version must not be empty".to_owned());
+        }
+        return Ok(version.to_owned());
+    }
+    Err("Cargo.toml is missing [workspace.package] version".to_owned())
+}
+
 fn check_automation_authority(root: &Path) -> Result<(), String> {
     for forbidden in ["Makefile", "makefile", "GNUmakefile"] {
         if root.join(forbidden).exists() {
@@ -461,6 +546,24 @@ mod tests {
                 ("post".to_owned(), "/v1/example".to_owned()),
                 ("post".to_owned(), "/v1/other".to_owned()),
             ])
+        );
+    }
+
+    #[test]
+    fn workspace_package_version_parser_is_scoped_to_workspace_package() {
+        let cargo = r#"
+            [package]
+            version = "9.9.9"
+
+            [workspace.package]
+            version = "1.2.3"
+
+            [workspace.dependencies]
+            example = "4.5.6"
+        "#;
+        assert_eq!(
+            workspace_package_version_from_manifest(cargo).unwrap(),
+            "1.2.3"
         );
     }
 }

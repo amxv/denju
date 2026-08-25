@@ -4,7 +4,7 @@ FROM rust:1.97.1-bookworm AS build
 
 WORKDIR /src
 ARG TARGETPLATFORM
-ARG DENJU_BUILD_VERSION=0.3.0
+ARG DENJU_BUILD_VERSION=0.3.2
 COPY . .
 RUN --mount=type=cache,id=denju-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,id=denju-target-${TARGETPLATFORM},target=/src/target,sharing=locked \
