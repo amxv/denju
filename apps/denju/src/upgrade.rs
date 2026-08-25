@@ -69,6 +69,21 @@ impl InstallSource {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PackageManager {
+    Npm,
+    VitePlus,
+}
+
+impl PackageManager {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Npm => "npm",
+            Self::VitePlus => "vite-plus",
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct InstallSourceFile {
     version: u32,
@@ -244,6 +259,7 @@ async fn upgrade_npm(
     let package = std::env::var("DENJU_INSTALL_PACKAGE").unwrap_or_else(|_| "denju-cli".to_owned());
     let package_version =
         std::env::var("DENJU_INSTALL_VERSION").unwrap_or_else(|_| current_version.to_owned());
+    let (manager, command) = package_manager()?;
     let target = std::env::var_os("DENJU_INSTALL_TARGET")
         .map(PathBuf::from)
         .ok_or_else(|| {
@@ -251,54 +267,67 @@ async fn upgrade_npm(
                 CliErrorCode::LocalState,
                 "npm launcher did not provide the native Denju target path",
             )
-            .recovery(npm_install_command(&package, &package_version))
+            .recovery(package_install_command(manager, &package, &package_version))
         })?;
-    let npm = npm_command();
-    apply_npm_upgrade(
+    apply_package_upgrade(
         paths,
         current_version,
         &package,
         &package_version,
         &target,
-        &npm,
+        manager,
+        &command,
     )
 }
 
-fn apply_npm_upgrade(
+fn apply_package_upgrade(
     paths: &LocalPaths,
     current_version: &str,
     package: &str,
     package_version: &str,
     target: &Path,
-    npm: &std::ffi::OsStr,
+    manager: PackageManager,
+    command: &std::ffi::OsStr,
 ) -> Result<UpgradeOutcome, RuntimeError> {
     if package_version != current_version {
         return Err(RuntimeError::new(
             CliErrorCode::ContentVerification,
             format!(
-                "npm package reports version {package_version} but the running Denju binary reports {current_version}"
+                "package launcher reports version {package_version} but the running Denju binary reports {current_version}"
             ),
         )
-        .recovery(npm_install_command(package, package_version)));
+        .recovery(package_install_command(
+            manager,
+            package,
+            package_version,
+        )));
     }
-    let status = npm_install(npm, package, "latest")?;
+    let status = package_install(manager, command, package, "latest")?;
     if !status.success() {
         return Err(RuntimeError::new(
             CliErrorCode::ServiceUnavailable,
-            format!("npm upgrade exited with {status}"),
+            format!("{} upgrade exited with {status}", manager.as_str()),
         )
-        .recovery(npm_install_command(package, "latest")));
+        .recovery(package_install_command(manager, package, "latest")));
     }
     let new_version = match binary_version(target) {
         Ok(version) => version,
         Err(error) => {
-            return rollback_npm_upgrade(paths, package, package_version, target, npm, error);
+            return rollback_package_upgrade(
+                paths,
+                package,
+                package_version,
+                target,
+                manager,
+                command,
+                error,
+            );
         }
     };
     if new_version == current_version {
         return Ok(UpgradeOutcome {
             state: "up_to_date",
-            source: InstallSource::Npm.as_str(),
+            source: manager.as_str(),
             previous_version: current_version.to_owned(),
             version: new_version,
             daemon_restarted: false,
@@ -311,54 +340,70 @@ fn apply_npm_upgrade(
     match verification {
         Ok(daemon_restarted) => Ok(UpgradeOutcome {
             state: "upgraded",
-            source: InstallSource::Npm.as_str(),
+            source: manager.as_str(),
             previous_version: current_version.to_owned(),
             version: new_version,
             daemon_restarted,
             health_verified: true,
             rolled_back: false,
         }),
-        Err(error) => rollback_npm_upgrade(paths, package, package_version, target, npm, error),
+        Err(error) => rollback_package_upgrade(
+            paths,
+            package,
+            package_version,
+            target,
+            manager,
+            command,
+            error,
+        ),
     }
 }
 
-fn rollback_npm_upgrade(
+fn rollback_package_upgrade(
     paths: &LocalPaths,
     package: &str,
     package_version: &str,
     target: &Path,
-    npm: &std::ffi::OsStr,
+    manager: PackageManager,
+    command: &std::ffi::OsStr,
     failure: RuntimeError,
 ) -> Result<UpgradeOutcome, RuntimeError> {
-    let rollback_status = npm_install(npm, package, package_version)?;
+    let rollback_status = package_install(manager, command, package, package_version)?;
     if !rollback_status.success() {
         return Err(RuntimeError::new(
             CliErrorCode::ServiceUnavailable,
             format!(
-                "upgrade verification failed ({}) and npm rollback exited with {rollback_status}",
-                failure.message
+                "upgrade verification failed ({}) and {} rollback exited with {rollback_status}",
+                failure.message,
+                manager.as_str()
             ),
         )
-        .recovery(npm_install_command(package, package_version)));
+        .recovery(package_install_command(manager, package, package_version)));
     }
     let restored_version = binary_version(target).map_err(|error| {
         RuntimeError::new(
             CliErrorCode::ServiceUnavailable,
             format!(
-                "upgrade failed and npm rollback could not verify the restored Denju executable: {}",
-                error.message
+                "upgrade failed and {} rollback could not verify the restored Denju executable: {}",
+                manager.as_str(),
+                error.message,
             ),
         )
-        .recovery(npm_install_command(package, package_version))
+        .recovery(package_install_command(manager, package, package_version))
     })?;
     if restored_version != package_version {
         return Err(RuntimeError::new(
             CliErrorCode::ServiceUnavailable,
             format!(
-                "upgrade failed and npm rollback restored Denju {restored_version}; expected {package_version}"
+                "upgrade failed and {} rollback restored Denju {restored_version}; expected {package_version}",
+                manager.as_str()
             ),
         )
-        .recovery(npm_install_command(package, package_version)));
+        .recovery(package_install_command(
+            manager,
+            package,
+            package_version,
+        )));
     }
     if let Err(rollback_error) =
         restart_daemon(paths, target).and_then(|_| run_restored_binary_health(target))
@@ -366,7 +411,8 @@ fn rollback_npm_upgrade(
         return Err(RuntimeError::new(
             CliErrorCode::ServiceUnavailable,
             format!(
-                "upgrade failed; npm restored Denju {package_version}, but rollback health verification also failed: {}",
+                "upgrade failed; {} restored Denju {package_version}, but rollback health verification also failed: {}",
+                manager.as_str(),
                 rollback_error.message
             ),
         )
@@ -375,8 +421,9 @@ fn rollback_npm_upgrade(
     Err(RuntimeError::new(
         CliErrorCode::ServiceUnavailable,
         format!(
-            "upgrade verification failed ({}); npm restored the previous package version",
-            failure.message
+            "upgrade verification failed ({}); {} restored the previous package version",
+            failure.message,
+            manager.as_str()
         ),
     )
     .recovery("denju doctor"))
@@ -720,6 +767,26 @@ fn npm_command() -> std::ffi::OsString {
     }
 }
 
+fn package_manager() -> Result<(PackageManager, std::ffi::OsString), RuntimeError> {
+    let manager = match std::env::var("DENJU_INSTALL_MANAGER").as_deref() {
+        Ok("vite-plus") => PackageManager::VitePlus,
+        Ok("npm") | Err(_) => PackageManager::Npm,
+        Ok(other) => {
+            return Err(RuntimeError::new(
+                CliErrorCode::LocalState,
+                format!("unsupported Denju package manager {other}"),
+            ));
+        }
+    };
+    let command = match manager {
+        PackageManager::Npm => npm_command(),
+        PackageManager::VitePlus => {
+            std::env::var_os("DENJU_INSTALL_COMMAND").unwrap_or_else(default_vite_plus_command)
+        }
+    };
+    Ok((manager, command))
+}
+
 fn default_npm_command() -> std::ffi::OsString {
     if cfg!(windows) {
         "npm.cmd".into()
@@ -728,20 +795,39 @@ fn default_npm_command() -> std::ffi::OsString {
     }
 }
 
-fn npm_install(
-    npm: &std::ffi::OsStr,
+fn default_vite_plus_command() -> std::ffi::OsString {
+    if cfg!(windows) {
+        "vp.exe".into()
+    } else {
+        "vp".into()
+    }
+}
+
+fn package_install(
+    manager: PackageManager,
+    command: &std::ffi::OsStr,
     package: &str,
     version: &str,
 ) -> Result<std::process::ExitStatus, RuntimeError> {
     let allow_scripts = format!("--allow-scripts={package}");
-    Command::new(npm)
-        .args([
-            "install",
-            "-g",
-            allow_scripts.as_str(),
-            &format!("{package}@{version}"),
-        ])
-        // npm is an operational child process, not part of Denju's result stream. Keep both
+    let package_version = format!("{package}@{version}");
+    let mut child = Command::new(command);
+    match manager {
+        PackageManager::Npm => {
+            child.args(["install", "-g", allow_scripts.as_str(), &package_version]);
+        }
+        PackageManager::VitePlus => {
+            child.args([
+                "install",
+                "-g",
+                &package_version,
+                "--",
+                allow_scripts.as_str(),
+            ]);
+        }
+    }
+    child
+        // The package manager is an operational child process, not part of Denju's result stream. Keep both
         // streams private so `denju --json upgrade` remains exactly one JSON envelope with no
         // progress contamination; Denju reports the child exit status and recovery command on
         // failure instead.
@@ -753,6 +839,15 @@ fn npm_install(
 
 fn npm_install_command(package: &str, version: &str) -> String {
     format!("npm install -g --allow-scripts={package} {package}@{version}")
+}
+
+fn package_install_command(manager: PackageManager, package: &str, version: &str) -> String {
+    match manager {
+        PackageManager::Npm => npm_install_command(package, version),
+        PackageManager::VitePlus => {
+            format!("vp install -g {package}@{version} -- --allow-scripts={package}")
+        }
+    }
 }
 
 fn platform_asset_name() -> Result<String, RuntimeError> {
@@ -798,188 +893,5 @@ fn service_error(error: impl std::fmt::Display) -> RuntimeError {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn release_manifest_binds_exact_size_and_sha() {
-        let bytes = b"denju-binary";
-        let sha = format!("{:x}", Sha256::digest(bytes));
-        let text = valid_manifest("2.3.4", &sha, bytes.len());
-        let manifest = parse_manifest(&text).unwrap();
-        assert_eq!(manifest.version, "2.3.4");
-        let asset = manifest
-            .assets
-            .iter()
-            .find(|asset| asset.name == "denju_linux_amd64")
-            .unwrap();
-        verify_asset(asset, bytes).unwrap();
-        assert!(verify_asset(asset, b"denju-binarx").is_err());
-    }
-
-    #[test]
-    fn malformed_release_manifest_fails_closed() {
-        assert!(parse_manifest("version 1.0.0\n").is_err());
-        assert!(
-            parse_manifest("format denju-release-manifest-v1\nversion 1.0.0\nasset x nope 10\n")
-                .is_err()
-        );
-        let sha = "0".repeat(64);
-        let manifest = valid_manifest("1.0.0", &sha, 10);
-        assert!(parse_manifest(&format!("{manifest}future_field nope\n")).is_err());
-        assert!(parse_manifest(&format!("{manifest}version 1.0.0\n")).is_err());
-        assert!(
-            parse_manifest(&manifest.replace(
-                "server_image ghcr.io/amxv/denju-server:v1.0.0",
-                "server_image ghcr.io/example/denju-server:v1.0.0"
-            ))
-            .is_err()
-        );
-        assert!(parse_manifest(&manifest.replace("version 1.0.0", "version ../1.0.0")).is_err());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn standalone_upgrade_replaces_only_after_verification_and_runs_new_health() {
-        let temporary = tempfile::tempdir().unwrap();
-        let paths = LocalPaths::from_home(temporary.path().to_path_buf());
-        let target = temporary.path().join("denju");
-        write_fake_binary(&target, "1.0.0", true);
-        let next = fake_binary("2.0.0", true);
-
-        let outcome = apply_standalone_upgrade(&paths, "1.0.0", "2.0.0", &target, &next).unwrap();
-
-        assert_eq!(outcome.state, "upgraded");
-        assert_eq!(outcome.previous_version, "1.0.0");
-        assert_eq!(outcome.version, "2.0.0");
-        assert!(outcome.health_verified);
-        assert!(!outcome.daemon_restarted);
-        assert_eq!(binary_version(&target).unwrap(), "2.0.0");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn failed_new_binary_health_restores_the_exact_previous_executable() {
-        let temporary = tempfile::tempdir().unwrap();
-        let paths = LocalPaths::from_home(temporary.path().to_path_buf());
-        let target = temporary.path().join("denju");
-        let previous = fake_binary("1.0.0", true);
-        write_executable(&target, &previous);
-        let unhealthy = fake_binary("2.0.0", false);
-
-        let error =
-            apply_standalone_upgrade(&paths, "1.0.0", "2.0.0", &target, &unhealthy).unwrap_err();
-
-        assert!(error.message.contains("previous executable was restored"));
-        assert_eq!(binary_version(&target).unwrap(), "1.0.0");
-        assert_eq!(fs::read(&target).unwrap(), previous);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn npm_upgrade_runs_new_health_and_reports_the_new_version() {
-        let temporary = tempfile::tempdir().unwrap();
-        let paths = LocalPaths::from_home(temporary.path().to_path_buf());
-        let target = temporary.path().join("denju");
-        let previous = temporary.path().join("previous");
-        let next = temporary.path().join("next");
-        let npm = temporary.path().join("npm");
-        write_fake_binary(&target, "1.0.0", true);
-        write_fake_binary(&previous, "1.0.0", true);
-        write_fake_binary(&next, "2.0.0", true);
-        write_fake_npm(&npm, &target, &previous, &next);
-
-        let outcome = apply_npm_upgrade(
-            &paths,
-            "1.0.0",
-            "denju-cli",
-            "1.0.0",
-            &target,
-            npm.as_os_str(),
-        )
-        .unwrap();
-
-        assert_eq!(outcome.state, "upgraded");
-        assert_eq!(outcome.version, "2.0.0");
-        assert_eq!(binary_version(&target).unwrap(), "2.0.0");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn npm_upgrade_verification_failure_reinstalls_and_health_checks_previous_version() {
-        let temporary = tempfile::tempdir().unwrap();
-        let paths = LocalPaths::from_home(temporary.path().to_path_buf());
-        let target = temporary.path().join("denju");
-        let previous = temporary.path().join("previous");
-        let next = temporary.path().join("next");
-        let npm = temporary.path().join("npm");
-        write_fake_binary(&target, "1.0.0", true);
-        write_fake_binary(&previous, "1.0.0", true);
-        write_fake_binary(&next, "2.0.0", false);
-        write_fake_npm(&npm, &target, &previous, &next);
-
-        let error = apply_npm_upgrade(
-            &paths,
-            "1.0.0",
-            "denju-cli",
-            "1.0.0",
-            &target,
-            npm.as_os_str(),
-        )
-        .unwrap_err();
-
-        assert!(
-            error
-                .message
-                .contains("npm restored the previous package version")
-        );
-        assert_eq!(fs::read(&target).unwrap(), fs::read(&previous).unwrap());
-        assert_eq!(binary_version(&target).unwrap(), "1.0.0");
-    }
-
-    #[cfg(unix)]
-    fn write_fake_binary(path: &Path, version: &str, healthy: bool) {
-        write_executable(path, &fake_binary(version, healthy));
-    }
-
-    #[cfg(unix)]
-    fn write_executable(path: &Path, bytes: &[u8]) {
-        use std::os::unix::fs::PermissionsExt;
-
-        fs::write(path, bytes).unwrap();
-        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
-    }
-
-    #[cfg(unix)]
-    fn write_fake_npm(npm: &Path, target: &Path, previous: &Path, next: &Path) {
-        let script = format!(
-            "#!/bin/sh\nset -eu\ncase \"$4\" in\n  denju-cli@latest) cp '{}' '{}' ;;\n  denju-cli@1.0.0) cp '{}' '{}' ;;\n  *) exit 3 ;;\nesac\nchmod 755 '{}'\n",
-            next.display(),
-            target.display(),
-            previous.display(),
-            target.display(),
-            target.display()
-        );
-        write_executable(npm, script.as_bytes());
-    }
-
-    #[cfg(unix)]
-    fn fake_binary(version: &str, healthy: bool) -> Vec<u8> {
-        let health = if healthy { 0 } else { 1 };
-        format!(
-            "#!/bin/sh\ncase \"$1\" in\n  --version) echo 'denju {version}' ;;\n  upgrade-health) exit {health} ;;\n  *) exit 2 ;;\nesac\n"
-        )
-        .into_bytes()
-    }
-
-    fn valid_manifest(version: &str, sha: &str, size: usize) -> String {
-        let mut text = format!("format {MANIFEST_FORMAT}\nversion {version}\n");
-        for name in CLIENT_ASSETS {
-            text.push_str(&format!("asset {name} {sha} {size}\n"));
-        }
-        text.push_str(&format!(
-            "server_image {OFFICIAL_SERVER_IMAGE}:v{version}\n"
-        ));
-        text
-    }
-}
+#[path = "upgrade_tests.rs"]
+mod tests;

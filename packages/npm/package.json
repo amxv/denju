@@ -1,6 +1,6 @@
 {
   "name": "denju-cli",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "description": "Native Denju CLI installer",
   "license": "Apache-2.0",
   "author": "amxv",
@@ -28,7 +28,7 @@
   ],
   "scripts": {
     "postinstall": "node scripts/postinstall.js",
-    "check": "node --check bin/denju.js && node --check scripts/postinstall.js && node --test scripts/postinstall.test.js"
+    "check": "node --check bin/denju.js && node --check scripts/postinstall.js && node --test bin/denju.test.js scripts/postinstall.test.js"
   },
   "engines": {
     "node": ">=18"
