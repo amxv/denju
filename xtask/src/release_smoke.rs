@@ -292,8 +292,9 @@ fn assert_npm_json_upgrade_isolated(
         .map_err(|error| format!("failed to execute npm JSON upgrade smoke: {error}"))?;
     if !output.status.success() {
         return Err(format!(
-            "npm JSON upgrade smoke exited with {}: {}",
+            "npm JSON upgrade smoke exited with {}: stdout={} stderr={}",
             output.status,
+            String::from_utf8_lossy(&output.stdout).trim(),
             String::from_utf8_lossy(&output.stderr).trim()
         ));
     }

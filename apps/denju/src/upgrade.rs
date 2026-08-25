@@ -714,7 +714,15 @@ fn binary_version(target: &Path) -> Result<String, RuntimeError> {
 
 fn npm_command() -> std::ffi::OsString {
     if std::env::var_os(TEST_HOME_ENV).is_some() {
-        std::env::var_os("DENJU_NPM_COMMAND").unwrap_or_else(|| "npm".into())
+        std::env::var_os("DENJU_NPM_COMMAND").unwrap_or_else(default_npm_command)
+    } else {
+        default_npm_command()
+    }
+}
+
+fn default_npm_command() -> std::ffi::OsString {
+    if cfg!(windows) {
+        "npm.cmd".into()
     } else {
         "npm".into()
     }
