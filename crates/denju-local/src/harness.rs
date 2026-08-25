@@ -104,15 +104,17 @@ pub fn resolve_harness_roots_for(
         resolve_unset_codex_root(paths)?
     };
 
-    let claude_config = environment
-        .claude_config_dir
-        .clone()
-        .map(|path| absolute_from_home(paths, path))
-        .unwrap_or_else(|| paths.home.join(".claude"));
+    let claude_root = if let Some(claude_config_dir) = &environment.claude_config_dir {
+        absolute_from_home(paths, claude_config_dir.clone()).join("skills")
+    } else if let Some(recorded) = recorded {
+        PathBuf::from(&recorded.claude_root)
+    } else {
+        paths.home.join(".claude/skills")
+    };
 
     Ok(ResolvedHarnessRoots {
         codex_root,
-        claude_root: claude_config.join("skills"),
+        claude_root,
     })
 }
 
@@ -259,6 +261,27 @@ mod tests {
             assert!(!isolated.codex_root.starts_with(&protected));
             assert!(!isolated.claude_root.starts_with(&protected));
         }
+    }
+
+    #[test]
+    fn recorded_custom_roots_survive_missing_service_environment() {
+        let home = tempdir().unwrap();
+        let paths = LocalPaths::from_home(home.path().to_owned());
+        let codex_root = home.path().join("custom-codex/skills/denju");
+        fs::create_dir_all(&codex_root).unwrap();
+        fs::write(codex_root.join(CODEX_MARKER), "managed").unwrap();
+        let claude_root = home.path().join("custom-claude/skills");
+        let recorded = HarnessConfig {
+            codex_root: codex_root.display().to_string(),
+            claude_root: claude_root.display().to_string(),
+        };
+
+        let roots =
+            resolve_harness_roots_for(&paths, Some(&recorded), &HarnessEnvironment::default())
+                .unwrap();
+
+        assert_eq!(roots.codex_root, codex_root);
+        assert_eq!(roots.claude_root, claude_root);
     }
 
     #[cfg(unix)]

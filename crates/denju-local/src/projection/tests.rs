@@ -5,8 +5,9 @@ use tempfile::tempdir;
 
 use super::*;
 use crate::{
-    DesiredSkillMaterialization, OwnedSkillRecord, ensure_local_layout, materialize_skill_snapshot,
-    prepare_harness_roots,
+    DesiredSkillMaterialization, HarnessConfig, HarnessEnvironment, OwnedSkillRecord,
+    ensure_local_layout, materialize_skill_snapshot, prepare_harness_roots,
+    resolve_harness_roots_for,
 };
 
 fn skill_document(name: &str, owner: &str) -> String {
@@ -180,6 +181,56 @@ async fn same_agent_skills_name_gets_stable_derived_aliases_in_both_harnesses() 
         .await
         .unwrap();
     assert_eq!(first, second);
+}
+
+#[tokio::test]
+async fn recorded_custom_harness_roots_receive_projection_without_process_environment() {
+    let home = tempdir().unwrap();
+    let paths = LocalPaths::from_home(home.path().to_owned());
+    ensure_local_layout(&paths).unwrap();
+    let configured = ResolvedHarnessRoots {
+        codex_root: home.path().join("custom-codex/skills/denju"),
+        claude_root: home.path().join("custom-claude/skills"),
+    };
+    prepare_harness_roots(&configured).unwrap();
+    let db = LocalDatabase::open(&paths.state_db).await.unwrap();
+    db.save_harness_config(HarnessConfig {
+        codex_root: configured.codex_root.display().to_string(),
+        claude_root: configured.claude_root.display().to_string(),
+    })
+    .await
+    .unwrap();
+    insert_materialized(
+        &db,
+        &paths,
+        "01890f47-6a1c-7cc2-98c1-5f6c1ed8a3a1",
+        "alice",
+        "review",
+        "1111111111111111111111111111111111111111111111111111111111111111",
+    )
+    .await;
+
+    let recorded = db.harness_config().await.unwrap();
+    let roots =
+        resolve_harness_roots_for(&paths, recorded.as_ref(), &HarnessEnvironment::default())
+            .unwrap();
+    reconcile_harness_projections(&paths, &db, &roots)
+        .await
+        .unwrap();
+
+    assert!(
+        fs::symlink_metadata(configured.codex_root.join("alice/review"))
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert!(
+        fs::symlink_metadata(configured.claude_root.join("review"))
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert!(!home.path().join(".claude/skills/review").exists());
 }
 
 #[tokio::test]
