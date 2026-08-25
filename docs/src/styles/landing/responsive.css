@@ -24,7 +24,7 @@
 @media (max-width: 640px) {
   body:has(.denju-landing) .brand__strapline { display: none; }
   .hero { padding-top: 4.5rem; }
-  .hero-copy h1 { font-size: clamp(3.4rem, 15vw, 5rem); }
+  .hero-copy h1 { font-size: clamp(3.25rem, 14vw, 4.9rem); }
   .hero-actions,.self-host-actions { display: grid; }
   .hero-actions .button,.self-host-actions .button { width: 100%; }
   .device-row { grid-template-columns: 2.2rem 1fr auto; }

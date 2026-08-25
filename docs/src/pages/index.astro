@@ -5,23 +5,23 @@ import "../styles/landing.css";
 
 const productIdeas = [
   {
-    title: "Discover",
-    body: "Search public skills, inspect authors and releases, follow people you trust, and subscribe without creating an account.",
+    title: "Find skills",
+    body: "Search the public registry, inspect releases and authors, and subscribe to useful skills without creating an account.",
     href: "/docs/guides/discover-and-subscribe"
   },
   {
-    title: "Publish",
-    body: "Bring an existing skill under Denju, keep private revision history across devices, and publish immutable releases only when you choose.",
+    title: "Publish your own",
+    body: "Bring an existing skill into Denju, edit it across your devices, and publish a new release only when it is ready for other people to use.",
     href: "/docs/guides/publish-and-edit"
   },
   {
-    title: "Compose",
-    body: "A pack turns several skills into one versioned set. Let a skill follow latest when you want updates, or pin an exact release when you need stability.",
+    title: "Bundle skills",
+    body: "Put related skills into a pack. Subscribe once and Denju keeps that whole set installed as skills are added, removed, or updated.",
     href: "/docs/guides/packs"
   },
   {
-    title: "Standardize",
-    body: "Assign a pack to a team and it becomes policy: current and future members continuously receive the same approved skill set.",
+    title: "Keep teams aligned",
+    body: "Assign a pack to a team and Denju keeps those approved skills on every current and future team member's computers.",
     href: "/docs/guides/teams"
   }
 ];
@@ -42,18 +42,18 @@ const architecturePoints = [
   <main class="denju-landing">
     <section class="hero shell">
       <div class="hero-copy">
-        <p class="eyebrow">Agent Skills, synchronized</p>
-        <h1>The skills your agents use, kept current.</h1>
+        <p class="eyebrow">A registry for Agent Skills</p>
+        <h1>The right skills, on every machine.</h1>
         <p class="hero-lede">
-          Denju is a registry and synchronization system for Agent Skills. Find a skill,
-          subscribe once, and Denju keeps the right version available to Codex and Claude Code
-          on every machine—without copying folders around by hand.
+          Discover skills, publish your own, and subscribe to the ones you rely on. Denju keeps the
+          right versions available to Codex and Claude Code automatically—across your computers,
+          or across an entire team.
         </p>
         <div class="hero-actions">
           <a class="button button-primary" href="/docs/start/install">Get started</a>
           <a class="button button-secondary" href="/docs/start/what-is-denju">How Denju works</a>
         </div>
-        <p class="hero-note">Public search and subscriptions work without an account.</p>
+        <p class="hero-note">Start anonymously. Claim an identity only when you want to publish, share, or join a team.</p>
       </div>
 
       <div class="subscription-demo" aria-label="A Denju subscription following the latest skill release across devices">
@@ -106,16 +106,15 @@ const architecturePoints = [
     <section class="problem shell">
       <div class="section-label">Why Denju exists</div>
       <div class="problem-grid">
-        <h2>A skill is easy to copy.<br />Keeping copies true is the hard part.</h2>
+        <h2>Folders are easy to copy. Keeping them current is not.</h2>
         <div class="problem-copy">
           <p>
             Agent Skills are ordinary directories. That simplicity is a strength—but once the same skill
             lives on two machines, in two harnesses, or across a team, folders start to drift.
           </p>
           <p>
-            Denju moves the unit of management up one level. Instead of remembering where you copied a
-            folder, you subscribe to the skill, pack, or team policy you want. Denju keeps the right folders
-            and versions on each machine automatically.
+            Denju replaces copied folders with durable subscriptions. Subscribe to a skill or pack once,
+            and Denju keeps the correct files and versions on each machine for you.
           </p>
         </div>
       </div>
@@ -142,10 +141,10 @@ const architecturePoints = [
     <section class="model shell" id="model">
       <div class="section-label">The model</div>
       <div class="model-intro">
-        <h2>One small vocabulary covers the whole product.</h2>
+        <h2>Four ideas are enough.</h2>
         <p>
-          Denju deliberately avoids turning skills into Git repositories or dependency graphs.
-          A few concepts are enough to describe how people actually want skills to move.
+          Denju keeps the product model deliberately small: skills, subscriptions, packs, and teams.
+          You do not need Git branches, dependency solving, or another skill format.
         </p>
       </div>
 
@@ -153,7 +152,7 @@ const architecturePoints = [
         <article class="model-row">
           <div class="model-term">Skill</div>
           <div class="model-example"><code>@alice/review</code><span>v1</span><span>v2</span><span class="active">v3</span></div>
-          <p>A complete Agent Skill directory with immutable releases and a moving <code>latest</code>.</p>
+          <p>An ordinary Agent Skill directory you can publish in numbered releases.</p>
         </article>
         <article class="model-row">
           <div class="model-term">Subscription</div>
@@ -163,12 +162,12 @@ const architecturePoints = [
         <article class="model-row">
           <div class="model-term">Pack</div>
           <div class="model-example model-example-pack"><span>review · latest</span><span>testing · v3</span><span>security · latest</span></div>
-          <p>A flat, versioned set of skills. One subscription can keep an entire working setup current.</p>
+          <p>A set of skills that belong together. Subscribe once and Denju keeps the whole set current.</p>
         </article>
         <article class="model-row">
           <div class="model-term">Team</div>
           <div class="model-example"><code>@acme/packs/core</code><span class="operator">→</span><span class="active">all members</span></div>
-          <p>A shared home for organization skills and packs. Assign a pack and its skills stay installed for current and future team members.</p>
+          <p>A shared organization space. Assign a pack and Denju keeps those skills on every team member's computers.</p>
         </article>
       </div>
     </section>
@@ -176,10 +175,10 @@ const architecturePoints = [
     <section class="product shell">
       <div class="section-label">What you can do</div>
       <div class="product-heading">
-        <h2>Start as a consumer.<br />Grow into a registry for your team.</h2>
+        <h2>Useful for one person. Built to scale to a team.</h2>
         <p>
-          Identity and collaboration are lazy. You can use the public registry anonymously, then claim
-          a username only when you have something to publish, share, or manage with a team.
+          Use the public registry anonymously. Add an identity only when you want to publish, share private
+          work, or manage skills with other people.
         </p>
       </div>
       <div class="product-list">
@@ -197,10 +196,10 @@ const architecturePoints = [
     <section class="team-story shell">
       <div class="team-copy">
         <div class="section-label">The team use case</div>
-        <h2>Make your best practices self-installing.</h2>
+        <h2>Change the pack once. Everyone stays current.</h2>
         <p>
-          Put approved skills into a pack and assign it to a team. Join the team on a new machine and
-          Denju installs those skills automatically. Change the pack later and everyone stays up to date.
+          A legal team might put contract review, legal research, citation checking, and drafting skills into
+          one pack. Assign it to the team and Denju keeps that approved set on every team member's computers.
         </p>
         <a class="inline-link" href="/docs/guides/teams">Teams and assigned packs →</a>
       </div>
@@ -226,7 +225,7 @@ const architecturePoints = [
       <div class="section-label">Safe to edit</div>
       <div class="collaboration-grid">
         <div>
-          <h2>Subscribed does not mean read-only.</h2>
+          <h2>Edit freely without breaking upstream.</h2>
           <p>
             If you edit somebody else's subscribed skill, Denju protects the change by turning it into
             your fork. The upstream subscription is never silently mutated or overwritten.
@@ -244,7 +243,7 @@ const architecturePoints = [
       <div class="architecture-head">
         <div>
           <div class="section-label">Under the hood</div>
-          <h2>Efficient because Denju knows what changed—not just that a folder changed.</h2>
+          <h2>Small updates. Fast recovery. No event replay.</h2>
         </div>
         <p>
           You never need to understand the storage model to use Denju. But the same design that makes
@@ -263,7 +262,7 @@ const architecturePoints = [
       <div class="self-host-card">
         <div>
           <div class="section-label">Your registry, if you want it</div>
-          <h2>The hosted service and self-hosted Denju are the same product.</h2>
+          <h2>Use the hosted registry, or run your own.</h2>
           <p>
             The official registry is the default. Organizations can run the same open-source
             <code>denju-server</code> against PostgreSQL and S3-compatible storage. The reference Compose
@@ -288,8 +287,8 @@ const architecturePoints = [
       <div class="quickstart-card">
         <div class="quickstart-copy">
           <div class="section-label">Start here</div>
-          <h2>Your first subscription is four commands.</h2>
-          <p>Setup and public use are anonymous. Claim an identity later, when you actually need one.</p>
+          <h2>Try Denju without creating an account.</h2>
+          <p>Setup, search, and public subscriptions are anonymous. Four commands are enough to get a skill onto your machine.</p>
         </div>
         <pre><code><span>$</span> denju setup
 <span>$</span> denju search "react performance"
