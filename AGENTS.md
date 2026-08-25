@@ -1,14 +1,18 @@
 # AGENTS.md
 
-Denju is a greenfield Rust implementation. The former Go/Agentbox product is preserved only as historical Git data on `legacy/go-agentbox-v0.2.0`.
+Denju is an actively maintained Rust product. Treat the current repository as the source of truth for implementation, behavior, tests, documentation, and operational contracts.
 
-**Implementation agents must not read the old code.** Do not check out the legacy branch, `git show` its source, diff against it, grep it, copy tests from it, or use it for behavioral parity or implementation examples. Build from the product specification, current `main`, and the current workstream package only. A separate user-requested historical investigation is outside this implementation workflow.
+The former Go/Agentbox implementation exists only as historical Git data on `legacy/go-agentbox-v0.2.0`. Do not use it for implementation guidance or behavioral parity unless the user explicitly asks for historical investigation.
+
+Old implementation plans and progress artifacts under `tmp/gg/` are historical context, not instructions for normal maintenance work. Future changes should be driven by the current codebase and the task at hand rather than old phase boundaries.
 
 ## Start here
 
-1. Read the authoritative product specification at `tmp/gg/denju-product-spec-2026-08-20.md` when your task is part of the Rust workstream.
-2. Read the current implementation plan and progress ledger under `tmp/gg/denju-rust-greenfield/` before changing product behavior.
-3. Read only the phase-scoped Sweep/source regions named by the plan; do not wander through old planning artifacts.
+1. Inspect the current branch and working tree before changing anything. Preserve concurrent work you do not own.
+2. Explore the current repository areas relevant to the task: source, tests, docs, fixtures, deployment code, and nearby contracts. Follow behavior across crate/app boundaries when necessary instead of stopping at the first matching file.
+3. Read the nearest `AGENTS.md` if a subtree adds one in the future.
+4. Use current tests, public CLI/API behavior, wire formats, migrations, and documentation to understand existing contracts before changing them.
+5. Prefer the smallest coherent change that fits the existing architecture. If behavior is unclear, investigate the implementation and tests first rather than inferring it from historical plans.
 
 ## Repository map
 
@@ -16,7 +20,7 @@ Denju is a greenfield Rust implementation. The former Go/Agentbox product is pre
 - `apps/denju-server/` — registry process wiring.
 - `crates/denju-core/` — pure IDs, paths, Merkle/revision/merge domain logic.
 - `crates/denju-wire/` — versioned JSON, CLI structured output, API/SSE contracts.
-- `crates/denju-sync/` — deterministic reconciliation state machine, no I/O.
+- `crates/denju-sync/` — deterministic synchronization state machine, no I/O.
 - `crates/denju-local/` — SQLite, filesystem generations, watchers, projections, OS services.
 - `crates/denju-client/` — HTTPS/SSE/auth/object-transfer client.
 - `crates/denju-registry/` — registry use cases, PostgreSQL, S3, search, outbox.
@@ -25,13 +29,21 @@ Denju is a greenfield Rust implementation. The former Go/Agentbox product is pre
 - `Justfile` — thin discoverable aliases only; recipes delegate to Cargo/xtask/Bun and contain no build logic.
 - `packages/npm/` — thin binary installer/launcher; never a source-build fallback.
 - `docs/` — Astro/ZueDocs site.
-- `deploy/dev.compose.yml` — pinned local PostgreSQL + S3-compatible dependencies; `cargo xtask dev` owns their lifecycle plus the registry process.
+- `deploy/` — development, container, and self-hosting deployment surfaces.
 
-Keep dependencies one-way toward `denju-core`; binaries wire product logic rather than owning it. Do not introduce generic utility crates or traits without a real ownership/I/O boundary.
+Keep dependencies one-way toward `denju-core`; binaries wire product logic rather than owning it. Do not introduce generic utility crates or traits without a real ownership or I/O boundary.
+
+## Working style
+
+- Explore before editing. Search for callers, tests, wire types, migrations, and docs that describe the behavior you are changing.
+- Keep public terminology user-facing. Internal Rust/database vocabulary should not leak into docs or CLI copy unless users genuinely need it.
+- Preserve stable IDs, wire compatibility, migration safety, and deterministic synchronization semantics unless the task explicitly changes those contracts.
+- Prefer existing repository patterns over introducing parallel abstractions or second command paths.
+- Keep large files under control; use `locguard` while iterating when useful.
 
 ## Verification
 
-Use the narrowest useful check while iterating, then run the scoped full check before handoff:
+Use the narrowest useful check while iterating, then run the scoped full check appropriate to the change before handoff:
 
 ```bash
 just
@@ -45,7 +57,7 @@ cargo xtask check
 
 `cargo xtask check` is the canonical repository-wide gate and CI contract. `just` is only the low-friction command menu; never duplicate Rust build/generation/dev logic in the Justfile. Do not add a Makefile as a second command authority. The docs and npm workspaces are intentionally separate from runtime Rust code.
 
-For line-count feedback, `locguard` checks the dirty/changed source tree quickly and `locguard scan` checks the complete eligible repository. Use it while iterating when useful; it supplements, never replaces, the canonical Cargo/xtask gates.
+For line-count feedback, `locguard` checks the dirty/changed source tree quickly and `locguard scan` checks the complete eligible repository. It supplements, never replaces, the relevant Cargo/xtask/docs checks.
 
 ## Safety
 
@@ -54,4 +66,3 @@ For line-count feedback, `locguard` checks the dirty/changed source tree quickly
 - **Tests and live acceptance fixtures must use `DENJU_TEST_HOME` pointing at a dedicated disposable directory containing `.denju-test-home-v1`.** Test mode intentionally ignores inherited `CODEX_HOME` and `CLAUDE_CONFIG_DIR`, forces file credentials, and never starts the real background service. Do not simulate isolation by changing only `HOME`.
 - No test/e2e/acceptance run may read, write, migrate, remove, or project into the developer's real harness homes. On this machine the custom homes are `~/.gg/codex/` and `~/.gg/claude/`; the standard homes `~/.codex/`, `~/.claude/`, and `~/.agents/` are equally protected. All harness fixtures must remain beneath `DENJU_TEST_HOME`.
 - Preserve the single Rust implementation path on `main`; no Go or Agentbox fallback.
-- Current source and tests are truth if they have advanced beyond the planning baseline. Amend the plan when a load-bearing assumption proves false instead of silently diverging.
