@@ -10,6 +10,7 @@ body:has(.denju-landing) {
   --line: #e4e6e8;
   --line-strong: #d2d5d9;
   --blue: #3157d5;
+  --blue-hover: #5274e8;
   --blue-soft: #eef2ff;
   --green: #17875d;
   --green-soft: #eaf7f1;
@@ -36,6 +37,7 @@ body:has(.denju-landing) {
   --line: #292d32;
   --line-strong: #383d44;
   --blue: #7693ff;
+  --blue-hover: #89a1ff;
   --blue-soft: #1c2545;
   --green: #66d8a6;
   --green-soft: #18362b;
@@ -162,7 +164,7 @@ body:has(.denju-landing) .theme-toggle:hover {
 
 .button:hover { transform: translateY(-1px); }
 .button-primary { border-color: var(--blue); background: var(--blue); color: white; }
-.button-primary:hover { background: color-mix(in srgb, var(--blue) 88%, black); }
+.button-primary:hover { border-color: var(--blue-hover); background: var(--blue-hover); }
 .button-secondary { background: var(--surface); }
 .button-secondary:hover { border-color: var(--ink-soft); }
 .button-inverse { border-color: rgba(255,255,255,.3); background: white; color: #17181a; }
