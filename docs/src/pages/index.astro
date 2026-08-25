@@ -5,21 +5,25 @@ import "../styles/landing.css";
 
 const productIdeas = [
   {
+    index: "01",
     title: "Find skills",
-    body: "Search the public registry, inspect releases and authors, and subscribe to useful skills without creating an account.",
+    body: "Search the public registry, inspect releases and authors, and subscribe without creating an account.",
     href: "/docs/guides/discover-and-subscribe"
   },
   {
+    index: "02",
     title: "Publish your own",
-    body: "Bring an existing skill into Denju, edit it across your devices, and publish a new release only when it is ready for other people to use.",
+    body: "Bring an existing skill into Denju, edit it normally, and publish a release only when it is ready for other people to use.",
     href: "/docs/guides/publish-and-edit"
   },
   {
+    index: "03",
     title: "Bundle skills",
-    body: "Put related skills into a pack. Subscribe once and Denju keeps that whole set installed as skills are added, removed, or updated.",
+    body: "Put related skills into a pack. Subscribe once and Denju keeps the whole set current as skills are added, removed, or updated.",
     href: "/docs/guides/packs"
   },
   {
+    index: "04",
     title: "Keep teams aligned",
     body: "Assign a pack to a team and Denju keeps those approved skills on every current and future team member's computers.",
     href: "/docs/guides/teams"
@@ -27,9 +31,9 @@ const productIdeas = [
 ];
 
 const architecturePoints = [
-  ["Only what changed", "Merkle trees reuse unchanged blobs and subtrees, so editing one file does not turn the whole skill into a new transfer."],
-  ["Current state, not event replay", "After being offline, a client compares the refs it knows with the registry and jumps directly to what it should have now."],
-  ["Complete before visible", "Remote updates are verified and assembled off-path, then switched into view atomically. Agents never see a half-updated skill."],
+  ["Changed file, changed bytes", "Denju reuses unchanged content, so editing one file does not turn the whole skill into a new transfer."],
+  ["Catch up to now", "After being offline, Denju asks what should be installed now instead of replaying every update that happened while you were away."],
+  ["Never half-updated", "A complete update is downloaded and verified before Denju exposes it to your agents."],
 ];
 ---
 
@@ -40,153 +44,186 @@ const architecturePoints = [
   primaryNav={primaryNav}
 >
   <main class="denju-landing">
-    <section class="hero shell">
-      <div class="hero-copy">
-        <p class="eyebrow">A registry for Agent Skills</p>
-        <h1>The right skills, on every machine.</h1>
-        <p class="hero-lede">
-          Discover skills, publish your own, and subscribe to the ones you rely on. Denju keeps the
-          right versions available to Codex and Claude Code automatically—across your computers,
-          or across an entire team.
-        </p>
-        <div class="hero-actions">
-          <a class="button button-primary" href="/docs/start/install">Get started</a>
-          <a class="button button-secondary" href="/docs/start/what-is-denju">How Denju works</a>
+    <section class="denju-hero shell">
+      <div class="hero-topline">
+        <p class="eyebrow">Registry + synchronization for Agent Skills</p>
+        <div class="hero-meta">
+          <p class="denju-meaning"><span lang="ja">伝授</span> · passing on knowledge or a skill</p>
+          <p class="hero-live"><i aria-hidden="true"></i> automatic sync</p>
         </div>
-        <p class="hero-note">Start anonymously. Claim an identity only when you want to publish, share, or join a team.</p>
       </div>
 
-      <div class="subscription-demo" aria-label="A Denju subscription following the latest skill release across devices">
-        <div class="demo-card demo-skill">
-          <div class="demo-card-head">
-            <div>
-              <span class="demo-kicker">public skill</span>
-              <strong>@ashray/react-performance</strong>
+      <div class="hero-layout">
+        <div class="hero-copy">
+          <h1>Skills you subscribe to, not folders you copy.</h1>
+          <p class="hero-lede">
+            Find useful Agent Skills, publish your own, and subscribe to the ones you rely on.
+            Denju keeps the right versions available to Codex and Claude Code automatically—on your
+            computers or across an entire team.
+          </p>
+          <div class="hero-actions">
+            <a class="button button-primary" href="/docs/start/install">Get started <span aria-hidden="true">→</span></a>
+            <a class="button button-secondary" href="/docs/start/what-is-denju">How Denju works</a>
+          </div>
+          <div class="hero-facts">
+            <span>No account to search</span>
+            <span>Codex + Claude Code</span>
+            <span>Open source · self-hostable</span>
+          </div>
+        </div>
+
+        <div class="subscription-demo">
+          <div class="demo-caption">
+            <span>one subscription</span>
+            <small>three machines</small>
+          </div>
+
+          <div class="demo-card demo-skill">
+            <div class="demo-card-head">
+              <div>
+                <span class="demo-kicker">public skill</span>
+                <strong>@ashray/react-performance</strong>
+              </div>
+              <span class="star-count">★ 482</span>
             </div>
-            <span class="star-count">★ 482</span>
+            <p>Patterns for profiling and improving React application performance.</p>
+            <div class="release-row">
+              <span>following</span>
+              <strong>latest · v13</strong>
+              <i aria-hidden="true"></i>
+              <span>published 8m ago</span>
+            </div>
           </div>
-          <p>Patterns for profiling and improving React application performance.</p>
-          <div class="release-row">
-            <span>latest</span>
-            <strong>v13</strong>
-            <i></i>
-            <span>published 8m ago</span>
-          </div>
-        </div>
 
-        <div class="relationship">
-          <span class="relationship-label">your subscription</span>
-          <code>@ashray/react-performance → latest</code>
-          <span class="relationship-line" aria-hidden="true"></span>
-        </div>
+          <div class="sync-spine" aria-hidden="true">
+            <span class="sync-spine__line"></span>
+            <span class="sync-spine__pulse"></span>
+          </div>
 
-        <div class="device-list">
-          <div class="device-row">
-            <span class="device-icon">M</span>
-            <div><strong>MacBook</strong><small>Codex · Claude Code</small></div>
-            <span class="device-version">v13</span>
-            <span class="sync-state">synced</span>
-          </div>
-          <div class="device-row">
-            <span class="device-icon">W</span>
-            <div><strong>Workstation</strong><small>Codex</small></div>
-            <span class="device-version">v13</span>
-            <span class="sync-state">synced</span>
-          </div>
-          <div class="device-row device-row-muted">
-            <span class="device-icon">L</span>
-            <div><strong>Offline laptop</strong><small>last seen yesterday</small></div>
-            <span class="device-version">v12</span>
-            <span class="sync-state">catches up on reconnect</span>
+          <div class="device-list">
+            <div class="device-row">
+              <span class="device-icon">M</span>
+              <div><strong>MacBook</strong><small>Codex · Claude Code</small></div>
+              <span class="device-version">v13</span>
+              <span class="sync-state">current</span>
+            </div>
+            <div class="device-row">
+              <span class="device-icon">W</span>
+              <div><strong>Workstation</strong><small>Codex</small></div>
+              <span class="device-version">v13</span>
+              <span class="sync-state">current</span>
+            </div>
+            <div class="device-row device-row-muted">
+              <span class="device-icon">L</span>
+              <div><strong>Offline laptop</strong><small>last seen yesterday</small></div>
+              <span class="device-version">v12</span>
+              <span class="sync-state">updates on reconnect</span>
+            </div>
           </div>
         </div>
       </div>
     </section>
 
     <section class="problem shell">
+      <div class="problem-index" aria-hidden="true">01</div>
       <div class="section-label">Why Denju exists</div>
       <div class="problem-grid">
-        <h2>Folders are easy to copy. Keeping them current is not.</h2>
+        <h2>Folders are wonderfully simple.<br />Copies are not.</h2>
         <div class="problem-copy">
           <p>
-            Agent Skills are ordinary directories. That simplicity is a strength—but once the same skill
-            lives on two machines, in two harnesses, or across a team, folders start to drift.
+            Agent Skills are ordinary directories. That makes them portable and easy to inspect. But once
+            the same skill lives on two machines, in two harnesses, or across a team, those copies drift.
           </p>
           <p>
-            Denju replaces copied folders with durable subscriptions. Subscribe to a skill or pack once,
-            and Denju keeps the correct files and versions on each machine for you.
+            Denju keeps the relationship instead of the copy. Subscribe to a skill or pack once, and Denju
+            keeps the correct files and versions on each machine for you.
           </p>
         </div>
       </div>
-      <div class="before-after" aria-label="The difference between copying skill folders and subscribing with Denju">
-        <div class="before-after-column before">
-          <span class="comparison-label">copying folders</span>
-          <div class="copy-row"><code>review/</code><span>MacBook</span><b>v4</b></div>
-          <div class="copy-row"><code>review/</code><span>Workstation</span><b>v3</b></div>
-          <div class="copy-row"><code>review-copy/</code><span>teammate</span><b>?</b></div>
-          <p>Which copy is canonical? Who has the update? What happens after an agent edits one?</p>
+
+      <div class="drift-story">
+        <div class="drift-side">
+          <span class="comparison-label">copied folders</span>
+          <div class="drift-files">
+            <div class="drift-file drift-file-a"><code>review/</code><b>v4</b><small>MacBook</small></div>
+            <div class="drift-file drift-file-b"><code>review/</code><b>v3</b><small>Workstation</small></div>
+            <div class="drift-file drift-file-c"><code>review-copy/</code><b>?</b><small>teammate</small></div>
+          </div>
+          <p>Three folders. Three states. No relationship between them.</p>
         </div>
-        <div class="comparison-arrow" aria-hidden="true">→</div>
-        <div class="before-after-column after">
-          <span class="comparison-label">one Denju relationship</span>
-          <div class="subscription-pill"><code>@alice/review</code><span>latest</span></div>
-          <div class="desired-state-row"><span>MacBook</span><b>v4</b><em>current</em></div>
-          <div class="desired-state-row"><span>Workstation</span><b>v4</b><em>current</em></div>
-          <div class="desired-state-row"><span>teammate</span><b>v4</b><em>current</em></div>
-          <p>The subscription is what you keep. Denju keeps the local folders current for you.</p>
+
+        <div class="drift-divider" aria-hidden="true"><span>becomes</span><i>→</i></div>
+
+        <div class="subscription-side">
+          <span class="comparison-label">one subscription</span>
+          <div class="subscription-source"><code>@alice/review</code><span>latest</span></div>
+          <div class="subscription-targets">
+            <div><span>MacBook</span><b>v4</b></div>
+            <div><span>Workstation</span><b>v4</b></div>
+            <div><span>teammate</span><b>v4</b></div>
+          </div>
+          <p>One relationship. Denju keeps every managed copy current.</p>
         </div>
       </div>
     </section>
 
     <section class="model shell" id="model">
-      <div class="section-label">The model</div>
-      <div class="model-intro">
-        <h2>Four ideas are enough.</h2>
+      <div class="section-label">The product model</div>
+      <div class="model-heading">
+        <h2>Four ideas.<br />That is almost all of Denju.</h2>
         <p>
-          Denju keeps the product model deliberately small: skills, subscriptions, packs, and teams.
-          You do not need Git branches, dependency solving, or another skill format.
+          Denju does not turn skills into Git repositories or dependency graphs. The product stays small
+          enough to explain in one line: <strong>skills → subscriptions → packs → teams.</strong>
         </p>
       </div>
 
-      <div class="model-rows">
-        <article class="model-row">
-          <div class="model-term">Skill</div>
+      <div class="model-flow">
+        <article class="model-node model-node--skill">
+          <span class="model-number">01</span>
+          <h3>Skill</h3>
           <div class="model-example"><code>@alice/review</code><span>v1</span><span>v2</span><span class="active">v3</span></div>
           <p>An ordinary Agent Skill directory you can publish in numbered releases.</p>
         </article>
-        <article class="model-row">
-          <div class="model-term">Subscription</div>
+        <article class="model-node model-node--subscription">
+          <span class="model-number">02</span>
+          <h3>Subscription</h3>
           <div class="model-example"><code>@alice/review</code><span class="operator">→</span><span class="active">latest</span></div>
-          <p>A simple promise: keep this skill installed. Follow latest by default, or pin one exact release.</p>
+          <p>Keep this skill installed. Follow latest, or pin one exact release.</p>
         </article>
-        <article class="model-row">
-          <div class="model-term">Pack</div>
-          <div class="model-example model-example-pack"><span>review · latest</span><span>testing · v3</span><span>security · latest</span></div>
-          <p>A set of skills that belong together. Subscribe once and Denju keeps the whole set current.</p>
+        <article class="model-node model-node--pack">
+          <span class="model-number">03</span>
+          <h3>Pack</h3>
+          <div class="model-example model-example-pack"><span>review</span><span>research</span><span>drafting</span></div>
+          <p>A set of skills that belong together. Subscribe once and keep the whole set current.</p>
         </article>
-        <article class="model-row">
-          <div class="model-term">Team</div>
-          <div class="model-example"><code>@acme/packs/core</code><span class="operator">→</span><span class="active">all members</span></div>
-          <p>A shared organization space. Assign a pack and Denju keeps those skills on every team member's computers.</p>
+        <article class="model-node model-node--team">
+          <span class="model-number">04</span>
+          <h3>Team</h3>
+          <div class="model-example"><code>@acme/packs/core</code><span class="operator">→</span><span class="active">people</span></div>
+          <p>Assign a pack and Denju keeps those skills on every team member's computers.</p>
         </article>
+        <div class="model-rail" aria-hidden="true"></div>
       </div>
     </section>
 
     <section class="product shell">
       <div class="section-label">What you can do</div>
       <div class="product-heading">
-        <h2>Useful for one person. Built to scale to a team.</h2>
+        <h2>Start with one useful skill.<br />Grow only when you need to.</h2>
         <p>
-          Use the public registry anonymously. Add an identity only when you want to publish, share private
-          work, or manage skills with other people.
+          Public use is anonymous. Identity, publishing, private sharing, packs, and teams appear only when
+          they become useful—not as setup you have to understand first.
         </p>
       </div>
-      <div class="product-list">
-        {productIdeas.map((item, index) => (
-          <a class="product-item" href={item.href}>
-            <span class="product-index">0{index + 1}</span>
-            <h3>{item.title}</h3>
-            <p>{item.body}</p>
+
+      <div class="product-grid">
+        {productIdeas.map((item) => (
+          <a class={`product-item product-item--${item.index}`} href={item.href}>
+            <span class="product-index">{item.index}</span>
+            <div>
+              <h3>{item.title}</h3>
+              <p>{item.body}</p>
+            </div>
             <span class="product-arrow" aria-hidden="true">↗</span>
           </a>
         ))}
@@ -196,88 +233,90 @@ const architecturePoints = [
     <section class="team-story shell">
       <div class="team-copy">
         <div class="section-label">The team use case</div>
-        <h2>Change the pack once. Everyone stays current.</h2>
+        <h2>Change the pack once.<br />Everyone stays current.</h2>
         <p>
-          A legal team might put contract review, legal research, citation checking, and drafting skills into
-          one pack. Assign it to the team and Denju keeps that approved set on every team member's computers.
+          Imagine a legal team with approved skills for contract review, legal research, citation checking,
+          and drafting. Put those skills in one pack, assign it to the team, and Denju keeps that set on every
+          team member's computers—including people who join later.
         </p>
-        <a class="inline-link" href="/docs/guides/teams">Teams and assigned packs →</a>
+        <a class="inline-link inline-link--light" href="/docs/guides/teams">Teams and assigned packs <span>→</span></a>
       </div>
 
-      <div class="team-visual" aria-label="A team pack automatically applied to team members">
+      <div class="team-visual">
         <div class="pack-card">
-          <div class="pack-title"><span>@acme/packs/core</span><strong>v18</strong></div>
-          <div><span>code-review</span><b>latest</b></div>
-          <div><span>testing</span><b>v3</b></div>
-          <div><span>security</span><b>latest</b></div>
+          <div class="pack-title"><span>@northstar/packs/legal-core</span><strong>v18</strong></div>
+          <div><span>contract-review</span><b>latest</b></div>
+          <div><span>legal-research</span><b>latest</b></div>
+          <div><span>citation-check</span><b>v3</b></div>
+          <div><span>client-letter-draft</span><b>latest</b></div>
         </div>
-        <div class="pack-assignment"><span>assigned to @acme</span><i>→</i></div>
+        <div class="pack-assignment"><span>assigned once</span><i>→</i></div>
         <div class="member-grid">
-          <div><span>A</span><small>3/3 skills</small></div>
-          <div><span>B</span><small>3/3 skills</small></div>
-          <div><span>C</span><small>3/3 skills</small></div>
+          <div><span>A</span><small>4 skills</small></div>
+          <div><span>B</span><small>4 skills</small></div>
+          <div><span>C</span><small>4 skills</small></div>
           <div><span>new</span><small>syncs on join</small></div>
         </div>
       </div>
     </section>
 
     <section class="collaboration shell">
-      <div class="section-label">Safe to edit</div>
-      <div class="collaboration-grid">
-        <div>
-          <h2>Edit freely without breaking upstream.</h2>
-          <p>
-            If you edit somebody else's subscribed skill, Denju protects the change by turning it into
-            your fork. The upstream subscription is never silently mutated or overwritten.
-          </p>
-        </div>
-        <div class="collab-points">
-          <div><strong>Fork automatically</strong><span>Your edit becomes independent work with immutable upstream provenance.</span></div>
-          <div><strong>Sync upstream explicitly</strong><span>Clean changes merge automatically; real conflicts preserve both sides.</span></div>
-          <div><strong>Propose the result</strong><span>Send the current fork head upstream without inventing branches, pull requests, or a review inbox.</span></div>
-        </div>
+      <div class="collaboration-copy">
+        <div class="section-label">Safe to edit</div>
+        <h2>Edit a subscribed skill.<br />Keep your work.</h2>
+        <p>
+          Denju never treats somebody else's subscription as an untouchable folder. If you edit it,
+          your change becomes your fork instead of silently changing upstream.
+        </p>
+        <a class="inline-link" href="/docs/guides/forks-and-proposals">Forks and proposals <span>→</span></a>
+      </div>
+      <div class="fork-flow">
+        <div><span>01</span><strong>Edit normally</strong><p>Change the skill through the filesystem your agent already uses.</p></div>
+        <div><span>02</span><strong>Your fork</strong><p>Denju preserves the edit as independent work with upstream history.</p></div>
+        <div><span>03</span><strong>Propose it</strong><p>Send the result upstream when you want the original author to take it.</p></div>
       </div>
     </section>
 
     <section class="architecture shell">
       <div class="architecture-head">
         <div>
-          <div class="section-label">Under the hood</div>
-          <h2>Small updates. Fast recovery. No event replay.</h2>
+          <div class="section-label">Under the hood · optional</div>
+          <h2>The architecture follows the product promise.</h2>
         </div>
         <p>
-          You never need to understand the storage model to use Denju. But the same design that makes
-          history precise also keeps synchronization small, fast, and recoverable.
+          Users should not have to think about synchronization mechanics. Denju does the technical work so
+          “keep this skill current” remains a small, reliable promise.
         </p>
       </div>
       <div class="architecture-points">
-        {architecturePoints.map(([title, body]) => (
-          <article><h3>{title}</h3><p>{body}</p></article>
+        {architecturePoints.map(([title, body], index) => (
+          <article><span>0{index + 1}</span><h3>{title}</h3><p>{body}</p></article>
         ))}
       </div>
-      <a class="inline-link" href="/docs/architecture/overview">Read the architecture →</a>
+      <a class="inline-link" href="/docs/architecture/overview">Read the architecture <span>→</span></a>
     </section>
 
     <section class="self-host shell">
       <div class="self-host-card">
-        <div>
+        <div class="self-host-copy">
           <div class="section-label">Your registry, if you want it</div>
-          <h2>Use the hosted registry, or run your own.</h2>
+          <h2>Hosted by Denju.<br />Or hosted by you.</h2>
           <p>
             The official registry is the default. Organizations can run the same open-source
-            <code>denju-server</code> against PostgreSQL and S3-compatible storage. The reference Compose
-            stack includes PostgreSQL and Garage; managed services work too.
+            <code>denju-server</code> against PostgreSQL and S3-compatible storage. The client experience
+            stays the same.
           </p>
           <div class="self-host-actions">
-            <a class="button button-primary" href="/docs/self-host/quickstart">Self-host Denju</a>
+            <a class="button button-primary" href="/docs/self-host/quickstart">Self-host Denju <span>→</span></a>
             <a class="button button-secondary" href="https://github.com/amxv/denju" target="_blank" rel="noreferrer">View source</a>
           </div>
         </div>
-        <div class="infra-stack" aria-label="Denju server backed by PostgreSQL and S3-compatible storage">
-          <div class="infra-main"><span>denju-server</span><small>same container · your origin</small></div>
+        <div class="infra-stack">
+          <div class="infra-line" aria-hidden="true"></div>
+          <div class="infra-main"><span>denju-server</span><small>same open-source server</small></div>
           <div class="infra-children">
-            <div><strong>PostgreSQL</strong><small>refs · identity · access · policy</small></div>
-            <div><strong>S3 compatible</strong><small>immutable skill content</small></div>
+            <div><strong>PostgreSQL</strong><small>accounts · skills · packs · teams</small></div>
+            <div><strong>S3 compatible</strong><small>skill files and releases</small></div>
           </div>
         </div>
       </div>
@@ -287,15 +326,15 @@ const architecturePoints = [
       <div class="quickstart-card">
         <div class="quickstart-copy">
           <div class="section-label">Start here</div>
-          <h2>Try Denju without creating an account.</h2>
-          <p>Setup, search, and public subscriptions are anonymous. Four commands are enough to get a skill onto your machine.</p>
+          <h2>Your first skill is four commands away.</h2>
+          <p>Setup, search, and public subscriptions are anonymous. You can claim an identity later.</p>
         </div>
         <pre><code><span>$</span> denju setup
 <span>$</span> denju search "react performance"
 <span>$</span> denju show @ashray/react-performance
 <span>$</span> denju subscribe @ashray/react-performance</code></pre>
         <div class="quickstart-actions">
-          <a class="button button-inverse" href="/docs/start/install">Install Denju</a>
+          <a class="button button-inverse" href="/docs/start/install">Install Denju <span>→</span></a>
           <a class="text-link-inverse" href="/docs">Browse documentation →</a>
         </div>
       </div>

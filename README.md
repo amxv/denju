@@ -2,6 +2,8 @@
 
 **The right Agent Skills, on every machine.**
 
+> **denju · 伝授** — Japanese for passing on or transmitting knowledge or a skill.
+
 Denju is a registry and synchronization system for [Agent Skills](https://agentskills.io/).
 Find a skill, subscribe once, and Denju keeps the right version available to Codex and Claude Code automatically—across your computers or across an entire team.
 
