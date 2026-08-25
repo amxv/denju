@@ -3,6 +3,8 @@
   .hero-copy { max-width: 52rem; }
   .subscription-demo { width: min(100%,44rem); margin-left: auto; }
   .story-section,.team-story { grid-template-columns: 1fr; }
+  .story-section--reverse .story-copy,
+  .story-section--reverse > :last-child { grid-column: auto; grid-row: auto; }
   .story-copy { max-width: 46rem; }
   .team-visual { max-width: 49rem; }
   .discovery { background: transparent; }

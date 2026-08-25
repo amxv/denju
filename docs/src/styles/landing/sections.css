@@ -16,6 +16,12 @@
   align-items: center;
 }
 
+.story-section--reverse {
+  grid-template-columns: minmax(28rem, 1.2fr) minmax(0, .8fr);
+}
+.story-section--reverse .story-copy { grid-column: 2; grid-row: 1; }
+.story-section--reverse > :last-child { grid-column: 1; grid-row: 1; }
+
 .story-copy { position: relative; }
 .story-copy h2,
 .team-story h2,
