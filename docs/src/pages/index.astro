@@ -12,8 +12,8 @@ const productIdeas = [
   },
   {
     index: "02",
-    title: "Publish your own",
-    body: "Bring an existing skill into Denju, edit it normally, and publish a release only when it is ready for other people to use.",
+    title: "Sync private skills",
+    body: "Bring an existing skill into Denju and it stays private while valid saves follow you across your signed-in devices. Publish only if you want to.",
     href: "/docs/guides/publish-and-edit"
   },
   {
@@ -47,44 +47,44 @@ const architecturePoints = [
     <section class="denju-hero shell">
       <div class="hero-layout">
         <div class="hero-copy">
-          <h1>Skills you subscribe to, not folders you copy.</h1>
+          <h1>The right skills, current everywhere.</h1>
           <p class="hero-lede">
-            Find useful Agent Skills, publish your own, and subscribe to the ones you rely on.
-            Denju keeps the right versions available to Codex and Claude Code automatically—on your
-            computers or across an entire team.
+            Find useful Agent Skills or bring your own. Denju keeps public subscriptions and your private
+            skills current across your signed-in devices automatically. Teams get the same private sync
+            for team-owned skills—without setting up another file-sharing system.
           </p>
-          <p class="denju-meaning"><span lang="ja">伝授</span> · passing on knowledge or a skill</p>
+          <p class="denju-meaning"><strong>denju · <span lang="ja">伝授</span></strong> — Japanese for passing on or transmitting knowledge or a skill.</p>
           <div class="hero-actions">
             <a class="button button-primary" href="/docs/start/install">Get started <span aria-hidden="true">→</span></a>
             <a class="button button-secondary" href="/docs/start/what-is-denju">How Denju works</a>
           </div>
           <div class="hero-facts">
             <span>No account to search</span>
+            <span>Private skills sync across devices</span>
             <span>Codex + Claude Code</span>
-            <span>Open source · self-hostable</span>
           </div>
         </div>
 
         <div class="subscription-demo">
           <div class="demo-caption">
-            <span>one subscription</span>
+            <span>your private skill</span>
             <small>three machines</small>
           </div>
 
           <div class="demo-card demo-skill">
             <div class="demo-card-head">
               <div>
-                <span class="demo-kicker">public skill</span>
-                <strong>@ashray/react-performance</strong>
+                <span class="demo-kicker">private · only you</span>
+                <strong>@alice/contract-review</strong>
               </div>
-              <span class="star-count">★ 482</span>
+              <span class="privacy-badge">private</span>
             </div>
-            <p>Patterns for profiling and improving React application performance.</p>
+            <p>Your own contract-review workflow, references, scripts, and supporting files.</p>
             <div class="release-row">
-              <span>following</span>
-              <strong>latest · v13</strong>
+              <span>saved</span>
+              <strong>private version</strong>
               <i aria-hidden="true"></i>
-              <span>published 8m ago</span>
+              <span>8m ago</span>
             </div>
           </div>
 
@@ -97,19 +97,19 @@ const architecturePoints = [
             <div class="device-row">
               <span class="device-icon">M</span>
               <div><strong>MacBook</strong><small>Codex · Claude Code</small></div>
-              <span class="device-version">v13</span>
+              <span class="device-version">latest</span>
               <span class="sync-state">current</span>
             </div>
             <div class="device-row">
               <span class="device-icon">W</span>
               <div><strong>Workstation</strong><small>Codex</small></div>
-              <span class="device-version">v13</span>
+              <span class="device-version">latest</span>
               <span class="sync-state">current</span>
             </div>
             <div class="device-row device-row-muted">
               <span class="device-icon">L</span>
               <div><strong>Offline laptop</strong><small>last seen yesterday</small></div>
-              <span class="device-version">v12</span>
+              <span class="device-version">older</span>
               <span class="sync-state">updates on reconnect</span>
             </div>
           </div>
@@ -160,6 +160,58 @@ const architecturePoints = [
       </div>
     </section>
 
+    <section class="private-sync shell">
+      <div class="section-label">Private sync</div>
+      <div class="private-sync-heading">
+        <h2>Private does not mean stuck on one machine.</h2>
+        <p>
+          Denju is useful even if you never publish anything publicly. Private skills are first-class:
+          your own skills can follow you across devices, you can share one privately with another Denju
+          user, and team-private skills can follow the people who need them.
+        </p>
+      </div>
+
+      <div class="private-sync-grid">
+        <article class="private-sync-card">
+          <span class="private-sync-label">Your devices</span>
+          <h3>Private skills follow you.</h3>
+          <p>
+            Import a skill once. It starts private, and valid saves synchronize to your other signed-in
+            Denju devices automatically. There is no separate “private sync” mode and no need to publish.
+          </p>
+          <div class="private-sync-flow" aria-hidden="true">
+            <code>@alice/my-skill</code><i>→</i><span>MacBook</span><i>→</i><span>Workstation</span>
+          </div>
+        </article>
+
+        <article class="private-sync-card private-sync-card--share">
+          <span class="private-sync-label">One person</span>
+          <h3>Share privately. Stay private.</h3>
+          <p>
+            Give another Denju user access with <code>denju share</code>. The skill never enters the public
+            catalog. They choose whether to subscribe, and a private subscription follows your valid saves.
+          </p>
+          <div class="private-sync-flow" aria-hidden="true">
+            <code>@alice/my-skill</code><i>→</i><span>@bob</span><i>→</i><span>private subscription</span>
+          </div>
+          <small>Sharing grants access; it does not silently install anything on the recipient's machine.</small>
+        </article>
+
+        <article class="private-sync-card private-sync-card--team">
+          <span class="private-sync-label">Your team</span>
+          <h3>Team skills stay private to the team by default.</h3>
+          <p>
+            A normal team publish creates a team-only release. Put those private team skills in an assigned
+            pack and Denju keeps them current across current and future team members automatically.
+          </p>
+          <div class="private-sync-flow" aria-hidden="true">
+            <code>@northstar/legal-research</code><i>→</i><span>team-only</span><i>→</i><span>everyone</span>
+          </div>
+          <small>Unfinished maintainer edits remain private to that maintainer until a team release is published.</small>
+        </article>
+      </div>
+    </section>
+
     <section class="model shell" id="model">
       <div class="section-label">The product model</div>
       <div class="model-heading">
@@ -204,8 +256,8 @@ const architecturePoints = [
       <div class="product-heading">
         <h2>Start with one useful skill.<br />Grow only when you need to.</h2>
         <p>
-          Public use is anonymous. Identity, publishing, private sharing, packs, and teams appear only when
-          they become useful—not as setup you have to understand first.
+          Public use is anonymous. Claim an identity when you want private skills to follow you across
+          devices, then publish publicly only when sharing with the wider registry becomes useful.
         </p>
       </div>
 
@@ -229,8 +281,8 @@ const architecturePoints = [
         <h2>Change the pack once.<br />Everyone stays current.</h2>
         <p>
           Imagine a legal team with approved skills for contract review, legal research, citation checking,
-          and drafting. Put those skills in one pack, assign it to the team, and Denju keeps that set on every
-          team member's computers—including people who join later.
+          and drafting. Those skills can stay private to the team. Put them in one pack, assign it once, and
+          Denju keeps that private set on every team member's computers—including people who join later.
         </p>
         <a class="inline-link inline-link--light" href="/docs/guides/teams">Teams and assigned packs <span>→</span></a>
       </div>

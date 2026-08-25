@@ -2,14 +2,14 @@ export const siteConfig = {
   name: "denju",
   strapline: "Agent Skills, synchronized",
   description:
-    "Denju is a registry and synchronization layer for Agent Skills: discover, subscribe, publish, share, bundle into packs, keep teams aligned, or run the registry yourself.",
+    "Denju is a registry and synchronization layer for Agent Skills: discover public skills, keep private skills synced across devices, share privately, manage team skill sets, or run the registry yourself.",
   repoUrl: "https://github.com/amxv/denju",
-  accentColor: "#0866d8",
-  accentColorDark: "#58a6ff",
+  accentColor: "#b4482b",
+  accentColorDark: "#f08a64",
   footerSections: [
     {
       title: "denju",
-      text: "A package registry and synchronization system for Agent Skills, built for people, coding agents, teams, and self-hosted organizations."
+      text: "A registry and synchronization system for Agent Skills, including private multi-device sync, private sharing, team distribution, and public discovery."
     },
     {
       title: "Documentation",

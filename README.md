@@ -60,9 +60,11 @@ denju team assign @northstar @northstar/packs/legal-core
 
 Denju keeps the skills in that pack on every current team member's computers, and new team members receive them when they join. Change the pack once and everyone stays current.
 
+Those team-owned skills can stay private to the organization. A normal team publish creates a team-only release; public visibility is a separate opt-in.
+
 A **team member is a person**. A **pack contains skills**. Assigning a pack is how an organization turns a useful set of skills into team policy.
 
-## Publish your own skills
+## Keep your own skills private—or publish them
 
 Claim an identity only when you need ownership, publishing, private sharing, or teams:
 
@@ -70,14 +72,29 @@ Claim an identity only when you need ownership, publishing, private sharing, or 
 denju claim @alice
 ```
 
-Bring an existing Agent Skill into Denju and publish it:
+Bring an existing Agent Skill into Denju:
 
 ```bash
 denju import ~/.agents/skills/my-skill
+```
+
+Imported skills start private. Edit them normally; Denju keeps revision history and synchronizes valid private saves across your signed-in devices automatically. You can stop there and use Denju purely as private multi-device skill sync.
+
+You can also share a private skill with another Denju user without making it public:
+
+```bash
+denju share @alice/my-skill @bob
+```
+
+Bob decides whether to subscribe. If he does, his private subscription follows your valid saves while the skill stays out of the public catalog.
+
+Publish only when you want the wider registry to use it:
+
+```bash
 denju publish @alice/my-skill
 ```
 
-Imported skills start private. Edit them normally; Denju keeps revision history and can synchronize private work across your authenticated devices. Publishing creates immutable numbered releases such as `v1`, `v2`, and `v3`.
+Publishing creates immutable numbered releases such as `v1`, `v2`, and `v3`.
 
 If you edit somebody else's subscribed skill, Denju preserves your change as a fork instead of silently changing upstream. You can later sync from upstream or propose your changes back.
 

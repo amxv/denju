@@ -53,6 +53,6 @@ Retention after deletion cannot override security quarantine.
 
 Personal private sharing grants read/subscription access to one user; it does not grant write access.
 
-Teams use membership and team roles rather than per-skill ACLs. Team maintainers have private workspaces, and team members consume releases rather than somebody else's unpublished draft.
+Teams use membership and team roles rather than per-skill ACLs. Team maintainers each work in private working copies, and team members use released team versions rather than somebody else's unpublished draft.
 
 Self-hosted registry operators receive the same quarantine and authorization model. Operator credentials live on the server side and are separate from normal Denju installation, session, and automation credentials.

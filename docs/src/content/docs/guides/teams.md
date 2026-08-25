@@ -6,7 +6,7 @@ category: Use Denju
 summary: "Put skills in a pack, assign that pack to a team, and Denju keeps the approved set on everyone's machines."
 ---
 
-Teams are how an organization shares ownership and keeps a common skill set synchronized.
+Teams are how an organization shares ownership and keeps a common skill set synchronized. Those skills do not have to be public: team-owned skills and packs can stay private to the organization while Denju distributes them to the people who need them.
 
 Imagine you run a legal organization. You have skills for contract review, legal research, citation checking, drafting client letters, and litigation workflows. You want every lawyer or engineer using agents in the organization to have the same approved skills without sending around folders or maintaining an onboarding checklist.
 
@@ -66,6 +66,20 @@ denju team settings @northstar --members-can-publish true
 
 There are no separate per-skill permission lists in v1. If a skill or pack is team-private, team membership is what grants access.
 
+## Team skills are private by default
+
+For a team-owned skill, the normal publish command creates a release for the team:
+
+```bash
+denju publish @northstar/contract-review
+```
+
+That release is **not globally public**. Team members can subscribe to it because their team membership grants access. If the skill is in an assigned pack, there is even less to manage: Denju installs and updates that private team skill across current members automatically, and future members receive it when they join.
+
+Use `--public` only when the organization deliberately wants a team-owned skill to appear in the public registry.
+
+This means a team can use Denju as its private skill distribution layer without also setting up Git cloning, shared folders, or another synchronization service.
+
 ## Build the team's skill pack
 
 Create a pack owned by the team:
@@ -113,13 +127,13 @@ denju team unassign @northstar @northstar/packs/legal-core
 
 Removing the assignment removes only the team policy. If somebody also subscribed to one of those skills personally, that personal relationship is preserved and can become active again.
 
-## Team-owned skills stay private while you work
+## Maintainer drafts stay private until a team release
 
 A team can own the skills inside its packs, but maintainers do not edit one shared live draft.
 
-Each authorized publisher works in a private workspace. Other team members continue using the latest immutable team release until a maintainer publishes the next one.
+Each authorized publisher works in a private working copy. Other team members continue using the latest team release until a maintainer publishes the next one.
 
-That means an unfinished change to `@northstar/contract-review` on one maintainer's machine does not suddenly appear on every lawyer's computer. Publishing is the boundary that updates the shared release, which can then flow through the assigned pack.
+That means an unfinished change to `@northstar/contract-review` on one maintainer's machine does not suddenly appear on every lawyer's computer. Publishing is the boundary that updates the **team-only release**, which can then flow through direct team subscriptions or the assigned pack.
 
 If two maintainers edit from the same release, Denju uses its normal merge and conflict rules instead of silently overwriting one person's work.
 

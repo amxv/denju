@@ -1,26 +1,27 @@
-@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=Space+Grotesk:wght@500;600&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Archivo:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap");
 
 body:has(.denju-landing) {
   --page: #fbfbfa;
   --surface: #ffffff;
   --surface-soft: #f3f4f5;
-  --surface-blue: #f1f5ff;
+  --surface-accent: #fbf3ef;
   --ink: #17181a;
   --ink-soft: #484d54;
   --muted: #676e78;
   --line: #e1e3e6;
   --line-strong: #cfd3d8;
-  --blue: #2f55d4;
-  --blue-hover: #5576e6;
-  --blue-strong: #2445ba;
-  --blue-soft: #eaf0ff;
+  --accent: #b4482b;
+  --accent-hover: #ca5b3a;
+  --accent-strong: #91361f;
+  --accent-soft: #faece7;
+  --accent-contrast: #ffffff;
   --green: #17875d;
   --green-soft: #e8f6ef;
   --red-soft: #f8ece8;
   --red: #a75b49;
   --shadow: 0 28px 80px rgba(28, 42, 76, 0.09);
   --font-sans: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  --font-heading: "Space Grotesk", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-heading: "Archivo", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
   --heading-weight: 600;
   --heading-letter-spacing: -0.047em;
@@ -35,16 +36,17 @@ body:has(.denju-landing) {
   --page: #101113;
   --surface: #17191c;
   --surface-soft: #1c1f23;
-  --surface-blue: #171e35;
+  --surface-accent: #241a17;
   --ink: #f2f3f4;
   --ink-soft: #c5c8cd;
   --muted: #8d939d;
   --line: #292d32;
   --line-strong: #393e45;
-  --blue: #7895ff;
-  --blue-hover: #91a8ff;
-  --blue-strong: #9bafff;
-  --blue-soft: #1d2648;
+  --accent: #f08a64;
+  --accent-hover: #f6a080;
+  --accent-strong: #ffb293;
+  --accent-soft: #3a241f;
+  --accent-contrast: #17100d;
   --green: #66d8a6;
   --green-soft: #18362b;
   --red-soft: #3a2523;
@@ -104,7 +106,7 @@ body:has(.denju-landing) .site-nav__index { color: var(--muted); }
   position: relative;
   overflow: hidden;
   background:
-    radial-gradient(circle at 79% 5%, color-mix(in srgb, var(--blue-soft) 52%, transparent), transparent 27rem),
+    radial-gradient(circle at 79% 5%, color-mix(in srgb, var(--accent-soft) 52%, transparent), transparent 27rem),
     var(--page);
   color: var(--ink);
 }
@@ -214,12 +216,12 @@ body:has(.denju-landing) .site-nav__index { color: var(--muted); }
 .button span { transition: transform 180ms ease; }
 .button:hover { transform: translateY(-1px); }
 .button:hover span { transform: translateX(3px); }
-.button-primary { border-color: var(--blue); background: var(--blue); color: white; box-shadow: 0 8px 24px color-mix(in srgb, var(--blue) 16%, transparent); }
-.button-primary:hover { border-color: var(--blue-hover); background: var(--blue-hover); box-shadow: 0 11px 30px color-mix(in srgb, var(--blue) 21%, transparent); }
+.button-primary { border-color: var(--accent); background: var(--accent); color: var(--accent-contrast); box-shadow: 0 8px 24px color-mix(in srgb, var(--accent) 16%, transparent); }
+.button-primary:hover { border-color: var(--accent-hover); background: var(--accent-hover); box-shadow: 0 11px 30px color-mix(in srgb, var(--accent) 21%, transparent); }
 .button-secondary { background: color-mix(in srgb, var(--surface) 78%, transparent); backdrop-filter: blur(10px); }
 .button-secondary:hover { border-color: var(--ink-soft); background: var(--surface); }
 .button-inverse { border-color: rgba(255,255,255,.3); background: white; color: #17181a; }
-.button:focus-visible { outline: 2px solid var(--blue); outline-offset: 3px; }
+.button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 
 .hero-facts {
   display: flex;
@@ -251,7 +253,7 @@ body:has(.denju-landing) .site-nav__index { color: var(--muted); }
   width: 21rem;
   height: 21rem;
   border-radius: 50%;
-  background: radial-gradient(circle, color-mix(in srgb, var(--blue) 12%, transparent), transparent 68%);
+  background: radial-gradient(circle, color-mix(in srgb, var(--accent) 12%, transparent), transparent 68%);
   pointer-events: none;
   content: "";
 }
@@ -283,16 +285,16 @@ body:has(.denju-landing) .site-nav__index { color: var(--muted); }
   bottom: 0;
   left: 0;
   width: 3px;
-  background: var(--blue);
+  background: var(--accent);
   content: "";
 }
 .demo-card-head { display: flex; justify-content: space-between; gap: 1rem; align-items: start; }
 .demo-card-head > div { display: grid; gap: .3rem; }
 .demo-card-head strong { color: var(--ink); font-family: var(--font-mono); font-size: .82rem; font-weight: 600; }
-.star-count { color: var(--muted); font-size: .7rem; white-space: nowrap; }
+.privacy-badge { padding: .28rem .48rem; border-radius: 999px; background: var(--accent-soft); color: var(--accent-strong); font-size: .61rem; font-weight: 600; white-space: nowrap; }
 .demo-card > p { max-width: 29rem; margin-top: 1rem; color: var(--ink-soft); font-size: .83rem; line-height: 1.56; }
 .release-row { display: flex; gap: .55rem; align-items: center; margin-top: 1.15rem; padding-top: .85rem; border-top: 1px solid var(--line); color: var(--muted); font-size: .67rem; }
-.release-row strong { color: var(--blue-strong); font-family: var(--font-mono); font-weight: 600; }
+.release-row strong { color: var(--accent-strong); font-family: var(--font-mono); font-weight: 600; }
 .release-row i { width: .3rem; height: .3rem; border-radius: 50%; background: var(--green); }
 
 .sync-spine {
@@ -301,7 +303,7 @@ body:has(.denju-landing) .site-nav__index { color: var(--muted); }
   margin: 0 auto;
 }
 .sync-spine__line { position: absolute; top: 0; bottom: 0; left: 50%; width: 1px; background: var(--line-strong); transform: translateX(-50%); }
-.sync-spine__pulse { position: absolute; top: -.15rem; left: 50%; width: .52rem; height: .52rem; border: 2px solid var(--surface); border-radius: 50%; background: var(--blue); box-shadow: 0 0 0 4px color-mix(in srgb, var(--blue-soft) 70%, transparent); transform: translateX(-50%); animation: sync-travel 3.2s cubic-bezier(.4,0,.2,1) infinite; }
+.sync-spine__pulse { position: absolute; top: -.15rem; left: 50%; width: .52rem; height: .52rem; border: 2px solid var(--surface); border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent-soft) 70%, transparent); transform: translateX(-50%); animation: sync-travel 3.2s cubic-bezier(.4,0,.2,1) infinite; }
 
 .device-list { overflow: hidden; }
 .device-row { display: grid; grid-template-columns: 2.1rem 1fr auto auto; gap: .72rem; align-items: center; padding: .85rem .95rem; }

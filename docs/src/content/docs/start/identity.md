@@ -8,7 +8,7 @@ summary: "Stay anonymous for public use; claim a username only when ownership or
 
 Denju is anonymous-first. Public search, `show`, subscriptions, synchronization, and local subscription edits do not require an account.
 
-Claim an identity when you want account-bound capabilities such as publishing, private multi-device state, private sharing, teams, stars, or automation credentials.
+Claim an identity when you want account-bound capabilities such as keeping your own private skills synchronized across devices, publishing, private sharing, teams, stars, or automation credentials.
 
 ## Claim a username
 
@@ -31,7 +31,9 @@ denju setup
 denju login @alice
 ```
 
-After login, Denju brings your account state onto the new machine: direct subscriptions, personal packs, owned skills, and team-assigned packs. These are durable account relationships, not folders you have to copy again on every computer.
+After login, Denju brings your account state onto the new machine: direct subscriptions, personal packs, **your owned private skills**, and team-assigned packs. Your latest valid private changes can therefore follow you onto the new device without a separate file-sync setup.
+
+The same principle applies to team content you are entitled to use. Team-private skills remain non-public, but subscriptions and assigned packs can keep those team releases current across the devices of signed-in team members.
 
 Anonymous state created on the installation before claim/login is adopted where appropriate. Existing anonymous direct subscriptions and local fork history do not need to be recreated.
 

@@ -23,7 +23,7 @@ denju status
 denju fork sync @you/skill
 ```
 
-`fork sync` uses the same three-way merge rules as private workspace synchronization. Clean changes merge. Conflicting paths remain for explicit resolution.
+`fork sync` uses the same three-way merge rules as Denju's private skill synchronization. Clean changes merge. Conflicting paths remain for explicit resolution.
 
 ## Create a fork explicitly
 
@@ -50,9 +50,15 @@ denju share @you/skill @alice
 denju unshare @you/skill @alice
 ```
 
-Sharing grants read and subscription access. It does not auto-install the skill for the recipient and does not create an inbox. Send the recipient the `denju subscribe ...` command printed by `share`.
+Sharing is for a **personally owned private skill**. It grants one specific Denju user read and subscription access without making the skill public.
 
-A private subscription follows coherent private saves live, not only public releases. If access is revoked, Denju removes the upstream managed copy when nothing else still needs it. A fork the recipient already created remains theirs.
+It does not auto-install the skill for the recipient and does not create an inbox. `denju share` prints the exact `denju subscribe ...` command you can send them.
+
+Once the recipient subscribes, their copy follows your valid saved changes, not only public releases. This makes private sharing useful for a collaborator who should stay current with your working skill without exposing it to the public registry.
+
+If access is revoked, Denju removes the upstream managed copy when nothing else still needs it. A fork the recipient already created remains theirs.
+
+Team-owned skills use team membership instead of new per-skill share grants. Publish a team-only release and use direct team subscriptions or assigned packs for private team distribution.
 
 ## Propose a fork upstream
 
@@ -84,4 +90,4 @@ The proposer can withdraw:
 denju proposal withdraw <id>
 ```
 
-Acceptance applies the exact proposal revision to the maintainer's private workspace. It does **not** publish a release automatically. The maintainer publishes separately after deciding the accepted change is ready for consumers.
+Acceptance applies the proposed version to the maintainer's private working copy. It does **not** publish a release automatically. The maintainer publishes separately after deciding the accepted change is ready for consumers.

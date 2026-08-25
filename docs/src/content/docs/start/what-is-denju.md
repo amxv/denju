@@ -3,10 +3,10 @@ title: What is Denju?
 description: The simplest mental model for Denju, the problems it solves, and how skills, subscriptions, packs, and teams fit together.
 order: 1
 category: Start
-summary: "Denju is a package registry plus automatic synchronization for Agent Skills."
+summary: "Denju discovers Agent Skills and keeps public subscriptions, private skills, packs, and team skills current across machines."
 ---
 
-Denju is a registry and synchronization system for [Agent Skills](https://agentskills.io/). The easiest mental model is **npm for discovering and publishing skills, plus automatic filesystem synchronization for keeping the skills you use current**.
+Denju is a registry and synchronization system for [Agent Skills](https://agentskills.io/). The easiest mental model is **npm-style discovery and publishing, plus automatic synchronization for the skills you actually use—including private ones**.
 
 You can search for a skill, subscribe to it once, and stop thinking about copying its directory between machines or agent harnesses. When the owner publishes a new release, Denju updates the managed skill automatically. The agent still sees an ordinary `SKILL.md` directory on disk.
 
@@ -22,6 +22,24 @@ Agent Skills are just directories, which is a feature: they are portable, inspec
 - What happens when I edit somebody else's skill locally?
 
 Denju adds those lifecycle and distribution pieces without replacing the Agent Skills format.
+
+## Private sync is a core use case
+
+You do **not** have to publish a skill publicly to get value from Denju.
+
+Import one of your own skills and it starts private. Valid saves synchronize automatically to your other signed-in Denju devices, so the same private skill can stay current on your laptop, workstation, or another machine without Git, Dropbox, rsync, or a second setup step.
+
+You can also share a personally owned private skill with one specific Denju user without making it public:
+
+```bash
+denju share @alice/my-skill @bob
+```
+
+Sharing grants Bob private read and subscription access and prints the exact `denju subscribe ...` command for him to run. It does not auto-install anything. If Bob subscribes, his copy follows Alice's valid saved changes while the skill remains absent from the public catalog.
+
+Teams get the same benefit without making their skills public. A normal team publish creates a **team-only release**. Team members can subscribe to it directly, or the team can put private team skills in an assigned pack so Denju keeps that private skill set current for current and future members automatically.
+
+One important boundary: a maintainer's unfinished edits stay private to that maintainer. Teammates receive the next team-only release when it is published; `--public` is a separate opt-in for making that team skill globally visible.
 
 ## The four concepts to know first
 
@@ -65,7 +83,7 @@ Subscribe to a pack and Denju keeps that whole set of skills installed and curre
 
 Teams own skills and packs under a shared name such as `@acme`. A team can **assign** a pack to its people. The pack contains the skills; team members are the people receiving them.
 
-For example, a legal organization can put its contract-review, research, citation, and drafting skills in one `legal-core` pack and assign that pack to the team. Current and future team members receive those skills, and Denju keeps everyone aligned whenever the pack changes.
+For example, a legal organization can keep its contract-review, research, citation, and drafting skills private to the team, put them in one `legal-core` pack, and assign that pack to the team. Current and future team members receive those private skills, and Denju keeps everyone aligned whenever the pack changes.
 
 That is the main team use case: make the organization's approved skill set continuously true instead of maintaining an onboarding checklist that slowly becomes stale.
 

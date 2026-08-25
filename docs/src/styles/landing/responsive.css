@@ -15,11 +15,12 @@
   body:has(.denju-landing) .site-footer > .shell,
   .denju-landing .shell { width: min(100% - 2rem,1160px); }
 
-  .problem-grid,.model-heading,.product-heading,.architecture-head,.self-host-card,.quickstart-card { grid-template-columns: 1fr; }
+  .problem-grid,.private-sync-heading,.model-heading,.product-heading,.architecture-head,.self-host-card,.quickstart-card { grid-template-columns: 1fr; }
   .drift-story { grid-template-columns: 1fr; }
   .drift-divider { min-height: 3rem; grid-auto-flow: column; }
   .drift-divider i { transform: rotate(90deg); }
   .drift-side,.subscription-side { min-height: auto; }
+  .private-sync-card,.private-sync-card--share,.private-sync-card--team { grid-column: 1 / -1; min-height: 0; transform: none; }
   .product-item--01,.product-item--02,.product-item--03,.product-item--04 { grid-column: 1 / -1; border-right: 0; border-bottom: 1px solid var(--line); }
   .product-item--04 { border-bottom: 0; }
   .architecture-points { grid-template-columns: 1fr; }
@@ -33,7 +34,7 @@
 @media (max-width: 640px) {
   body:has(.denju-landing) .brand__strapline { display: none; }
   .denju-hero { min-height: 0; padding-top: 3rem; }
-  .problem,.model,.product,.collaboration,.architecture,.self-host,.quickstart { padding-top: 4.75rem; padding-bottom: 4.75rem; }
+  .problem,.private-sync,.model,.product,.collaboration,.architecture,.self-host,.quickstart { padding-top: 4.75rem; padding-bottom: 4.75rem; }
   .denju-meaning { white-space: normal; }
   .hero-layout { padding-top: 1.5rem; }
   .hero-copy h1 { font-size: clamp(3.4rem,15vw,5rem); }

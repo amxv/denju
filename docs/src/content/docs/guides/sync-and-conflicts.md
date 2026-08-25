@@ -8,6 +8,14 @@ summary: "Denju synchronizes automatically, remains correct without the daemon, 
 
 Most of the time, synchronization should be boring. The background service watches your managed skills and keeps the versions you should have installed current.
 
+## Private sync uses the same system
+
+There is no separate private-sync service to configure.
+
+For your own skills, valid private revisions upload and synchronize across your signed-in devices automatically. You can keep a skill private indefinitely; public publishing is unrelated to whether Denju can keep your own copies current.
+
+For teams, a normal team publish creates a team-only release. Team members with a direct subscription can receive that private release, and assigned packs can keep private team skills synchronized across the team automatically. Unfinished maintainer edits remain private until they are published as a team release.
+
 ## Force a complete sync
 
 ```bash
