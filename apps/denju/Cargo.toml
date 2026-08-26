@@ -13,6 +13,7 @@ denju-core = { path = "../../crates/denju-core" }
 denju-local = { path = "../../crates/denju-local" }
 denju-sync = { path = "../../crates/denju-sync" }
 denju-wire = { path = "../../crates/denju-wire" }
+futures-util.workspace = true
 hex.workspace = true
 rand.workspace = true
 reqwest.workspace = true

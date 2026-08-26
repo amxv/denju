@@ -122,6 +122,7 @@ fn subscribe_release_version_does_not_conflict_with_binary_version_flag() {
 #[test]
 fn lifecycle_cli_shapes_parse_without_ambiguity() {
     for args in [
+        vec!["--json", "list"],
         vec!["--json", "history", "prune", "@alice/review", "--yes"],
         vec!["--json", "subscribe", "@alice/review", "--retain-on-delete"],
         vec!["--json", "rename", "@alice/review", "renamed"],
@@ -395,6 +396,62 @@ fn json_upgrade_suppresses_npm_child_output() {
     assert_eq!(value["result"]["source"], "npm");
     assert_eq!(value["result"]["state"], "up_to_date");
     assert!(stderr(&output).is_empty());
+}
+
+#[test]
+fn human_upgrade_reports_progress_without_leaking_package_manager_output() {
+    let home = tempdir().expect("isolated test home");
+    std::fs::write(
+        home.path().join(denju_local::TEST_HOME_MARKER),
+        b"isolated\n",
+    )
+    .expect("mark isolated test home");
+
+    #[cfg(windows)]
+    let npm = home.path().join("fake-npm.cmd");
+    #[cfg(not(windows))]
+    let npm = home.path().join("fake-npm");
+
+    #[cfg(windows)]
+    let npm_script =
+        b"@echo off\r\necho npm-install-progress\r\necho npm-install-warning 1>&2\r\nexit /b 0\r\n"
+            .as_slice();
+    #[cfg(not(windows))]
+    let npm_script =
+        b"#!/bin/sh\necho npm-install-progress\necho npm-install-warning >&2\nexit 0\n".as_slice();
+
+    std::fs::write(&npm, npm_script).expect("write fake npm");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mut permissions = std::fs::metadata(&npm).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&npm, permissions).expect("make fake npm executable");
+    }
+
+    let denju = env!("CARGO_BIN_EXE_denju");
+    let output = Command::new(denju)
+        .arg("upgrade")
+        .env("HOME", home.path())
+        .env(denju_local::TEST_HOME_ENV, home.path())
+        .env("CODEX_HOME", "/developer-home/.gg/codex")
+        .env("CLAUDE_CONFIG_DIR", "/developer-home/.gg/claude")
+        .env("DENJU_INSTALL_SOURCE", "npm")
+        .env("DENJU_INSTALL_PACKAGE", "denju-cli")
+        .env("DENJU_INSTALL_VERSION", env!("CARGO_PKG_VERSION"))
+        .env("DENJU_INSTALL_TARGET", denju)
+        .env("DENJU_NPM_COMMAND", &npm)
+        .output()
+        .expect("run npm-source human upgrade");
+
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    assert!(stdout(&output).contains("already up to date"));
+    assert!(stderr(&output).contains("Checking for updates via npm"));
+    assert!(stderr(&output).contains("Installing the latest Denju via npm"));
+    assert!(!stdout(&output).contains("npm-install-progress"));
+    assert!(!stderr(&output).contains("npm-install-progress"));
+    assert!(!stderr(&output).contains("npm-install-warning"));
 }
 
 fn denju(args: &[&str]) -> Output {

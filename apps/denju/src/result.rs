@@ -20,6 +20,7 @@ use crate::{
         RecoveryOutcome,
     },
     lifecycle::UsageOutcome,
+    list::ListOutcome,
     owned::ImportOutcome,
     public::{SubscribeOutcome, SyncOutcome, UnsubscribeOutcome},
     release::{DiffOutcome, ExportOutcome, RestoreOutcome},
@@ -207,6 +208,10 @@ pub(crate) enum ResultPayload {
     Usage {
         #[serde(flatten)]
         outcome: UsageOutcome,
+    },
+    List {
+        #[serde(flatten)]
+        outcome: ListOutcome,
     },
     History {
         #[serde(flatten)]

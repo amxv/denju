@@ -131,6 +131,24 @@ pub(crate) async fn installed_context(
     })
 }
 
+pub(crate) async fn authenticated_registry_client(
+    paths: &LocalPaths,
+    db: &LocalDatabase,
+) -> Result<RegistryClient, RuntimeError> {
+    let installation = db
+        .installation()
+        .await
+        .map_err(local_error)?
+        .ok_or_else(|| {
+            RuntimeError::new(CliErrorCode::SetupRequired, "Denju is not set up")
+                .recovery("denju setup")
+        })?;
+    let origin = Url::parse(&installation.registry_origin)
+        .map_err(|error| RuntimeError::new(CliErrorCode::LocalState, error.to_string()))?;
+    let bearer = load_active_bearer(paths, db, &installation).await?;
+    RegistryClient::authenticated(origin, bearer).map_err(client_error)
+}
+
 fn load_credential(
     paths: &LocalPaths,
     installation: &InstallationRecord,

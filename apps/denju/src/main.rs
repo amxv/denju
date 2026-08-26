@@ -9,6 +9,7 @@ mod guidance;
 mod help;
 mod identity;
 mod lifecycle;
+mod list;
 mod output;
 mod owned;
 mod owned_sync;
@@ -471,6 +472,11 @@ async fn run(args: impl IntoIterator<Item = OsString>) -> ExitCode {
             payload: ResultPayload::Usage { outcome },
             exit: ExitCode::SUCCESS,
         }),
+        Some(Command::List) => list::list().await.map(|outcome| CommandOutput {
+            text: list::list_text(&outcome),
+            payload: ResultPayload::List { outcome },
+            exit: ExitCode::SUCCESS,
+        }),
         Some(Command::History {
             locator: Some(locator),
             command: None,
@@ -794,7 +800,7 @@ async fn run(args: impl IntoIterator<Item = OsString>) -> ExitCode {
             }
         }),
         Some(Command::Upgrade) => {
-            upgrade::upgrade(build_version())
+            upgrade::upgrade(build_version(), !cli.json)
                 .await
                 .map(|outcome| CommandOutput {
                     text: upgrade::upgrade_text(&outcome),

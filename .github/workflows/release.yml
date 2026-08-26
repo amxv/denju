@@ -8,7 +8,7 @@ on:
       version:
         description: Release-like version used only for the non-publishing dry run
         required: true
-        default: 0.3.5-dry-run
+        default: 0.3.6-dry-run
 
 permissions:
   contents: write

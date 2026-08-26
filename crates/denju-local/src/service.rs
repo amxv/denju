@@ -168,7 +168,9 @@ fn install_launch_agent(
         xml_escape(&paths.logs.join("daemon.log").to_string_lossy()),
         xml_escape(&paths.logs.join("daemon.err.log").to_string_lossy()),
     );
-    fs::write(&plist_path, plist)?;
+    let existing_plist = fs::read_to_string(&plist_path).ok();
+    let definition_unchanged = existing_plist.as_deref() == Some(plist.as_str());
+    fs::write(&plist_path, &plist)?;
     if mode == ServiceInstallMode::InstallOnly {
         return Ok(ServiceStatus {
             kind: ServiceKind::LaunchAgent,
@@ -180,18 +182,24 @@ fn install_launch_agent(
 
     let domain = format!("gui/{}", current_uid()?);
     let service = format!("{domain}/{MAC_LABEL}");
-    let _ = Command::new("launchctl")
-        .args(["bootout", &service])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
-    run_checked(
-        Command::new("launchctl")
-            .arg("bootstrap")
-            .arg(&domain)
-            .arg(&plist_path),
-        "launchctl bootstrap",
-    )?;
+    let loaded_program = launch_agent_program(&service)?;
+
+    // Package upgrades replace the native executable in-place. If the loaded LaunchAgent already
+    // has the exact definition we just wrote, bootstrapping it again is unnecessary and can race
+    // launchd's asynchronous teardown with `bootout` (commonly surfacing as bootstrap exit 5).
+    // A kickstart is enough to make launchd exec the newly installed bytes at the same path.
+    let can_restart_in_place = can_restart_launch_agent_in_place(
+        definition_unchanged,
+        loaded_program.as_deref(),
+        executable,
+    );
+    if !can_restart_in_place {
+        if loaded_program.is_some() {
+            bootout_launch_agent(&service)?;
+            wait_for_launch_agent_exit(&service)?;
+        }
+        bootstrap_launch_agent(&domain, &plist_path)?;
+    }
     run_checked(
         Command::new("launchctl").args(["kickstart", "-k", &service]),
         "launchctl kickstart",
@@ -202,6 +210,101 @@ fn install_launch_agent(
         running: true,
         detail: None,
     })
+}
+
+#[cfg(target_os = "macos")]
+fn can_restart_launch_agent_in_place(
+    definition_unchanged: bool,
+    loaded_program: Option<&str>,
+    executable: &Path,
+) -> bool {
+    definition_unchanged && loaded_program.is_some_and(|program| Path::new(program) == executable)
+}
+
+#[cfg(target_os = "macos")]
+fn launch_agent_program(service: &str) -> Result<Option<String>, ServiceError> {
+    let output = Command::new("launchctl")
+        .args(["print", service])
+        .output()?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+    let stdout = String::from_utf8(output.stdout)?;
+    Ok(parse_launch_agent_program(&stdout).map(str::to_owned))
+}
+
+#[cfg(target_os = "macos")]
+fn parse_launch_agent_program(output: &str) -> Option<&str> {
+    output
+        .lines()
+        .map(str::trim)
+        .find_map(|line| line.strip_prefix("program = "))
+}
+
+#[cfg(target_os = "macos")]
+fn bootout_launch_agent(service: &str) -> Result<(), ServiceError> {
+    let output = Command::new("launchctl")
+        .args(["bootout", service])
+        .output()?;
+    if output.status.success() || launch_agent_program(service)?.is_none() {
+        Ok(())
+    } else {
+        Err(command_output_error("launchctl bootout", &output))
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn wait_for_launch_agent_exit(service: &str) -> Result<(), ServiceError> {
+    for _ in 0..40 {
+        if launch_agent_program(service)?.is_none() {
+            return Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    Err(ServiceError::CommandFailed {
+        command: "launchctl bootout".to_owned(),
+        status: "LaunchAgent remained loaded after 1 second".to_owned(),
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn bootstrap_launch_agent(domain: &str, plist_path: &Path) -> Result<(), ServiceError> {
+    let mut last_error = None;
+    for attempt in 0..5 {
+        let output = Command::new("launchctl")
+            .arg("bootstrap")
+            .arg(domain)
+            .arg(plist_path)
+            .output()?;
+        if output.status.success() {
+            return Ok(());
+        }
+        let retryable = output.status.code() == Some(5) && attempt < 4;
+        last_error = Some(command_output_error("launchctl bootstrap", &output));
+        if !retryable {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50 * (attempt + 1) as u64));
+    }
+    Err(last_error.unwrap_or_else(|| ServiceError::CommandFailed {
+        command: "launchctl bootstrap".to_owned(),
+        status: "failed without an exit status".to_owned(),
+    }))
+}
+
+#[cfg(target_os = "macos")]
+fn command_output_error(command: &str, output: &std::process::Output) -> ServiceError {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stderr = stderr.trim();
+    let status = if stderr.is_empty() {
+        output.status.to_string()
+    } else {
+        format!("{}: {stderr}", output.status)
+    };
+    ServiceError::CommandFailed {
+        command: command.to_owned(),
+        status,
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -489,5 +592,44 @@ mod tests {
             Path::new("/usr/bin/something-else (deleted)"),
             expected
         ));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn launchctl_print_program_is_parsed_from_loaded_service() {
+        let output = "gui/501/xyz.ashray.denju = {\n\
+                      \tstate = running\n\
+                      \tprogram = /Users/example/.local/bin/denju\n\
+                      \targuments = {\n\
+                      \t\t/Users/example/.local/bin/denju\n\
+                      \t\tdaemon\n\
+                      \t}\n\
+                      }\n";
+        assert_eq!(
+            parse_launch_agent_program(output),
+            Some("/Users/example/.local/bin/denju")
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn unchanged_launch_agent_restarts_in_place_only_for_the_same_executable() {
+        let executable = Path::new("/Users/example/.local/bin/denju");
+        assert!(can_restart_launch_agent_in_place(
+            true,
+            Some("/Users/example/.local/bin/denju"),
+            executable
+        ));
+        assert!(!can_restart_launch_agent_in_place(
+            false,
+            Some("/Users/example/.local/bin/denju"),
+            executable
+        ));
+        assert!(!can_restart_launch_agent_in_place(
+            true,
+            Some("/Users/example/old/denju"),
+            executable
+        ));
+        assert!(!can_restart_launch_agent_in_place(true, None, executable));
     }
 }

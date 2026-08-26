@@ -129,6 +129,7 @@ pub(crate) enum Command {
         undo: bool,
     },
     Usage,
+    List,
     History {
         locator: Option<String>,
         #[command(subcommand)]
@@ -468,5 +469,11 @@ mod tests {
     fn upgrade_is_a_top_level_maintenance_command() {
         let cli = Cli::try_parse_from(["denju", "upgrade"]).unwrap();
         assert!(matches!(cli.command, Some(Command::Upgrade)));
+    }
+
+    #[test]
+    fn list_is_a_top_level_inventory_command() {
+        let cli = Cli::try_parse_from(["denju", "list"]).unwrap();
+        assert!(matches!(cli.command, Some(Command::List)));
     }
 }

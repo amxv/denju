@@ -82,6 +82,25 @@ impl PackageManager {
             Self::VitePlus => "vite-plus",
         }
     }
+
+    const fn display_name(self) -> &'static str {
+        match self {
+            Self::Npm => "npm",
+            Self::VitePlus => "Vite+",
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct PackageUpgradeContext<'a> {
+    paths: &'a LocalPaths,
+    current_version: &'a str,
+    package: &'a str,
+    package_version: &'a str,
+    target: &'a Path,
+    manager: PackageManager,
+    command: &'a std::ffi::OsStr,
+    progress: UpgradeProgress,
 }
 
 #[derive(Debug, Deserialize)]
@@ -90,12 +109,44 @@ struct InstallSourceFile {
     source: String,
 }
 
-pub(crate) async fn upgrade(current_version: &str) -> Result<UpgradeOutcome, RuntimeError> {
+#[derive(Debug, Clone, Copy)]
+struct UpgradeProgress {
+    enabled: bool,
+}
+
+impl UpgradeProgress {
+    const fn new(enabled: bool) -> Self {
+        Self { enabled }
+    }
+
+    #[cfg(test)]
+    const fn silent() -> Self {
+        Self::new(false)
+    }
+
+    fn step(self, message: impl AsRef<str>) {
+        if self.enabled {
+            eprintln!("→ {}", message.as_ref());
+        }
+    }
+
+    fn recovery(self, message: impl AsRef<str>) {
+        if self.enabled {
+            eprintln!("! {}", message.as_ref());
+        }
+    }
+}
+
+pub(crate) async fn upgrade(
+    current_version: &str,
+    show_progress: bool,
+) -> Result<UpgradeOutcome, RuntimeError> {
     let paths = LocalPaths::discover().map_err(local_error)?;
     let source = installation_source(&paths)?;
+    let progress = UpgradeProgress::new(show_progress);
     match source {
-        InstallSource::Npm => upgrade_npm(&paths, current_version).await,
-        InstallSource::Standalone => upgrade_standalone(&paths, current_version).await,
+        InstallSource::Npm => upgrade_npm(&paths, current_version, progress).await,
+        InstallSource::Standalone => upgrade_standalone(&paths, current_version, progress).await,
     }
 }
 
@@ -103,9 +154,13 @@ pub(crate) fn upgrade_text(outcome: &UpgradeOutcome) -> String {
     if outcome.state == "up_to_date" {
         format!("Denju {} is already up to date.", outcome.version)
     } else {
+        let source = match outcome.source {
+            "vite-plus" => "Vite+",
+            source => source,
+        };
         format!(
             "Upgraded Denju {} -> {} via {}; health verified.",
-            outcome.previous_version, outcome.version, outcome.source
+            outcome.previous_version, outcome.version, source
         )
     }
 }
@@ -146,7 +201,11 @@ pub(crate) async fn health_check() -> Result<(), RuntimeError> {
 async fn upgrade_standalone(
     paths: &LocalPaths,
     current_version: &str,
+    progress: UpgradeProgress,
 ) -> Result<UpgradeOutcome, RuntimeError> {
+    progress.step(format!(
+        "Checking GitHub Releases for updates (current {current_version})..."
+    ));
     let client = release_client()?;
     let override_base = test_release_base()?;
     let manifest_url = override_base.as_ref().map_or_else(
@@ -166,6 +225,7 @@ async fn upgrade_standalone(
             rolled_back: false,
         });
     }
+    progress.step(format!("Downloading Denju {}...", manifest.version));
     let asset_name = platform_asset_name()?;
     let asset = manifest
         .assets
@@ -187,12 +247,21 @@ async fn upgrade_standalone(
         |base| format!("{base}/{asset_name}"),
     );
     let bytes = download_bytes(&client, &asset_url).await?;
+    progress.step("Verifying release checksum...");
     verify_asset(asset, &bytes)?;
 
     let target = standalone_target()?;
-    apply_standalone_upgrade(paths, current_version, &manifest.version, &target, &bytes)
+    apply_standalone_upgrade_with_progress(
+        paths,
+        current_version,
+        &manifest.version,
+        &target,
+        &bytes,
+        progress,
+    )
 }
 
+#[cfg(test)]
 fn apply_standalone_upgrade(
     paths: &LocalPaths,
     current_version: &str,
@@ -200,8 +269,27 @@ fn apply_standalone_upgrade(
     target: &Path,
     bytes: &[u8],
 ) -> Result<UpgradeOutcome, RuntimeError> {
+    apply_standalone_upgrade_with_progress(
+        paths,
+        current_version,
+        next_version,
+        target,
+        bytes,
+        UpgradeProgress::silent(),
+    )
+}
+
+fn apply_standalone_upgrade_with_progress(
+    paths: &LocalPaths,
+    current_version: &str,
+    next_version: &str,
+    target: &Path,
+    bytes: &[u8],
+    progress: UpgradeProgress,
+) -> Result<UpgradeOutcome, RuntimeError> {
     let backup = temporary_sibling(target, "upgrade-backup")?;
     fs::copy(target, &backup).map_err(local_error)?;
+    progress.step(format!("Installing Denju {next_version}..."));
     let install_result = install_verified_bytes(target, bytes)
         .and_then(|()| {
             let installed_version = binary_version(target)?;
@@ -213,9 +301,15 @@ fn apply_standalone_upgrade(
                     ),
                 ));
             }
+            if paths.state_db.is_file() {
+                progress.step("Restarting Denju background service...");
+            }
             restart_daemon(paths, target)
         })
-        .and_then(|restarted| run_new_binary_health(target).map(|()| restarted));
+        .and_then(|restarted| {
+            progress.step(format!("Verifying Denju {next_version}..."));
+            run_new_binary_health(target).map(|()| restarted)
+        });
     match install_result {
         Ok(daemon_restarted) => {
             let _ = fs::remove_file(&backup);
@@ -230,6 +324,9 @@ fn apply_standalone_upgrade(
             })
         }
         Err(error) => {
+            progress.recovery(format!(
+                "Upgrade verification failed; restoring Denju {current_version}..."
+            ));
             rollback_executable(paths, target, &backup)?;
             let restored_version = binary_version(target)?;
             if restored_version != current_version {
@@ -241,6 +338,9 @@ fn apply_standalone_upgrade(
                 )
                 .recovery("reinstall Denju from the verified release installer"));
             }
+            progress.recovery(format!(
+                "Restored Denju {current_version} successfully; the update was not kept."
+            ));
             Err(RuntimeError::new(
                 CliErrorCode::ServiceUnavailable,
                 format!("upgrade health verification failed and the previous executable was restored: {}", error.message),
@@ -253,11 +353,16 @@ fn apply_standalone_upgrade(
 async fn upgrade_npm(
     paths: &LocalPaths,
     current_version: &str,
+    progress: UpgradeProgress,
 ) -> Result<UpgradeOutcome, RuntimeError> {
     let package = std::env::var("DENJU_INSTALL_PACKAGE").unwrap_or_else(|_| "denju-cli".to_owned());
     let package_version =
         std::env::var("DENJU_INSTALL_VERSION").unwrap_or_else(|_| current_version.to_owned());
     let (manager, command) = package_manager()?;
+    progress.step(format!(
+        "Checking for updates via {} (current {current_version})...",
+        manager.display_name()
+    ));
     let target = std::env::var_os("DENJU_INSTALL_TARGET")
         .map(PathBuf::from)
         .ok_or_else(|| {
@@ -267,17 +372,19 @@ async fn upgrade_npm(
             )
             .recovery(package_install_command(manager, &package, &package_version))
         })?;
-    apply_package_upgrade(
+    apply_package_upgrade_with_progress(PackageUpgradeContext {
         paths,
         current_version,
-        &package,
-        &package_version,
-        &target,
+        package: &package,
+        package_version: &package_version,
+        target: &target,
         manager,
-        &command,
-    )
+        command: &command,
+        progress,
+    })
 }
 
+#[cfg(test)]
 fn apply_package_upgrade(
     paths: &LocalPaths,
     current_version: &str,
@@ -287,6 +394,31 @@ fn apply_package_upgrade(
     manager: PackageManager,
     command: &std::ffi::OsStr,
 ) -> Result<UpgradeOutcome, RuntimeError> {
+    apply_package_upgrade_with_progress(PackageUpgradeContext {
+        paths,
+        current_version,
+        package,
+        package_version,
+        target,
+        manager,
+        command,
+        progress: UpgradeProgress::silent(),
+    })
+}
+
+fn apply_package_upgrade_with_progress(
+    context: PackageUpgradeContext<'_>,
+) -> Result<UpgradeOutcome, RuntimeError> {
+    let PackageUpgradeContext {
+        paths,
+        current_version,
+        package,
+        package_version,
+        target,
+        manager,
+        command,
+        progress,
+    } = context;
     if package_version != current_version {
         return Err(RuntimeError::new(
             CliErrorCode::ContentVerification,
@@ -300,6 +432,10 @@ fn apply_package_upgrade(
             package_version,
         )));
     }
+    progress.step(format!(
+        "Installing the latest Denju via {}...",
+        manager.display_name()
+    ));
     let status = package_install(manager, command, package, "latest")?;
     if !status.success() {
         return Err(RuntimeError::new(
@@ -310,17 +446,7 @@ fn apply_package_upgrade(
     }
     let new_version = match binary_version(target) {
         Ok(version) => version,
-        Err(error) => {
-            return rollback_package_upgrade(
-                paths,
-                package,
-                package_version,
-                target,
-                manager,
-                command,
-                error,
-            );
-        }
+        Err(error) => return rollback_package_upgrade(context, error),
     };
     if new_version == current_version {
         return Ok(UpgradeOutcome {
@@ -333,8 +459,14 @@ fn apply_package_upgrade(
             rolled_back: false,
         });
     }
-    let verification = restart_daemon(paths, target)
-        .and_then(|restarted| run_new_binary_health(target).map(|()| restarted));
+    progress.step(format!("Installed Denju {new_version}."));
+    if paths.state_db.is_file() {
+        progress.step("Restarting Denju background service...");
+    }
+    let verification = restart_daemon(paths, target).and_then(|restarted| {
+        progress.step(format!("Verifying Denju {new_version}..."));
+        run_new_binary_health(target).map(|()| restarted)
+    });
     match verification {
         Ok(daemon_restarted) => Ok(UpgradeOutcome {
             state: "upgraded",
@@ -345,27 +477,28 @@ fn apply_package_upgrade(
             health_verified: true,
             rolled_back: false,
         }),
-        Err(error) => rollback_package_upgrade(
-            paths,
-            package,
-            package_version,
-            target,
-            manager,
-            command,
-            error,
-        ),
+        Err(error) => rollback_package_upgrade(context, error),
     }
 }
 
 fn rollback_package_upgrade(
-    paths: &LocalPaths,
-    package: &str,
-    package_version: &str,
-    target: &Path,
-    manager: PackageManager,
-    command: &std::ffi::OsStr,
+    context: PackageUpgradeContext<'_>,
     failure: RuntimeError,
 ) -> Result<UpgradeOutcome, RuntimeError> {
+    let PackageUpgradeContext {
+        paths,
+        package,
+        package_version,
+        target,
+        manager,
+        command,
+        progress,
+        ..
+    } = context;
+    progress.recovery(format!(
+        "Upgrade verification failed; restoring Denju {package_version} via {}...",
+        manager.display_name()
+    ));
     let rollback_status = package_install(manager, command, package, package_version)?;
     if !rollback_status.success() {
         return Err(RuntimeError::new(
@@ -416,6 +549,9 @@ fn rollback_package_upgrade(
         )
         .recovery("denju doctor"));
     }
+    progress.recovery(format!(
+        "Restored Denju {package_version} successfully; the update was not kept."
+    ));
     Err(RuntimeError::new(
         CliErrorCode::ServiceUnavailable,
         format!(

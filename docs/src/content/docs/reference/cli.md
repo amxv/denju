@@ -100,7 +100,10 @@ denju diff LOCATOR [REVISION_A] [REVISION_B]
 denju restore LOCATOR REVISION
 denju export LOCATOR DESTINATION
 denju usage
+denju list
 ```
+
+`denju list` shows the skills this installation is tracking, their current visibility and release version when available, the active source, and any tracked packs that contain them. `denju --json list` also includes the full canonical, shared `~/.agents/skills`, and Claude Code projection paths for each skill.
 
 ## Subscriptions and sharing
 

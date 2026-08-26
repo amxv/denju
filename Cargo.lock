@@ -1047,7 +1047,7 @@ dependencies = [
 
 [[package]]
 name = "denju"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "clap",
  "denju-client",
@@ -1055,6 +1055,7 @@ dependencies = [
  "denju-local",
  "denju-sync",
  "denju-wire",
+ "futures-util",
  "hex",
  "rand 0.10.2",
  "reqwest",
@@ -1070,7 +1071,7 @@ dependencies = [
 
 [[package]]
 name = "denju-client"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "denju-core",
  "denju-wire",
@@ -1085,7 +1086,7 @@ dependencies = [
 
 [[package]]
 name = "denju-core"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "hex",
  "proptest",
@@ -1103,7 +1104,7 @@ dependencies = [
 
 [[package]]
 name = "denju-local"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "apple-native-keyring-store",
  "denju-core",
@@ -1128,7 +1129,7 @@ dependencies = [
 
 [[package]]
 name = "denju-registry"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "argon2",
  "aws-credential-types",
@@ -1151,7 +1152,7 @@ dependencies = [
 
 [[package]]
 name = "denju-server"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "axum",
  "clap",
@@ -1173,7 +1174,7 @@ dependencies = [
 
 [[package]]
 name = "denju-sync"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "denju-core",
  "proptest",
@@ -1181,7 +1182,7 @@ dependencies = [
 
 [[package]]
 name = "denju-testkit"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "denju-core",
  "denju-wire",
@@ -1189,7 +1190,7 @@ dependencies = [
 
 [[package]]
 name = "denju-wire"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "denju-core",
  "hex",
@@ -4350,7 +4351,7 @@ checksum = "66fee0b777b0f5ac1c69bb06d361268faafa61cd4682ae064a171c16c433e9e4"
 
 [[package]]
 name = "xtask"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "denju-core",
  "denju-registry",

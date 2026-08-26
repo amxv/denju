@@ -25,6 +25,7 @@ Commands:\n\
   delete  Tombstone an owned skill or pack\n\
   deprecate  Mark or unmark a released skill as deprecated\n\
   usage   Show namespace storage usage and queued local bytes\n\
+  list    List skills tracked by Denju, including visibility, versions, and pack sources\n\
   history Show private-save and immutable release history\n\
   diff    Compare two revisions\n\
   restore Restore an older revision as a new private revision\n\
