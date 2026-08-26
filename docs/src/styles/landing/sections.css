@@ -71,8 +71,32 @@
 .relationship-card code { color: var(--ink); font-size: .78rem; }
 .relationship-card small { color: var(--muted); font-size: .68rem; }
 
+/* Full-bleed section washes. Keep the section contents on the centered shell,
+   but let the atmospheric background reach the viewport edges. */
+.discovery,
+.personal-private,
+.packs,
+.sync-story,
+.trust {
+  isolation: isolate;
+  background: transparent;
+}
+
+.discovery::before,
+.personal-private::before,
+.packs::before,
+.sync-story::before,
+.trust::before {
+  position: absolute;
+  inset-block: 0;
+  inset-inline: calc((100vw - 100%) / -2);
+  z-index: -1;
+  pointer-events: none;
+  content: "";
+}
+
 /* Discovery */
-.discovery { background: linear-gradient(90deg, transparent 0 44%, color-mix(in srgb,var(--surface-soft) 55%,transparent) 44% 100%); }
+.discovery::before { background: linear-gradient(90deg, transparent 0 44%, color-mix(in srgb,var(--surface-soft) 55%,transparent) 44% 100%); }
 .search-visual { overflow: hidden; border: 1px solid var(--line); border-radius: 1rem; background: var(--surface); box-shadow: var(--shadow); }
 .search-box { display: grid; grid-template-columns: auto 1fr auto; gap: .7rem; align-items: center; padding: 1rem 1.1rem; border-bottom: 1px solid var(--line); color: var(--muted); }
 .search-box code { color: var(--ink); font-size: .78rem; }
@@ -103,7 +127,7 @@
 .release-choice span { color: var(--muted); font-size: .65rem; }
 
 /* Personal private */
-.personal-private { background: linear-gradient(180deg,transparent,color-mix(in srgb,var(--accent-soft) 34%,transparent)); }
+.personal-private::before { background: linear-gradient(180deg,transparent,color-mix(in srgb,var(--accent-soft) 34%,transparent)); }
 .private-device-visual { position: relative; min-height: 24rem; padding: 2rem; border: 1px solid var(--line); border-radius: 1rem; background: color-mix(in srgb,var(--surface) 90%,transparent); }
 .private-skill-node { display: flex; justify-content: space-between; gap: 1rem; padding: 1rem; border: 1px solid color-mix(in srgb,var(--accent) 27%,var(--line)); border-radius: .7rem; background: var(--accent-soft); }
 .private-skill-node span { color: var(--accent-strong); font-size: .62rem; font-weight: 600; }
@@ -147,7 +171,7 @@
 .publish-history__latest strong { color: var(--accent-strong); }
 
 /* Packs */
-.packs { background: color-mix(in srgb,var(--surface-soft) 45%,transparent); }
+.packs::before { background: color-mix(in srgb,var(--surface-soft) 45%,transparent); }
 .pack-visual { overflow: hidden; border: 1px solid var(--line); border-radius: .9rem; background: var(--surface); box-shadow: var(--shadow); }
 .pack-visual > div { display: flex; justify-content: space-between; gap: 1rem; padding: .9rem 1rem; border-top: 1px solid var(--line); }
 .pack-visual > div:first-child { border-top: 0; }
@@ -191,7 +215,7 @@
 .fork-visual > i { margin-left: 1.2rem; color: var(--line-strong); font-style: normal; }
 
 /* Sync */
-.sync-story { background: linear-gradient(180deg,transparent,color-mix(in srgb,var(--surface-soft) 55%,transparent)); }
+.sync-story::before { background: linear-gradient(180deg,transparent,color-mix(in srgb,var(--surface-soft) 55%,transparent)); }
 .sync-visual { display: grid; grid-template-columns: 1fr 5rem 1fr; gap: .8rem; align-items: center; }
 .sync-device,.sync-registry { display: grid; justify-items: center; gap: .4rem; padding: 1.4rem 1rem; border: 1px solid var(--line); border-radius: .8rem; background: var(--surface); text-align: center; }
 .sync-device > span,.sync-registry > span { display: grid; place-items: center; width: 2.3rem; height: 2.3rem; border-radius: .55rem; background: var(--surface-soft); color: var(--ink); font-size: .65rem; font-weight: 600; }
@@ -226,7 +250,7 @@
 .lifecycle-visual > small { display: block; padding: .8rem 1.1rem; background: var(--surface-soft); color: var(--muted); font-size: .62rem; }
 
 /* Trust */
-.trust { background: color-mix(in srgb,var(--surface-soft) 50%,transparent); }
+.trust::before { background: color-mix(in srgb,var(--surface-soft) 50%,transparent); }
 .trust-visual { display: grid; grid-template-columns: 1fr 1fr; gap: .8rem; }
 .trust-list { padding: 1.3rem; border: 1px solid var(--line); border-radius: .8rem; background: var(--surface); }
 .trust-list > span { display: block; margin-bottom: 1.2rem; color: var(--muted); font-size: .61rem; text-transform: uppercase; letter-spacing: .06em; }

@@ -7,7 +7,6 @@
   .story-section--reverse > :last-child { grid-column: auto; grid-row: auto; }
   .story-copy { max-width: 46rem; }
   .team-visual { max-width: 49rem; }
-  .discovery { background: transparent; }
 }
 
 @media (max-width: 840px) {
