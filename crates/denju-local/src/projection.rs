@@ -149,7 +149,7 @@ pub async fn reconcile_harness_projections(
         .into_iter()
         .map(|record| record.resource_id)
         .collect::<BTreeSet<_>>();
-    let reserved = unmanaged_names(roots)?;
+    let reserved = unmanaged_names(paths, roots)?;
     let mut managed = Vec::new();
     for record in &managed_records {
         if record.materialized_revision_id.is_none() {
@@ -160,6 +160,7 @@ pub async fn reconcile_harness_projections(
                 .map_err(|error| ProjectionError::Corrupt(error.to_string()))?,
             owner: record.owner.clone(),
             skill_name: record.skill_name.clone(),
+            previous_harness_name: record.harness_name.clone(),
         });
     }
     let assignments = allocate_projection_names(&managed, &reserved);
@@ -177,7 +178,7 @@ pub async fn reconcile_harness_projections(
             .as_deref()
             .is_some_and(|current| Some(current) != desired)
         {
-            remove_managed_projection(paths, roots, &record.owner, record.harness_name.as_deref())?;
+            remove_stale_managed_projection(paths, roots, record.harness_name.as_deref())?;
         }
     }
 
@@ -205,10 +206,7 @@ pub async fn reconcile_harness_projections(
             (canonical, false)
         };
 
-        let codex = roots
-            .codex_root
-            .join(&record.owner)
-            .join(&assignment.harness_name);
+        let codex = roots.codex_root.join(&assignment.harness_name);
         create_projection_link(paths, &target, &codex)?;
         let claude = roots.claude_root.join(&assignment.harness_name);
         create_projection_link(paths, &target, &claude)?;
@@ -272,29 +270,75 @@ pub fn remove_managed_skill_projection(
 fn remove_managed_projection(
     paths: &LocalPaths,
     roots: &ResolvedHarnessRoots,
-    owner: &str,
+    _owner: &str,
     harness_name: Option<&str>,
 ) -> Result<(), ProjectionError> {
     let Some(harness_name) = harness_name else {
         return Ok(());
     };
-    let codex = roots.codex_root.join(owner).join(harness_name);
+    let codex = roots.codex_root.join(harness_name);
     remove_managed_projection_link(paths, &codex)?;
-    if let Some(owner_dir) = codex.parent() {
-        let _ = fs::remove_dir(owner_dir);
-    }
     remove_managed_projection_link(paths, &roots.claude_root.join(harness_name))?;
     Ok(())
 }
 
-fn unmanaged_names(roots: &ResolvedHarnessRoots) -> Result<BTreeSet<String>, ProjectionError> {
+fn remove_stale_managed_projection(
+    paths: &LocalPaths,
+    roots: &ResolvedHarnessRoots,
+    harness_name: Option<&str>,
+) -> Result<(), ProjectionError> {
+    let Some(harness_name) = harness_name else {
+        return Ok(());
+    };
+    for link in [
+        roots.codex_root.join(harness_name),
+        roots.claude_root.join(harness_name),
+    ] {
+        match remove_managed_projection_link(paths, &link) {
+            Ok(()) | Err(ProjectionError::RefuseOverwrite(_)) => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
+fn unmanaged_names(
+    paths: &LocalPaths,
+    roots: &ResolvedHarnessRoots,
+) -> Result<BTreeSet<String>, ProjectionError> {
+    let managed_roots = [
+        fs::canonicalize(&paths.skills).unwrap_or_else(|_| paths.skills.clone()),
+        fs::canonicalize(&paths.derived).unwrap_or_else(|_| paths.derived.clone()),
+    ];
     let mut names = BTreeSet::new();
-    for skill_dir in detect_unmanaged_skills(roots)? {
+    for skill_dir in detect_unmanaged_skills(paths, roots)? {
         if let Some(name) = skill_dir.file_name().and_then(|name| name.to_str()) {
             names.insert(name.to_owned());
         }
     }
+    for root in [&roots.codex_root, &roots.claude_root] {
+        if !root.is_dir() {
+            continue;
+        }
+        for entry in fs::read_dir(root)? {
+            let entry = entry?;
+            let path = entry.path();
+            if is_denju_projection_target(&managed_roots, &path) {
+                continue;
+            }
+            if let Some(name) = path.file_name().and_then(|name| name.to_str()) {
+                names.insert(name.to_owned());
+            }
+        }
+    }
     Ok(names)
+}
+
+fn is_denju_projection_target(managed_roots: &[PathBuf; 2], path: &Path) -> bool {
+    let Ok(target) = fs::canonicalize(path) else {
+        return false;
+    };
+    managed_roots.iter().any(|root| target.starts_with(root))
 }
 
 fn derived_view(

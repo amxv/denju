@@ -37,7 +37,7 @@ This owns the pinned local PostgreSQL + Garage lifecycle, applies migrations, an
 
 ## Never test against real harness roots
 
-Process-level CLI, daemon, and acceptance fixtures must use a marked isolated Denju test home. A temporary `HOME` by itself is **not sufficient** because the developer shell may already contain absolute custom `CODEX_HOME` or `CLAUDE_CONFIG_DIR` values.
+Process-level CLI, daemon, and acceptance fixtures must use a marked isolated Denju test home. A temporary `HOME` by itself is **not sufficient** because the developer shell may already contain an absolute custom `CLAUDE_CONFIG_DIR` value, and real shared Agent Skills roots must never be touched by tests.
 
 Create a disposable marked directory:
 

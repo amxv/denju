@@ -81,7 +81,7 @@ denju doctor
 
 Doctor checks the recorded Codex and Claude Code roots, broken Denju-managed links, stale/duplicate projections, interrupted migrations, and service state. It repairs Denju-owned projection state without treating unrelated user skills as disposable.
 
-If your `CODEX_HOME` or `CLAUDE_CONFIG_DIR` changed, invoking Denju should migrate its managed projection after validating the new location.
+Codex always uses Denju's direct managed links under `~/.agents/skills`; changing `CODEX_HOME` does not move them. If `CLAUDE_CONFIG_DIR` changes, invoking Denju resolves and repairs the managed Claude projection at the new `$CLAUDE_CONFIG_DIR/skills` location.
 
 ## Storage quota exceeded
 

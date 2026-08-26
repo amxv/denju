@@ -4,12 +4,12 @@ use denju_client::{ClientError, RegistryClient};
 use denju_local::{
     CredentialBackend, CredentialManager, IdentityRecord, InstallCredential, InstallationRecord,
     LocalDatabase, LocalDiscoveryRecord, LocalPaths, OwnedSkillRecord, ResolvedHarnessRoots,
-    SessionCredential, prepare_harness_roots, resolve_harness_roots,
+    SessionCredential,
 };
 use denju_wire::{ApiErrorCode, CliErrorCode, RegistryLimits};
 use url::Url;
 
-use crate::setup::RuntimeError;
+use crate::setup::{RuntimeError, prepare_current_harness_roots};
 
 pub(crate) struct InstalledContext {
     pub(crate) paths: LocalPaths,
@@ -121,9 +121,7 @@ pub(crate) async fn installed_context(
         .await
         .map_err(local_error)?;
     }
-    let recorded = db.harness_config().await.map_err(local_error)?;
-    let roots = resolve_harness_roots(&paths, recorded.as_ref()).map_err(local_error)?;
-    prepare_harness_roots(&roots).map_err(local_error)?;
+    let roots = prepare_current_harness_roots(&paths, &db).await?;
     Ok(InstalledContext {
         paths,
         db,

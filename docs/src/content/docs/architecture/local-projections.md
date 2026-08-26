@@ -47,15 +47,15 @@ If the process dies in the middle, recovery resumes or rolls back from the journ
 
 Supported harness roots receive native filesystem projections of the canonical managed skill.
 
-Denju chooses one active Codex projection root and one Claude Code root based on the configured environment. It does not scatter the same managed resource into multiple Codex roots and hope discovery deduplicates it.
+Codex projections live directly under the shared user Agent Skills root at `~/.agents/skills`, independent of `CODEX_HOME`. Each collision-safe Denju skill name is a native link at `~/.agents/skills/<skill>/`, so Codex and other harnesses that support the shared personal-skills location can discover the same projection. Claude Code projections continue to use `$CLAUDE_CONFIG_DIR/skills` when configured, falling back to `~/.claude/skills`.
 
-If `CODEX_HOME` or `CLAUDE_CONFIG_DIR` changes, Denju treats that as a managed migration: build and validate the new projection first, then remove only the old Denju-managed links.
+Older Denju installations may have recorded a Denju-owned Codex subtree under `$CODEX_HOME/skills/denju`, `~/.codex/skills/denju`, or `~/.agents/skills/denju`. On the next invocation Denju builds and validates the direct links under `~/.agents/skills` first, then removes only the old Denju-owned subtree. If `CLAUDE_CONFIG_DIR` changes, Denju likewise resolves the new Claude Code projection root from that setting.
 
 ## Name collisions
 
 Denju resources are scoped (`@alice/review`), while Agent Skills invocation names are not.
 
-If `@alice/review` and `@bob/review` are both installed, the plain local name `review` is ambiguous. Denju assigns deterministic collision-safe aliases to the conflicting projections and uses the same alias in Codex and Claude Code on that device.
+If `@alice/review` and `@bob/review` are both installed, the plain local name `review` is ambiguous. Denju qualifies the conflicting projections with their owner, for example `alice-review` and `bob-review`, and uses the same alias in Codex and Claude Code on that device. If an owner-qualified alias is already occupied, Denju uses the lowest available numeric suffix such as `alice-review-2`; persisted aliases remain sticky so existing invocation names do not renumber just because a lower suffix later becomes free.
 
 The projected directory name and the projected `SKILL.md` name continue matching the Agent Skills specification. Canonical resource identity is unchanged.
 

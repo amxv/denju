@@ -7,7 +7,7 @@ use super::*;
 use crate::{
     DesiredSkillMaterialization, HarnessConfig, HarnessEnvironment, OwnedSkillRecord,
     ensure_local_layout, materialize_skill_snapshot, prepare_harness_roots,
-    resolve_harness_roots_for,
+    remove_old_codex_projection, resolve_harness_roots_for,
 };
 
 fn skill_document(name: &str, owner: &str) -> String {
@@ -124,7 +124,7 @@ async fn same_agent_skills_name_gets_stable_derived_aliases_in_both_harnesses() 
     let paths = LocalPaths::from_home(home.path().to_owned());
     ensure_local_layout(&paths).unwrap();
     let roots = ResolvedHarnessRoots {
-        codex_root: home.path().join(".agents/skills/denju"),
+        codex_root: home.path().join(".agents/skills"),
         claude_root: home.path().join(".claude/skills"),
     };
     prepare_harness_roots(&roots).unwrap();
@@ -152,15 +152,11 @@ async fn same_agent_skills_name_gets_stable_derived_aliases_in_both_harnesses() 
         .await
         .unwrap();
     assert_eq!(first.len(), 2);
-    assert!(
-        first
-            .iter()
-            .all(|(_, name)| name != "review" && name.len() <= 64)
-    );
-    for (locator, harness_name) in &first {
-        let owner = locator.trim_start_matches('@').split_once('/').unwrap().0;
+    assert_eq!(first[0].1, "alice-review");
+    assert_eq!(first[1].1, "bob-review");
+    for (_locator, harness_name) in &first {
         let claude = roots.claude_root.join(harness_name);
-        let codex = roots.codex_root.join(owner).join(harness_name);
+        let codex = roots.codex_root.join(harness_name);
         assert!(
             fs::symlink_metadata(&claude)
                 .unwrap()
@@ -184,7 +180,7 @@ async fn same_agent_skills_name_gets_stable_derived_aliases_in_both_harnesses() 
 }
 
 #[tokio::test]
-async fn recorded_custom_harness_roots_receive_projection_without_process_environment() {
+async fn recorded_custom_codex_root_migrates_to_shared_agents_root_without_process_environment() {
     let home = tempdir().unwrap();
     let paths = LocalPaths::from_home(home.path().to_owned());
     ensure_local_layout(&paths).unwrap();
@@ -193,6 +189,11 @@ async fn recorded_custom_harness_roots_receive_projection_without_process_enviro
         claude_root: home.path().join("custom-claude/skills"),
     };
     prepare_harness_roots(&configured).unwrap();
+    fs::write(
+        configured.codex_root.join(".denju-managed-v1"),
+        b"denju-managed-v1\n",
+    )
+    .unwrap();
     let db = LocalDatabase::open(&paths.state_db).await.unwrap();
     db.save_harness_config(HarnessConfig {
         codex_root: configured.codex_root.display().to_string(),
@@ -214,16 +215,19 @@ async fn recorded_custom_harness_roots_receive_projection_without_process_enviro
     let roots =
         resolve_harness_roots_for(&paths, recorded.as_ref(), &HarnessEnvironment::default())
             .unwrap();
+    prepare_harness_roots(&roots).unwrap();
     reconcile_harness_projections(&paths, &db, &roots)
         .await
         .unwrap();
+    remove_old_codex_projection(recorded.as_ref(), &roots).unwrap();
 
     assert!(
-        fs::symlink_metadata(configured.codex_root.join("alice/review"))
+        fs::symlink_metadata(roots.codex_root.join("review"))
             .unwrap()
             .file_type()
             .is_symlink()
     );
+    assert!(!configured.codex_root.exists());
     assert!(
         fs::symlink_metadata(configured.claude_root.join("review"))
             .unwrap()
@@ -234,12 +238,196 @@ async fn recorded_custom_harness_roots_receive_projection_without_process_enviro
 }
 
 #[tokio::test]
+async fn shared_agents_root_preserves_unmanaged_skill_and_aliases_denju_collision() {
+    let home = tempdir().unwrap();
+    let paths = LocalPaths::from_home(home.path().to_owned());
+    ensure_local_layout(&paths).unwrap();
+    let roots = ResolvedHarnessRoots {
+        codex_root: home.path().join(".agents/skills"),
+        claude_root: home.path().join(".claude/skills"),
+    };
+    prepare_harness_roots(&roots).unwrap();
+    let unmanaged = roots.codex_root.join("review");
+    fs::create_dir_all(&unmanaged).unwrap();
+    fs::write(
+        unmanaged.join("SKILL.md"),
+        skill_document("review", "local-user"),
+    )
+    .unwrap();
+    let db = LocalDatabase::open(&paths.state_db).await.unwrap();
+    insert_materialized(
+        &db,
+        &paths,
+        "01890f47-6a1c-7cc2-98c1-5f6c1ed8a3a1",
+        "alice",
+        "review",
+        "1111111111111111111111111111111111111111111111111111111111111111",
+    )
+    .await;
+
+    let projected = reconcile_harness_projections(&paths, &db, &roots)
+        .await
+        .unwrap();
+    assert_eq!(projected.len(), 1);
+    let harness_name = &projected[0].1;
+    assert_eq!(harness_name, "alice-review");
+    assert!(unmanaged.join("SKILL.md").is_file());
+    assert!(
+        fs::symlink_metadata(roots.codex_root.join(harness_name))
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert!(
+        fs::symlink_metadata(roots.claude_root.join(harness_name))
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+}
+
+#[tokio::test]
+async fn shared_agents_root_treats_any_occupied_direct_name_as_reserved() {
+    let home = tempdir().unwrap();
+    let paths = LocalPaths::from_home(home.path().to_owned());
+    ensure_local_layout(&paths).unwrap();
+    let roots = ResolvedHarnessRoots {
+        codex_root: home.path().join(".agents/skills"),
+        claude_root: home.path().join(".claude/skills"),
+    };
+    prepare_harness_roots(&roots).unwrap();
+    fs::create_dir_all(roots.codex_root.join("review")).unwrap();
+
+    let db = LocalDatabase::open(&paths.state_db).await.unwrap();
+    insert_materialized(
+        &db,
+        &paths,
+        "01890f47-6a1c-7cc2-98c1-5f6c1ed8a3a1",
+        "alice",
+        "review",
+        "1111111111111111111111111111111111111111111111111111111111111111",
+    )
+    .await;
+
+    let projected = reconcile_harness_projections(&paths, &db, &roots)
+        .await
+        .unwrap();
+    assert_eq!(projected[0].1, "alice-review");
+    assert!(roots.codex_root.join("review").is_dir());
+    assert!(
+        fs::symlink_metadata(roots.codex_root.join("alice-review"))
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+}
+
+#[tokio::test]
+async fn persisted_collision_alias_does_not_renumber_when_lower_name_becomes_free() {
+    let home = tempdir().unwrap();
+    let paths = LocalPaths::from_home(home.path().to_owned());
+    ensure_local_layout(&paths).unwrap();
+    let roots = ResolvedHarnessRoots {
+        codex_root: home.path().join(".agents/skills"),
+        claude_root: home.path().join(".claude/skills"),
+    };
+    prepare_harness_roots(&roots).unwrap();
+
+    for name in ["review", "alice-review"] {
+        let unmanaged = roots.codex_root.join(name);
+        fs::create_dir_all(&unmanaged).unwrap();
+        fs::write(
+            unmanaged.join("SKILL.md"),
+            skill_document(name, "local-user"),
+        )
+        .unwrap();
+    }
+
+    let db = LocalDatabase::open(&paths.state_db).await.unwrap();
+    insert_materialized(
+        &db,
+        &paths,
+        "01890f47-6a1c-7cc2-98c1-5f6c1ed8a3a1",
+        "alice",
+        "review",
+        "1111111111111111111111111111111111111111111111111111111111111111",
+    )
+    .await;
+
+    let first = reconcile_harness_projections(&paths, &db, &roots)
+        .await
+        .unwrap();
+    assert_eq!(first[0].1, "alice-review-2");
+
+    fs::remove_dir_all(roots.codex_root.join("alice-review")).unwrap();
+    let second = reconcile_harness_projections(&paths, &db, &roots)
+        .await
+        .unwrap();
+    assert_eq!(second[0].1, "alice-review-2");
+    assert_eq!(
+        db.managed_skills().await.unwrap()[0]
+            .harness_name
+            .as_deref(),
+        Some("alice-review-2")
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn shared_agents_root_reserves_symlinked_unmanaged_skill_names() {
+    let home = tempdir().unwrap();
+    let paths = LocalPaths::from_home(home.path().to_owned());
+    ensure_local_layout(&paths).unwrap();
+    let roots = ResolvedHarnessRoots {
+        codex_root: home.path().join(".agents/skills"),
+        claude_root: home.path().join(".claude/skills"),
+    };
+    prepare_harness_roots(&roots).unwrap();
+
+    let external = home.path().join("external-review");
+    fs::create_dir_all(&external).unwrap();
+    fs::write(
+        external.join("SKILL.md"),
+        skill_document("review", "local-user"),
+    )
+    .unwrap();
+    let unmanaged = roots.codex_root.join("review");
+    std::os::unix::fs::symlink(&external, &unmanaged).unwrap();
+
+    let db = LocalDatabase::open(&paths.state_db).await.unwrap();
+    insert_materialized(
+        &db,
+        &paths,
+        "01890f47-6a1c-7cc2-98c1-5f6c1ed8a3a1",
+        "alice",
+        "review",
+        "1111111111111111111111111111111111111111111111111111111111111111",
+    )
+    .await;
+
+    let projected = reconcile_harness_projections(&paths, &db, &roots)
+        .await
+        .unwrap();
+    assert_eq!(projected[0].1, "alice-review");
+    assert_eq!(
+        fs::canonicalize(&unmanaged).unwrap(),
+        fs::canonicalize(&external).unwrap()
+    );
+    assert!(
+        fs::symlink_metadata(roots.codex_root.join("alice-review"))
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+}
+
+#[tokio::test]
 async fn owned_collision_view_tracks_edit_direction_without_feedback_loop() {
     let home = tempdir().unwrap();
     let paths = LocalPaths::from_home(home.path().to_owned());
     ensure_local_layout(&paths).unwrap();
     let roots = ResolvedHarnessRoots {
-        codex_root: home.path().join(".agents/skills/denju"),
+        codex_root: home.path().join(".agents/skills"),
         claude_root: home.path().join(".claude/skills"),
     };
     prepare_harness_roots(&roots).unwrap();
@@ -455,7 +643,7 @@ async fn projection_cleanup_refuses_user_replacement() {
     let paths = LocalPaths::from_home(home.path().to_owned());
     ensure_local_layout(&paths).unwrap();
     let roots = ResolvedHarnessRoots {
-        codex_root: home.path().join(".agents/skills/denju"),
+        codex_root: home.path().join(".agents/skills"),
         claude_root: home.path().join(".claude/skills"),
     };
     prepare_harness_roots(&roots).unwrap();

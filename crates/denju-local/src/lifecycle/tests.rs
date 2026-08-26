@@ -96,7 +96,7 @@ async fn seed_owned(
 
 fn roots(home: &std::path::Path) -> ResolvedHarnessRoots {
     ResolvedHarnessRoots {
-        codex_root: home.join(".agents/skills/denju"),
+        codex_root: home.join(".agents/skills"),
         claude_root: home.join(".claude/skills"),
     }
 }
@@ -208,7 +208,7 @@ async fn interrupted_rename_recovers_from_verified_boundary() {
         .unwrap();
 
     let old_harness = old.harness_name.as_deref().unwrap();
-    let blocker = roots.codex_root.join("alice").join(old_harness);
+    let blocker = roots.codex_root.join(old_harness);
     remove_link(&blocker);
     fs::create_dir_all(&blocker).unwrap();
     fs::write(blocker.join("sentinel"), b"unmanaged").unwrap();

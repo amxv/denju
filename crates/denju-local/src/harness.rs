@@ -19,14 +19,12 @@ pub struct ResolvedHarnessRoots {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct HarnessEnvironment {
-    pub codex_home: Option<PathBuf>,
     pub claude_config_dir: Option<PathBuf>,
 }
 
 impl HarnessEnvironment {
     pub fn current() -> Self {
         Self {
-            codex_home: std::env::var_os("CODEX_HOME").map(PathBuf::from),
             claude_config_dir: std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from),
         }
     }
@@ -43,11 +41,11 @@ pub fn resolve_harness_roots(
 }
 
 fn isolated_test_harness_roots(paths: &LocalPaths) -> Result<ResolvedHarnessRoots, HarnessError> {
-    // Test runs intentionally ignore inherited CODEX_HOME/CLAUDE_CONFIG_DIR and recorded
-    // harness state. This is a hard safety boundary: test projection I/O stays beneath the
+    // Test runs intentionally ignore inherited harness overrides and recorded harness state.
+    // This is a hard safety boundary: test projection I/O stays beneath the
     // explicitly marked DENJU_TEST_HOME and can never reach a developer's real harness roots.
     let roots = ResolvedHarnessRoots {
-        codex_root: paths.home.join(".agents/skills/denju"),
+        codex_root: paths.home.join(".agents/skills"),
         claude_root: paths.home.join(".claude/skills"),
     };
     validate_isolated_test_root(&paths.home, &roots.codex_root)?;
@@ -91,18 +89,12 @@ pub fn resolve_harness_roots_for(
     recorded: Option<&HarnessConfig>,
     environment: &HarnessEnvironment,
 ) -> Result<ResolvedHarnessRoots, HarnessError> {
-    let codex_root = if let Some(codex_home) = &environment.codex_home {
-        absolute_from_home(paths, codex_home.clone()).join("skills/denju")
-    } else if let Some(recorded) = recorded {
-        let recorded = PathBuf::from(&recorded.codex_root);
-        if is_managed_codex_root(&recorded) {
-            recorded
-        } else {
-            resolve_unset_codex_root(paths)?
-        }
-    } else {
-        resolve_unset_codex_root(paths)?
-    };
+    // Codex's current user-level Agent Skills root is independent of CODEX_HOME. Project each
+    // Denju-managed skill directly into the shared ~/.agents/skills root so other harnesses that
+    // implement the same user-skill convention can discover the same links too. Recorded
+    // legacy/custom Codex roots are intentionally not reused; callers migrate them after the
+    // new root is prepared.
+    let codex_root = paths.home.join(".agents/skills");
 
     let claude_root = if let Some(claude_config_dir) = &environment.claude_config_dir {
         absolute_from_home(paths, claude_config_dir.clone()).join("skills")
@@ -120,7 +112,6 @@ pub fn resolve_harness_roots_for(
 
 pub fn prepare_harness_roots(roots: &ResolvedHarnessRoots) -> Result<(), HarnessError> {
     fs::create_dir_all(&roots.codex_root)?;
-    fs::write(roots.codex_root.join(CODEX_MARKER), b"denju-managed-v1\n")?;
     fs::create_dir_all(&roots.claude_root)?;
     Ok(())
 }
@@ -143,18 +134,23 @@ pub fn remove_old_codex_projection(
     Ok(())
 }
 
-pub fn detect_unmanaged_skills(roots: &ResolvedHarnessRoots) -> Result<Vec<PathBuf>, HarnessError> {
+pub fn detect_unmanaged_skills(
+    paths: &LocalPaths,
+    roots: &ResolvedHarnessRoots,
+) -> Result<Vec<PathBuf>, HarnessError> {
+    let managed_roots = [
+        fs::canonicalize(&paths.skills).unwrap_or_else(|_| paths.skills.clone()),
+        fs::canonicalize(&paths.derived).unwrap_or_else(|_| paths.derived.clone()),
+    ];
     let mut skills = BTreeSet::new();
-    if let Some(codex_skills) = roots.codex_root.parent() {
-        collect_skills(codex_skills, Some(&roots.codex_root), &mut skills)?;
-    }
-    collect_skills(&roots.claude_root, None, &mut skills)?;
+    collect_skills(&managed_roots, &roots.codex_root, &mut skills)?;
+    collect_skills(&managed_roots, &roots.claude_root, &mut skills)?;
     Ok(skills.into_iter().collect())
 }
 
 fn collect_skills(
+    managed_roots: &[PathBuf; 2],
     root: &Path,
-    excluded: Option<&PathBuf>,
     skills: &mut BTreeSet<PathBuf>,
 ) -> Result<(), HarnessError> {
     if !root.exists() {
@@ -162,35 +158,32 @@ fn collect_skills(
     }
     for entry in WalkDir::new(root).follow_links(false).max_depth(6) {
         let entry = entry.map_err(HarnessError::Walk)?;
-        if entry.file_name() != "SKILL.md" || !entry.file_type().is_file() {
-            continue;
-        }
-        let Some(parent) = entry.path().parent() else {
+        let skill_dir = if entry.file_name() == "SKILL.md" && entry.path().is_file() {
+            let Some(parent) = entry.path().parent() else {
+                continue;
+            };
+            parent
+        } else if entry.file_type().is_symlink() && entry.path().join("SKILL.md").is_file() {
+            // Flat Agent Skills roots commonly contain directory symlinks. WalkDir correctly
+            // avoids traversing them, so recognize the symlink itself as a skill directory
+            // without following arbitrary directory trees outside the configured root.
+            entry.path()
+        } else {
             continue;
         };
-        if excluded.is_some_and(|excluded| parent.starts_with(excluded)) {
+        // Unix symlink projections are not traversed by WalkDir, but Windows may use a native
+        // junction fallback. Canonical-target filtering keeps Denju-owned links out of the
+        // unmanaged-name set on both platforms.
+        if fs::canonicalize(skill_dir).is_ok_and(|resolved| {
+            managed_roots
+                .iter()
+                .any(|managed_root| resolved.starts_with(managed_root))
+        }) {
             continue;
         }
-        skills.insert(parent.to_owned());
+        skills.insert(skill_dir.to_owned());
     }
     Ok(())
-}
-
-fn resolve_unset_codex_root(paths: &LocalPaths) -> Result<PathBuf, HarnessError> {
-    let candidates = [
-        paths.home.join(".agents/skills/denju"),
-        paths.home.join(".codex/skills/denju"),
-    ];
-    let managed = candidates
-        .iter()
-        .filter(|candidate| is_managed_codex_root(candidate))
-        .cloned()
-        .collect::<Vec<_>>();
-    match managed.as_slice() {
-        [] => Ok(candidates[0].clone()),
-        [only] => Ok(only.clone()),
-        _ => Err(HarnessError::DuplicateCodexProjections(managed)),
-    }
 }
 
 fn is_managed_codex_root(path: &Path) -> bool {
@@ -209,8 +202,6 @@ fn absolute_from_home(paths: &LocalPaths, path: PathBuf) -> PathBuf {
 pub enum HarnessError {
     #[error("harness filesystem error: {0}")]
     Io(#[from] io::Error),
-    #[error("multiple Denju-managed Codex projections exist: {0:?}")]
-    DuplicateCodexProjections(Vec<PathBuf>),
     #[error("refusing to remove old Codex root without a Denju marker: {path}", path = .0.display())]
     UnmanagedOldCodexRoot(PathBuf),
     #[error("failed to scan harness skills: {0}")]
@@ -226,24 +217,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_codex_root_is_agents_and_duplicate_markers_are_rejected() {
+    fn codex_root_is_always_the_shared_agents_root() {
         let home = tempdir().unwrap();
         let paths = LocalPaths::from_home(home.path().to_owned());
+        let legacy = home.path().join("custom-codex/skills/denju");
+        fs::create_dir_all(&legacy).unwrap();
+        fs::write(legacy.join(CODEX_MARKER), "managed").unwrap();
+        let recorded = HarnessConfig {
+            codex_root: legacy.display().to_string(),
+            claude_root: home
+                .path()
+                .join("custom-claude/skills")
+                .display()
+                .to_string(),
+        };
         let roots =
-            resolve_harness_roots_for(&paths, None, &HarnessEnvironment::default()).unwrap();
-        assert_eq!(roots.codex_root, home.path().join(".agents/skills/denju"));
-
-        for root in [
-            home.path().join(".agents/skills/denju"),
-            home.path().join(".codex/skills/denju"),
-        ] {
-            fs::create_dir_all(&root).unwrap();
-            fs::write(root.join(CODEX_MARKER), "managed").unwrap();
-        }
-        assert!(matches!(
-            resolve_harness_roots_for(&paths, None, &HarnessEnvironment::default()),
-            Err(HarnessError::DuplicateCodexProjections(_))
-        ));
+            resolve_harness_roots_for(&paths, Some(&recorded), &HarnessEnvironment::default())
+                .unwrap();
+        assert_eq!(roots.codex_root, home.path().join(".agents/skills"));
+        assert_eq!(roots.claude_root, home.path().join("custom-claude/skills"));
     }
 
     #[test]
@@ -251,10 +243,7 @@ mod tests {
         let home = tempdir().unwrap();
         let paths = LocalPaths::from_home(home.path().to_owned());
         let isolated = isolated_test_harness_roots(&paths).unwrap();
-        assert_eq!(
-            isolated.codex_root,
-            home.path().join(".agents/skills/denju")
-        );
+        assert_eq!(isolated.codex_root, home.path().join(".agents/skills"));
         assert_eq!(isolated.claude_root, home.path().join(".claude/skills"));
         for protected_suffix in [".gg/codex", ".gg/claude", ".codex", ".claude", ".agents"] {
             let protected = PathBuf::from("/developer-home").join(protected_suffix);
@@ -264,12 +253,10 @@ mod tests {
     }
 
     #[test]
-    fn recorded_custom_roots_survive_missing_service_environment() {
+    fn recorded_claude_root_survives_missing_service_environment() {
         let home = tempdir().unwrap();
         let paths = LocalPaths::from_home(home.path().to_owned());
         let codex_root = home.path().join("custom-codex/skills/denju");
-        fs::create_dir_all(&codex_root).unwrap();
-        fs::write(codex_root.join(CODEX_MARKER), "managed").unwrap();
         let claude_root = home.path().join("custom-claude/skills");
         let recorded = HarnessConfig {
             codex_root: codex_root.display().to_string(),
@@ -280,8 +267,35 @@ mod tests {
             resolve_harness_roots_for(&paths, Some(&recorded), &HarnessEnvironment::default())
                 .unwrap();
 
-        assert_eq!(roots.codex_root, codex_root);
+        assert_eq!(roots.codex_root, home.path().join(".agents/skills"));
         assert_eq!(roots.claude_root, claude_root);
+    }
+
+    #[test]
+    fn prepared_shared_codex_root_replaces_recorded_managed_legacy_root() {
+        let home = tempdir().unwrap();
+        let paths = LocalPaths::from_home(home.path().to_owned());
+        let old = home.path().join("custom-codex/skills/denju");
+        fs::create_dir_all(old.join("alice/review")).unwrap();
+        fs::write(old.join(CODEX_MARKER), "managed").unwrap();
+        let recorded = HarnessConfig {
+            codex_root: old.display().to_string(),
+            claude_root: home
+                .path()
+                .join("custom-claude/skills")
+                .display()
+                .to_string(),
+        };
+        let roots =
+            resolve_harness_roots_for(&paths, Some(&recorded), &HarnessEnvironment::default())
+                .unwrap();
+
+        prepare_harness_roots(&roots).unwrap();
+        remove_old_codex_projection(Some(&recorded), &roots).unwrap();
+
+        assert!(roots.codex_root.is_dir());
+        assert!(!roots.codex_root.join(CODEX_MARKER).exists());
+        assert!(!old.exists());
     }
 
     #[cfg(unix)]

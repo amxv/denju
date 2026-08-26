@@ -87,6 +87,6 @@ Denju removes a skill only when nothing else still needs it. If you also subscri
 
 ## What gets installed locally?
 
-Denju keeps one managed copy under `~/.denju/skills/...` and makes that copy available in the configured Codex and Claude Code skill locations. They are views of the same Denju-managed skill, not separate installations you have to keep in sync yourself.
+Denju keeps one managed copy under `~/.denju/skills/...` and projects that copy into the shared `~/.agents/skills` root plus the configured Claude Code skills directory. They are views of the same Denju-managed skill, not separate installations you have to keep in sync yourself.
 
 You normally do not need to care about that layout. The useful contract is simpler: if `denju status` says a skill is active, supported harnesses can discover the same content immediately.

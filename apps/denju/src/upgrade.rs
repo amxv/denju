@@ -7,7 +7,7 @@ use std::{
 use denju_client::RegistryClient;
 use denju_local::{
     LocalDatabase, LocalPaths, ServiceInstallMode, ServiceManager, TEST_HOME_ENV,
-    prepare_harness_roots, resolve_harness_roots, verify_native_directory_links,
+    verify_native_directory_links,
 };
 use denju_wire::CliErrorCode;
 use reqwest::Client;
@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use url::Url;
 
-use crate::setup::RuntimeError;
+use crate::setup::{RuntimeError, prepare_current_harness_roots};
 
 const MANIFEST_FORMAT: &str = "denju-release-manifest-v1";
 const MANIFEST_NAME: &str = "release-manifest.txt";
@@ -128,9 +128,7 @@ pub(crate) async fn health_check() -> Result<(), RuntimeError> {
         .await
         .map_err(local_error)?;
     db.quick_check().await.map_err(local_error)?;
-    let recorded = db.harness_config().await.map_err(local_error)?;
-    let roots = resolve_harness_roots(&paths, recorded.as_ref()).map_err(local_error)?;
-    prepare_harness_roots(&roots).map_err(local_error)?;
+    prepare_current_harness_roots(&paths, &db).await?;
     let installation = db
         .installation()
         .await

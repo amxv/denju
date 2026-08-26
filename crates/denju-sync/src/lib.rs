@@ -96,6 +96,7 @@ pub struct ManagedSkillName {
     pub resource_id: ResourceId,
     pub owner: String,
     pub skill_name: String,
+    pub previous_harness_name: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -107,7 +108,9 @@ pub struct ProjectionAssignment {
 
 /// Allocate one invocation name per managed skill across both harnesses. A canonical
 /// Agent Skills name is retained only when it is unambiguous and not occupied by an
-/// unmanaged skill. Every member of a collision group receives a stable ID-based alias.
+/// unmanaged skill. Collisions use human-readable owner-qualified aliases and preserve
+/// an existing numbered allocation when possible so reconciliation does not renumber
+/// stable invocation names just because a lower suffix later becomes available.
 pub fn allocate_projection_names(
     skills: &[ManagedSkillName],
     reserved_names: &BTreeSet<String>,
@@ -117,20 +120,53 @@ pub fn allocate_projection_names(
         by_name.entry(&skill.skill_name).or_default().push(skill);
     }
 
-    let mut used = reserved_names.clone();
     let mut ordered = skills.iter().collect::<Vec<_>>();
     ordered.sort_by_key(|skill| skill.resource_id);
+    let collides = |skill: &ManagedSkillName| {
+        by_name
+            .get(skill.skill_name.as_str())
+            .is_some_and(|group| group.len() > 1)
+            || reserved_names.contains(&skill.skill_name)
+    };
+
+    // Reserve every canonical name that will remain canonical before assigning aliases.
+    // Otherwise a colliding resource processed first could accidentally claim another
+    // managed skill's unambiguous canonical invocation as its owner-qualified alias.
+    let mut used = reserved_names.clone();
+    for skill in &ordered {
+        if !collides(skill) {
+            used.insert(skill.skill_name.clone());
+        }
+    }
+
+    // Existing human aliases are sticky. Reserve all valid unique claims up front so a
+    // newly colliding resource cannot steal a later resource's persisted allocation merely
+    // because it sorts first by ResourceId. Legacy UUID-based aliases intentionally fail this
+    // validation and are migrated to the cleaner naming scheme on the next reconcile.
+    let mut sticky = BTreeMap::<ResourceId, String>::new();
+    for skill in &ordered {
+        if !collides(skill) {
+            continue;
+        }
+        let Some(previous) = skill.previous_harness_name.as_deref() else {
+            continue;
+        };
+        if valid_collision_alias(skill, previous) && !used.contains(previous) {
+            used.insert(previous.to_owned());
+            sticky.insert(skill.resource_id, previous.to_owned());
+        }
+    }
+
     let mut result = Vec::with_capacity(ordered.len());
 
     for skill in ordered {
-        let collision = by_name
-            .get(skill.skill_name.as_str())
-            .is_some_and(|group| group.len() > 1)
-            || reserved_names.contains(&skill.skill_name);
-        let harness_name = if collision {
-            collision_alias(skill, &used)
-        } else {
+        let collision = collides(skill);
+        let harness_name = if !collision {
             skill.skill_name.clone()
+        } else if let Some(previous) = sticky.get(&skill.resource_id) {
+            previous.clone()
+        } else {
+            collision_alias(skill, &used)
         };
         used.insert(harness_name.clone());
         result.push(ProjectionAssignment {
@@ -143,26 +179,44 @@ pub fn allocate_projection_names(
 }
 
 fn collision_alias(skill: &ManagedSkillName, used: &BTreeSet<String>) -> String {
-    let owner = sanitize_component(&skill.owner);
-    let id = skill.resource_id.to_string().replace('-', "");
-    for suffix_len in [10_usize, 14, 18, 24, 32] {
-        let suffix = &id[..suffix_len.min(id.len())];
-        let fixed = format!("denju--{suffix}");
-        let room = 64_usize.saturating_sub(fixed.len());
-        let mut human = format!("{owner}-{}", skill.skill_name);
-        human.truncate(room);
-        human = human.trim_matches('-').to_owned();
-        if human.is_empty() {
-            human = "skill".to_owned();
-        }
-        let candidate = format!("denju-{human}-{suffix}");
+    for index in 1_u64.. {
+        let candidate = collision_alias_at(skill, index);
         if !used.contains(&candidate) {
             return candidate;
         }
     }
-    // A full UUIDv7 suffix uniquely identifies this resource. The branch is reachable
-    // only if an unmanaged skill intentionally occupies every shorter candidate.
-    format!("denju-skill-{id}")
+    unreachable!("u64 collision alias space exhausted")
+}
+
+fn valid_collision_alias(skill: &ManagedSkillName, candidate: &str) -> bool {
+    if candidate == collision_alias_at(skill, 1) {
+        return true;
+    }
+    let Some((_, suffix)) = candidate.rsplit_once('-') else {
+        return false;
+    };
+    let Ok(index) = suffix.parse::<u64>() else {
+        return false;
+    };
+    index >= 2 && candidate == collision_alias_at(skill, index)
+}
+
+fn collision_alias_at(skill: &ManagedSkillName, index: u64) -> String {
+    let owner = sanitize_component(&skill.owner);
+    let raw = format!("{owner}-{}", skill.skill_name);
+    let suffix = if index == 1 {
+        String::new()
+    } else {
+        format!("-{index}")
+    };
+    let room = 64_usize.saturating_sub(suffix.len());
+    let mut base = raw;
+    base.truncate(room);
+    base = base.trim_matches('-').to_owned();
+    if base.is_empty() {
+        base = "skill".to_owned();
+    }
+    format!("{base}{suffix}")
 }
 
 fn sanitize_component(value: &str) -> String {
@@ -190,45 +244,140 @@ fn sanitize_component(value: &str) -> String {
 mod tests {
     use std::str::FromStr;
 
+    use denju_core::validate_skill_name;
+
     use super::*;
 
     fn id(value: &str) -> ResourceId {
         ResourceId::from_str(value).unwrap()
     }
 
+    fn skill(
+        resource_id: &str,
+        owner: &str,
+        skill_name: &str,
+        previous_harness_name: Option<&str>,
+    ) -> ManagedSkillName {
+        ManagedSkillName {
+            resource_id: id(resource_id),
+            owner: owner.to_owned(),
+            skill_name: skill_name.to_owned(),
+            previous_harness_name: previous_harness_name.map(str::to_owned),
+        }
+    }
+
     #[test]
-    fn duplicate_skill_names_alias_every_colliding_resource_stably() {
+    fn duplicate_skill_names_use_human_owner_qualified_aliases() {
         let skills = vec![
-            ManagedSkillName {
-                resource_id: id("01890f47-6a1c-7cc2-98c1-5f6c1ed8a3a1"),
-                owner: "alice".to_owned(),
-                skill_name: "review".to_owned(),
-            },
-            ManagedSkillName {
-                resource_id: id("01890f47-6a1d-7ad0-8f43-9a4d8c29f002"),
-                owner: "bob".to_owned(),
-                skill_name: "review".to_owned(),
-            },
+            skill(
+                "01890f47-6a1c-7cc2-98c1-5f6c1ed8a3a1",
+                "alice",
+                "review",
+                None,
+            ),
+            skill(
+                "01890f47-6a1d-7ad0-8f43-9a4d8c29f002",
+                "bob",
+                "review",
+                None,
+            ),
         ];
         let first = allocate_projection_names(&skills, &BTreeSet::new());
         let second = allocate_projection_names(&skills, &BTreeSet::new());
         assert_eq!(first, second);
         assert!(first.iter().all(|item| item.derived));
-        assert!(first.iter().all(|item| item.harness_name.len() <= 64));
-        assert_ne!(first[0].harness_name, first[1].harness_name);
+        assert_eq!(first[0].harness_name, "alice-review");
+        assert_eq!(first[1].harness_name, "bob-review");
     }
 
     #[test]
     fn unmanaged_name_reserves_the_canonical_invocation() {
-        let skill = ManagedSkillName {
-            resource_id: id("01890f47-6a1c-7cc2-98c1-5f6c1ed8a3a1"),
-            owner: "alice".to_owned(),
-            skill_name: "review".to_owned(),
-        };
+        let skill = skill(
+            "01890f47-6a1c-7cc2-98c1-5f6c1ed8a3a1",
+            "alice",
+            "review",
+            None,
+        );
         let reserved = BTreeSet::from(["review".to_owned()]);
         let assignment = allocate_projection_names(&[skill], &reserved);
         assert!(assignment[0].derived);
-        assert_ne!(assignment[0].harness_name, "review");
+        assert_eq!(assignment[0].harness_name, "alice-review");
+    }
+
+    #[test]
+    fn occupied_owner_alias_uses_lowest_available_numeric_suffix() {
+        let skill = skill(
+            "01890f47-6a1c-7cc2-98c1-5f6c1ed8a3a1",
+            "alice",
+            "review",
+            None,
+        );
+        let reserved = BTreeSet::from(["review".to_owned(), "alice-review".to_owned()]);
+        let assignment = allocate_projection_names(&[skill], &reserved);
+        assert_eq!(assignment[0].harness_name, "alice-review-2");
+    }
+
+    #[test]
+    fn persisted_human_alias_is_sticky_when_lower_suffixes_become_free() {
+        let skill = skill(
+            "01890f47-6a1c-7cc2-98c1-5f6c1ed8a3a1",
+            "alice",
+            "review",
+            Some("alice-review-3"),
+        );
+        let reserved = BTreeSet::from(["review".to_owned()]);
+        let assignment = allocate_projection_names(&[skill], &reserved);
+        assert_eq!(assignment[0].harness_name, "alice-review-3");
+    }
+
+    #[test]
+    fn legacy_uuid_alias_migrates_to_human_alias() {
+        let skill = skill(
+            "01890f47-6a1c-7cc2-98c1-5f6c1ed8a3a1",
+            "alice",
+            "review",
+            Some("denju-alice-review-01890f476a"),
+        );
+        let reserved = BTreeSet::from(["review".to_owned()]);
+        let assignment = allocate_projection_names(&[skill], &reserved);
+        assert_eq!(assignment[0].harness_name, "alice-review");
+    }
+
+    #[test]
+    fn alias_allocator_does_not_steal_another_managed_canonical_name() {
+        let skills = vec![
+            skill(
+                "01890f47-6a1c-7cc2-98c1-5f6c1ed8a3a1",
+                "alice",
+                "review",
+                None,
+            ),
+            skill(
+                "01890f47-6a1d-7ad0-8f43-9a4d8c29f002",
+                "charlie",
+                "alice-review",
+                None,
+            ),
+        ];
+        let reserved = BTreeSet::from(["review".to_owned()]);
+        let assignment = allocate_projection_names(&skills, &reserved);
+        assert_eq!(assignment[0].harness_name, "alice-review-2");
+        assert_eq!(assignment[1].harness_name, "alice-review");
+    }
+
+    #[test]
+    fn human_collision_aliases_remain_valid_agent_skill_names_at_max_length() {
+        let name = "r".repeat(64);
+        let skill = skill(
+            "01890f47-6a1c-7cc2-98c1-5f6c1ed8a3a1",
+            "a-very-long-owner-name",
+            &name,
+            None,
+        );
+        let reserved = BTreeSet::from([name]);
+        let assignment = allocate_projection_names(&[skill], &reserved);
+        assert!(validate_skill_name(&assignment[0].harness_name).is_ok());
+        assert!(assignment[0].harness_name.len() <= 64);
     }
 
     fn source(kind: DesiredSourceKind, source_id: &str, revision: &str) -> DesiredSource {

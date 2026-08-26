@@ -5,9 +5,9 @@ use denju_core::{OperationId, ResourceId, RevisionId};
 use denju_local::{
     DesiredSkillMaterialization, LocalDatabase, LocalPaths, ManagedDesiredKind, ManagedSkillRecord,
     OwnedSkillRecord, SubscriptionRecord, journaled_remove_managed_skill,
-    materialize_skill_snapshot, prepare_harness_roots, preserve_quarantined_managed_skill,
-    reconcile_canonical_links, reconcile_harness_projections, recover_local_lifecycle,
-    recover_materializations, resolve_harness_roots,
+    materialize_skill_snapshot, preserve_quarantined_managed_skill, reconcile_canonical_links,
+    reconcile_harness_projections, recover_local_lifecycle, recover_materializations,
+    resolve_harness_roots,
 };
 use denju_wire::{
     CliErrorCode, SubscribedSkill, SubscriptionContent, SubscriptionMutationKind,
@@ -17,7 +17,7 @@ use denju_wire::{
 use serde::Serialize;
 use uuid::Uuid;
 
-use crate::setup::RuntimeError;
+use crate::setup::{RuntimeError, prepare_current_harness_roots};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SubscribeOutcome {
@@ -172,9 +172,7 @@ pub(crate) async fn sync_once() -> Result<SyncOutcome, RuntimeError> {
         let db = LocalDatabase::open(&paths.state_db)
             .await
             .map_err(local_error)?;
-        let recorded = db.harness_config().await.map_err(local_error)?;
-        let roots = resolve_harness_roots(&paths, recorded.as_ref()).map_err(local_error)?;
-        prepare_harness_roots(&roots).map_err(local_error)?;
+        let roots = prepare_current_harness_roots(&paths, &db).await?;
         recover_local_lifecycle(&paths, &db, &roots)
             .await
             .map_err(local_error)?;

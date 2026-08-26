@@ -13,8 +13,8 @@ use denju_local::{
     InstallCredential, InstallationRecord, JournalState, LocalDatabase, LocalPaths,
     ResolvedHarnessRoots, ServiceInstallMode, ServiceManager, ServiceStatus, WorkspaceStatus,
     WorkspaceWatcher, detect_unmanaged_skills, ensure_local_layout, prepare_harness_roots,
-    recover_local_lifecycle, remove_old_codex_projection, resolve_harness_roots,
-    verify_native_directory_links,
+    reconcile_harness_projections, recover_local_lifecycle, remove_old_codex_projection,
+    resolve_harness_roots, verify_native_directory_links,
 };
 use denju_wire::{
     CliErrorCode, CreateInstallationRequest, RegistryCapabilities, create_installation_request_hash,
@@ -319,12 +319,15 @@ pub async fn doctor() -> Result<DoctorOutcome, RuntimeError> {
     }
 
     let recorded = db.harness_config().await.map_err(local_error)?;
-    let roots = resolve_harness_roots(&paths, recorded.as_ref()).map_err(local_error)?;
-    if !roots.codex_root.is_dir() || !roots.claude_root.is_dir() {
-        prepare_harness_roots(&roots).map_err(local_error)?;
-        db.save_harness_config(harness_config(&roots))
-            .await
-            .map_err(local_error)?;
+    let expected = resolve_harness_roots(&paths, recorded.as_ref()).map_err(local_error)?;
+    let harness_repair_needed = !expected.codex_root.is_dir()
+        || !expected.claude_root.is_dir()
+        || recorded.as_ref().is_none_or(|recorded| {
+            recorded.codex_root != expected.codex_root.display().to_string()
+                || recorded.claude_root != expected.claude_root.display().to_string()
+        });
+    let roots = prepare_current_harness_roots(&paths, &db).await?;
+    if harness_repair_needed {
         repaired.push("repaired harness projection roots".to_owned());
     }
     recover_local_lifecycle(&paths, &db, &roots)
@@ -367,9 +370,7 @@ pub async fn daemon() -> Result<ExitCode, RuntimeError> {
         )
         .recovery("denju setup"));
     }
-    let recorded = db.harness_config().await.map_err(local_error)?;
-    let roots = resolve_harness_roots(&paths, recorded.as_ref()).map_err(local_error)?;
-    prepare_harness_roots(&roots).map_err(local_error)?;
+    let roots = prepare_current_harness_roots(&paths, &db).await?;
 
     fs::write(paths.run.join("daemon.pid"), std::process::id().to_string()).map_err(local_error)?;
     let _guard = RunFileGuard(paths.run.join("daemon.pid"));
@@ -550,12 +551,7 @@ async fn activate_verified_bootstrap(
             "verified setup is missing credential backend",
         )
     })?;
-    let recorded = db.harness_config().await.map_err(local_error)?;
-    let roots = resolve_harness_roots(paths, recorded.as_ref()).map_err(local_error)?;
-    prepare_harness_roots(&roots).map_err(local_error)?;
-    db.save_harness_config(harness_config(&roots))
-        .await
-        .map_err(local_error)?;
+    prepare_current_harness_roots(paths, db).await?;
 
     let executable = std::env::current_exe().map_err(local_error)?;
     let service = ServiceManager::install_and_start(paths, &executable, service_mode())
@@ -563,7 +559,6 @@ async fn activate_verified_bootstrap(
     db.save_service(service.to_record())
         .await
         .map_err(local_error)?;
-    remove_old_codex_projection(recorded.as_ref(), &roots).map_err(local_error)?;
     db.save_installation(InstallationRecord {
         registry_origin: payload.registry_origin.clone(),
         installation_id,
@@ -652,30 +647,24 @@ async fn reconcile_existing(
         CredentialManager::verify_file_permissions(paths).map_err(credential_error)?;
     }
 
-    let recorded = db.harness_config().await.map_err(local_error)?;
-    let roots = resolve_harness_roots(paths, recorded.as_ref()).map_err(local_error)?;
-    prepare_harness_roots(&roots).map_err(local_error)?;
-    db.save_harness_config(harness_config(&roots))
-        .await
-        .map_err(local_error)?;
+    let roots = prepare_current_harness_roots(paths, db).await?;
     let executable = std::env::current_exe().map_err(local_error)?;
     let service = ServiceManager::install_and_start(paths, &executable, service_mode())
         .map_err(service_error)?;
     db.save_service(service.to_record())
         .await
         .map_err(local_error)?;
-    remove_old_codex_projection(recorded.as_ref(), &roots).map_err(local_error)?;
     build_setup_outcome(paths, installation, roots, service, backend)
 }
 
 fn build_setup_outcome(
-    _paths: &LocalPaths,
+    paths: &LocalPaths,
     installation: InstallationRecord,
     roots: ResolvedHarnessRoots,
     service: ServiceStatus,
     backend: CredentialBackend,
 ) -> Result<SetupOutcome, RuntimeError> {
-    let unmanaged = detect_unmanaged_skills(&roots).map_err(local_error)?;
+    let unmanaged = detect_unmanaged_skills(paths, &roots).map_err(local_error)?;
     Ok(SetupOutcome {
         state: "ready",
         registry: installation.registry_origin,
@@ -741,6 +730,30 @@ fn harness_config(roots: &ResolvedHarnessRoots) -> HarnessConfig {
         codex_root: roots.codex_root.display().to_string(),
         claude_root: roots.claude_root.display().to_string(),
     }
+}
+
+pub(crate) async fn prepare_current_harness_roots(
+    paths: &LocalPaths,
+    db: &LocalDatabase,
+) -> Result<ResolvedHarnessRoots, RuntimeError> {
+    let recorded = db.harness_config().await.map_err(local_error)?;
+    let roots = resolve_harness_roots(paths, recorded.as_ref()).map_err(local_error)?;
+
+    // Build and validate the new view before removing a recorded legacy Codex projection.
+    // This keeps root migration fail-closed and makes a binary upgrade enough to move users
+    // from $CODEX_HOME/skills/denju to the shared ~/.agents/skills location.
+    prepare_harness_roots(&roots).map_err(local_error)?;
+    recover_local_lifecycle(paths, db, &roots)
+        .await
+        .map_err(local_error)?;
+    reconcile_harness_projections(paths, db, &roots)
+        .await
+        .map_err(local_error)?;
+    remove_old_codex_projection(recorded.as_ref(), &roots).map_err(local_error)?;
+    db.save_harness_config(harness_config(&roots))
+        .await
+        .map_err(local_error)?;
+    Ok(roots)
 }
 
 fn ensure_same_registry(requested: &str, recorded: &str) -> Result<(), RuntimeError> {
