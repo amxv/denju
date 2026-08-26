@@ -119,6 +119,184 @@ async fn insert_owned_materialized(
 }
 
 #[tokio::test]
+async fn owned_canonical_projection_resolving_into_generations_stays_canonical() {
+    let home = tempdir().unwrap();
+    let paths = LocalPaths::from_home(home.path().to_owned());
+    ensure_local_layout(&paths).unwrap();
+    let roots = ResolvedHarnessRoots {
+        codex_root: home.path().join(".agents/skills"),
+        claude_root: home.path().join(".claude/skills"),
+    };
+    prepare_harness_roots(&roots).unwrap();
+    let db = LocalDatabase::open(&paths.state_db).await.unwrap();
+    insert_owned_materialized(
+        &db,
+        &paths,
+        "01890f47-6a1c-7cc2-98c1-5f6c1ed8a3a1",
+        "amxv",
+        "noop",
+        1,
+    )
+    .await;
+
+    let canonical = paths.skills.join("amxv/noop");
+    let generation = fs::canonicalize(&canonical).unwrap();
+    assert!(generation.starts_with(fs::canonicalize(&paths.generations).unwrap()));
+
+    let first = reconcile_harness_projections(&paths, &db, &roots)
+        .await
+        .unwrap();
+    assert_eq!(first, vec![("@amxv/noop".to_owned(), "noop".to_owned())]);
+    assert_eq!(
+        fs::canonicalize(roots.codex_root.join("noop")).unwrap(),
+        generation
+    );
+
+    let second = reconcile_harness_projections(&paths, &db, &roots)
+        .await
+        .unwrap();
+    assert_eq!(second, first);
+    let owned = db.owned_skills().await.unwrap();
+    assert_eq!(owned[0].harness_name.as_deref(), Some("noop"));
+    assert!(!roots.codex_root.join("amxv-noop").exists());
+    assert!(!roots.claude_root.join("amxv-noop").exists());
+}
+
+#[tokio::test]
+async fn aliased_harness_roots_reconcile_owned_canonical_projection_idempotently() {
+    let home = tempdir().unwrap();
+    let paths = LocalPaths::from_home(home.path().to_owned());
+    ensure_local_layout(&paths).unwrap();
+
+    let shared = home.path().join("shared-agent-skills");
+    fs::create_dir_all(&shared).unwrap();
+    let roots = ResolvedHarnessRoots {
+        codex_root: home.path().join(".agents/skills"),
+        claude_root: home.path().join(".claude/skills"),
+    };
+    fs::create_dir_all(roots.codex_root.parent().unwrap()).unwrap();
+    fs::create_dir_all(roots.claude_root.parent().unwrap()).unwrap();
+    create_native_directory_link(&shared, &roots.codex_root).unwrap();
+    create_native_directory_link(&shared, &roots.claude_root).unwrap();
+    prepare_harness_roots(&roots).unwrap();
+    assert_eq!(
+        fs::canonicalize(&roots.codex_root).unwrap(),
+        fs::canonicalize(&roots.claude_root).unwrap()
+    );
+
+    let db = LocalDatabase::open(&paths.state_db).await.unwrap();
+    insert_owned_materialized(
+        &db,
+        &paths,
+        "01890f47-6a1c-7cc2-98c1-5f6c1ed8a3a1",
+        "amxv",
+        "noop",
+        1,
+    )
+    .await;
+
+    let first = reconcile_harness_projections(&paths, &db, &roots)
+        .await
+        .unwrap();
+    let second = reconcile_harness_projections(&paths, &db, &roots)
+        .await
+        .unwrap();
+    assert_eq!(first, second);
+    assert_eq!(first[0].1, "noop");
+
+    let entries = fs::read_dir(&shared)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect::<Vec<_>>();
+    assert_eq!(entries, vec![std::ffi::OsString::from("noop")]);
+    let canonical = fs::canonicalize(paths.skills.join("amxv/noop")).unwrap();
+    assert_eq!(
+        fs::canonicalize(roots.codex_root.join("noop")).unwrap(),
+        canonical
+    );
+    assert_eq!(
+        fs::canonicalize(roots.claude_root.join("noop")).unwrap(),
+        canonical
+    );
+    assert_eq!(
+        db.owned_skills().await.unwrap()[0].harness_name.as_deref(),
+        Some("noop")
+    );
+}
+
+#[tokio::test]
+async fn owned_unmanaged_collision_is_stable_then_returns_to_canonical_stably() {
+    let home = tempdir().unwrap();
+    let paths = LocalPaths::from_home(home.path().to_owned());
+    ensure_local_layout(&paths).unwrap();
+    let roots = ResolvedHarnessRoots {
+        codex_root: home.path().join(".agents/skills"),
+        claude_root: home.path().join(".claude/skills"),
+    };
+    prepare_harness_roots(&roots).unwrap();
+    let unmanaged = roots.codex_root.join("noop");
+    fs::create_dir_all(&unmanaged).unwrap();
+    fs::write(
+        unmanaged.join("SKILL.md"),
+        skill_document("noop", "local-user"),
+    )
+    .unwrap();
+
+    let db = LocalDatabase::open(&paths.state_db).await.unwrap();
+    insert_owned_materialized(
+        &db,
+        &paths,
+        "01890f47-6a1c-7cc2-98c1-5f6c1ed8a3a1",
+        "amxv",
+        "noop",
+        1,
+    )
+    .await;
+
+    let first = reconcile_harness_projections(&paths, &db, &roots)
+        .await
+        .unwrap();
+    let second = reconcile_harness_projections(&paths, &db, &roots)
+        .await
+        .unwrap();
+    assert_eq!(first, second);
+    assert_eq!(first[0].1, "amxv-noop");
+    assert!(unmanaged.join("SKILL.md").is_file());
+    assert_eq!(
+        db.owned_skills().await.unwrap()[0].harness_name.as_deref(),
+        Some("amxv-noop")
+    );
+    assert!(roots.codex_root.join("amxv-noop").exists());
+    assert!(roots.claude_root.join("amxv-noop").exists());
+
+    fs::remove_dir_all(&unmanaged).unwrap();
+    let canonical = fs::canonicalize(paths.skills.join("amxv/noop")).unwrap();
+    let third = reconcile_harness_projections(&paths, &db, &roots)
+        .await
+        .unwrap();
+    assert_eq!(third[0].1, "noop");
+    assert!(!roots.codex_root.join("amxv-noop").exists());
+    assert!(!roots.claude_root.join("amxv-noop").exists());
+    assert_eq!(
+        fs::canonicalize(roots.codex_root.join("noop")).unwrap(),
+        canonical
+    );
+    assert_eq!(
+        fs::canonicalize(roots.claude_root.join("noop")).unwrap(),
+        canonical
+    );
+
+    let fourth = reconcile_harness_projections(&paths, &db, &roots)
+        .await
+        .unwrap();
+    assert_eq!(fourth, third);
+    assert_eq!(
+        db.owned_skills().await.unwrap()[0].harness_name.as_deref(),
+        Some("noop")
+    );
+}
+
+#[tokio::test]
 async fn same_agent_skills_name_gets_stable_derived_aliases_in_both_harnesses() {
     let home = tempdir().unwrap();
     let paths = LocalPaths::from_home(home.path().to_owned());

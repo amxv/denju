@@ -17,6 +17,34 @@ pub struct ResolvedHarnessRoots {
     pub claude_root: PathBuf,
 }
 
+pub(crate) fn unique_harness_roots(roots: &ResolvedHarnessRoots) -> Vec<PathBuf> {
+    let mut seen = BTreeSet::new();
+    let mut unique = Vec::new();
+    for root in [&roots.codex_root, &roots.claude_root] {
+        let resolved = fs::canonicalize(root).unwrap_or_else(|_| root.clone());
+        if seen.insert(resolved.clone()) {
+            unique.push(resolved);
+        }
+    }
+    unique
+}
+
+pub(crate) fn managed_skill_storage_roots(paths: &LocalPaths) -> [PathBuf; 3] {
+    [
+        fs::canonicalize(&paths.skills).unwrap_or_else(|_| paths.skills.clone()),
+        fs::canonicalize(&paths.generations).unwrap_or_else(|_| paths.generations.clone()),
+        fs::canonicalize(&paths.derived).unwrap_or_else(|_| paths.derived.clone()),
+    ]
+}
+
+pub(crate) fn is_managed_skill_target(managed_roots: &[PathBuf], path: &Path) -> bool {
+    fs::canonicalize(path).is_ok_and(|resolved| {
+        managed_roots
+            .iter()
+            .any(|managed_root| resolved.starts_with(managed_root))
+    })
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct HarnessEnvironment {
     pub claude_config_dir: Option<PathBuf>,
@@ -138,18 +166,16 @@ pub fn detect_unmanaged_skills(
     paths: &LocalPaths,
     roots: &ResolvedHarnessRoots,
 ) -> Result<Vec<PathBuf>, HarnessError> {
-    let managed_roots = [
-        fs::canonicalize(&paths.skills).unwrap_or_else(|_| paths.skills.clone()),
-        fs::canonicalize(&paths.derived).unwrap_or_else(|_| paths.derived.clone()),
-    ];
+    let managed_roots = managed_skill_storage_roots(paths);
     let mut skills = BTreeSet::new();
-    collect_skills(&managed_roots, &roots.codex_root, &mut skills)?;
-    collect_skills(&managed_roots, &roots.claude_root, &mut skills)?;
+    for root in unique_harness_roots(roots) {
+        collect_skills(&managed_roots, &root, &mut skills)?;
+    }
     Ok(skills.into_iter().collect())
 }
 
 fn collect_skills(
-    managed_roots: &[PathBuf; 2],
+    managed_roots: &[PathBuf],
     root: &Path,
     skills: &mut BTreeSet<PathBuf>,
 ) -> Result<(), HarnessError> {
@@ -174,11 +200,7 @@ fn collect_skills(
         // Unix symlink projections are not traversed by WalkDir, but Windows may use a native
         // junction fallback. Canonical-target filtering keeps Denju-owned links out of the
         // unmanaged-name set on both platforms.
-        if fs::canonicalize(skill_dir).is_ok_and(|resolved| {
-            managed_roots
-                .iter()
-                .any(|managed_root| resolved.starts_with(managed_root))
-        }) {
+        if is_managed_skill_target(managed_roots, skill_dir) {
             continue;
         }
         skills.insert(skill_dir.to_owned());
