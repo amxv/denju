@@ -10,9 +10,8 @@ This changelog tracks code and product changes in Denju. It intentionally skips 
 
 ## 0.3.8 — 2026-08-27
 
-- Fixed rename authorization so team-owned skills are resolved through the authenticated actor transaction before the rename is applied.
+- Fixed renaming team-owned skills in cases where Denju could resolve the owner incorrectly.
 - Improved built-in CLI help across Denju's command tree, including useful descriptions and examples for commands such as `rename`.
-- Made the agent verification loop substantially cheaper with scoped package detection and faster local Rust build defaults.
 
 ## 0.3.7 — 2026-08-27
 
@@ -44,17 +43,15 @@ This changelog tracks code and product changes in Denju. It intentionally skips 
 
 ## 0.3.2 — 2026-08-25
 
-- Added repository checks that keep the Rust workspace, npm package, container image, release workflow, and generated lockfiles on one coherent Denju version.
-- Fixed release metadata drift so all distribution surfaces advance together when a version is cut.
+No user-facing changes.
 
 ## 0.3.1 — 2026-08-25
 
-- Fixed npm-managed upgrades on Windows by using the correct installed executable path and release-smoke behavior.
-- Hardened upgrade acceptance coverage so release verification exercises the installed CLI and upgrade path rather than only build-time artifacts.
+- Fixed npm-managed upgrades on Windows so Denju updates the correct installed executable.
 
 ## 0.3.0 — 2026-08-25
 
 - Shipped the first official Rust Denju release with identity and account credentials, public discovery and subscriptions, local skill import, private workspace synchronization, immutable publishing, history, diffing, and the full owned-resource lifecycle.
 - Added private skill sharing, automatic forks, upstream proposals, conflict-aware synchronization, reproducible packs, teams, team-assigned packs, transfers, and social discovery.
-- Added deterministic local generations and harness projections with isolated test homes, plus registry quarantine and validation boundaries for untrusted content.
-- Added the hosted registry/server deployment path, standalone installers, npm distribution, release binaries, checksums, container images, and cross-platform release verification.
+- Added deterministic local generations and skill projections across supported harnesses, plus registry quarantine and validation boundaries for untrusted content.
+- Added the hosted registry/server deployment path, standalone installers, npm distribution, release binaries, checksums, and container images.
