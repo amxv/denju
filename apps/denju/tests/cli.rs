@@ -90,6 +90,43 @@ fn help_is_available_in_text_and_json_modes() {
 }
 
 #[test]
+fn subcommand_help_short_circuits_required_arguments() {
+    for args in [
+        vec!["rename", "--help"],
+        vec!["rename", "-h"],
+        vec!["team", "role", "--help"],
+        vec!["tokens", "revoke", "--help"],
+    ] {
+        let output = denju(&args);
+        assert!(output.status.success(), "args: {args:?}");
+        assert!(stderr(&output).is_empty(), "args: {args:?}");
+        assert!(stdout(&output).contains("Usage:"), "args: {args:?}");
+        assert!(
+            !stdout(&output).contains("required arguments were not provided"),
+            "args: {args:?}"
+        );
+    }
+
+    let rename = denju(&["rename", "--help"]);
+    let rename_help = stdout(&rename);
+    assert!(rename_help.contains("Rename an owned skill or pack"));
+    assert!(rename_help.contains("<LOCATOR> <NEW-NAME>"));
+    assert!(rename_help.contains("denju rename @amxv/new-noop noop"));
+
+    let json = denju(&["--json", "rename", "--help"]);
+    assert!(json.status.success());
+    assert!(stderr(&json).is_empty());
+    let value: Value = serde_json::from_str(stdout(&json).trim()).expect("valid JSON help");
+    assert_eq!(value["result"]["kind"], "help");
+    assert!(
+        value["result"]["text"]
+            .as_str()
+            .expect("help text")
+            .contains("<LOCATOR> <NEW-NAME>")
+    );
+}
+
+#[test]
 fn json_identity_commands_never_prompt_for_human_secrets() {
     for args in [
         vec!["--json", "claim", "@alice"],

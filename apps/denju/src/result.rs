@@ -285,7 +285,7 @@ pub(crate) enum ResultPayload {
         version: &'static str,
     },
     Help {
-        text: &'static str,
+        text: String,
     },
 }
 

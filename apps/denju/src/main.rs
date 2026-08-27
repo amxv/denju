@@ -6,7 +6,6 @@ mod fork_resolve;
 mod fork_sync;
 mod forks;
 mod guidance;
-mod help;
 mod identity;
 mod lifecycle;
 mod list;
@@ -29,14 +28,13 @@ mod workspace_merge;
 
 use std::{ffi::OsString, process::ExitCode};
 
-use clap::Parser;
+use clap::{Parser, error::ErrorKind};
 use commands::{
     Cli, Command, DevicesCommand, ForkCommand, HistoryCommand, IdentityCommand, PackCommand,
     ProposalCommand, TokenCommand,
 };
 use denju_wire::{CliEnvelope, CliError, CliErrorCode};
 use guidance::guidance_output;
-use help::HELP;
 use output::{
     append_deprecation_notice, backup_text, claim_text, devices_text, diff_text, doctor_text,
     history_text, login_text, proposal_detail_text, proposal_text, proposals_text, recovery_text,
@@ -61,16 +59,6 @@ async fn run(args: impl IntoIterator<Item = OsString>) -> ExitCode {
         Err(error) => return present_parse_error(error, requested_json),
     };
 
-    if cli.help {
-        return present(
-            cli.json,
-            CommandOutput {
-                payload: ResultPayload::Help { text: HELP },
-                text: HELP.to_owned(),
-                exit: ExitCode::SUCCESS,
-            },
-        );
-    }
     if cli.version {
         let version = build_version();
         return present(
@@ -845,6 +833,17 @@ fn present(json: bool, output: CommandOutput) -> ExitCode {
 }
 
 fn present_parse_error(error: clap::Error, json: bool) -> ExitCode {
+    if error.kind() == ErrorKind::DisplayHelp {
+        let text = error.to_string();
+        return present(
+            json,
+            CommandOutput {
+                payload: ResultPayload::Help { text: text.clone() },
+                text,
+                exit: ExitCode::SUCCESS,
+            },
+        );
+    }
     let message = concise_clap_message(&error);
     let error =
         CliError::new(CliErrorCode::InvalidArguments, message).with_recovery("denju --help");

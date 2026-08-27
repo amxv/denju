@@ -75,15 +75,17 @@ pub(crate) async fn try_rename_team_skill(
     request: &RenameSkillRequest,
     request_hash: RequestHash,
 ) -> Result<Option<RenameSkillResponse>, ApiError> {
+    let mut tx = registry.begin_actor_tx(authority.user_id).await?;
     let owner_kind = sqlx::query_scalar::<_, String>(
         "SELECT n.kind FROM resources r JOIN namespaces n ON n.id=r.owner_namespace_id \
          WHERE r.id=$1 AND r.kind='skill' AND r.deleted_at IS NULL",
     )
     .bind(resource_id)
-    .fetch_optional(&registry.pool)
+    .fetch_optional(&mut *tx)
     .await
     .map_err(internal_api_error)?
     .ok_or_else(|| ApiError::new(ApiErrorCode::NotFound, "owned skill not found"))?;
+    tx.commit().await.map_err(internal_api_error)?;
     if owner_kind != "team" {
         return Ok(None);
     }
