@@ -25,6 +25,7 @@ Old implementation plans and progress artifacts under `tmp/gg/` are historical c
 - `crates/denju-client/` — HTTPS/SSE/auth/object-transfer client.
 - `crates/denju-registry/` — registry use cases, PostgreSQL, S3, search, outbox.
 - `crates/denju-testkit/` — shared deterministic fixtures only.
+- `scripts/scoped_verify.py` — zero-build-cost package selection for the fast agent verification loop.
 - `xtask/` — canonical developer/CI commands.
 - `Justfile` — thin discoverable aliases only; recipes delegate to Cargo/xtask/Bun and contain no build logic.
 - `packages/npm/` — thin binary installer/launcher; never a source-build fallback.
@@ -41,21 +42,49 @@ Keep dependencies one-way toward `denju-core`; binaries wire product logic rathe
 - Prefer existing repository patterns over introducing parallel abstractions or second command paths.
 - Keep large files under control; use `locguard` while iterating when useful.
 
-## Verification
+## Verification: keep the feedback loop scoped
 
-Use the narrowest useful check while iterating, then run the scoped full check appropriate to the change before handoff:
+Use `just` as the agent-facing command menu. The obvious commands are intentionally the cheap/scoped ones; commands containing `full` are the expensive repository-wide gates.
 
 ```bash
-just
-just check-crate denju-core
-just test denju-core
-cargo check -p <crate>
-cargo test -p <crate>
-cargo clippy -p <crate> --all-targets -- -D warnings
-cargo xtask check
+just                         # show the command menu
+just check denju             # fastest type-check for one package
+just test denju              # all tests for one package
+just test-target denju cli   # one integration-test binary
+just lint denju              # fast Clippy, default targets, no dependency linting
+just lint denju denju-registry
+just verify                  # canonical pre-handoff gate; auto-detect changed packages
+just verify denju denju-registry  # explicit scoped pre-handoff gate
+just full                    # comprehensive CI/release gate
 ```
 
-`cargo xtask check` is the canonical repository-wide gate and CI contract. `just` is only the low-friction command menu; never duplicate Rust build/generation/dev logic in the Justfile. Do not add a Makefile as a second command authority. The docs and npm workspaces are intentionally separate from runtime Rust code.
+### Iteration order
+
+1. While editing, run the **smallest command that can disprove the current change**. For a source edit this is usually `just check <package>`; for a known integration-test surface use `just test-target <package> <test-target>`.
+2. Once the implementation settles, use `just lint <package...>` if Clippy feedback is useful before the final gate. Pass all related packages in **one invocation** rather than running Clippy once per package.
+3. Before handoff, run `just verify` once. It finds Rust packages changed relative to `origin/main`, adds their workspace reverse dependents to the compile/Clippy closure, runs one `--all-targets --no-deps` Clippy invocation, then tests the packages actually changed.
+4. Use `just full` only when the task genuinely needs the whole repository gate: release work, CI/repository automation changes, broad workspace changes, or when `just verify` escalates automatically because a shared Rust input changed.
+
+### Avoid redundant Cargo modes
+
+- Clippy already type-checks. Do **not** routinely run `cargo check -p foo` immediately before `just lint foo` or `just verify foo` just for confidence.
+- Do **not** run `cargo clippy -p a ... && cargo clippy -p b ...`; use `just lint a b` so Cargo sees one graph.
+- Do **not** use `--all-targets` during the inner loop unless the changed code is target-specific. `just verify` owns the all-targets scoped gate.
+- Do **not** run the full workspace gate after every edit. A change in `apps/denju/` should not compile unrelated registry/server surfaces unless dependency direction requires it.
+- Do not `cargo clean` to fix ordinary build issues; it destroys the incremental state that makes subsequent agent loops fast.
+
+For example, a CLI help change plus a small `denju-registry` rename fix should normally look like:
+
+```bash
+just test-target denju cli
+just check denju-registry
+# iterate until behavior is right
+just verify
+```
+
+That replaces the much more expensive pattern of running all `denju` tests, a registry check, and then separate all-target Clippy commands for each package.
+
+`cargo xtask check` remains the canonical repository-wide CI contract behind `just full`. `just` is the discoverable UX and stays thin. Lightweight package selection lives in `scripts/scoped_verify.py` so the fast path does not have to compile xtask; heavyweight generation, deployment, release, and repository-wide automation stays in `xtask`. Do not add a Makefile as a second command authority. The docs and npm workspaces are intentionally separate from runtime Rust code.
 
 For line-count feedback, `locguard` checks the dirty/changed source tree quickly and `locguard scan` checks the complete eligible repository. It supplements, never replaces, the relevant Cargo/xtask/docs checks.
 

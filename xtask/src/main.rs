@@ -68,6 +68,7 @@ fn check_rust() -> Result<(), String> {
             "clippy",
             "--workspace",
             "--all-targets",
+            "--no-deps",
             "--",
             "-D",
             "warnings",

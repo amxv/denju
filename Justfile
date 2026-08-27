@@ -1,11 +1,31 @@
 set default-list
 
-# Full repository handoff gate. Implementation lives in xtask.
-check:
+# Fast type-check for one workspace package while iterating.
+check package:
+    cargo check -p {{ package }}
+
+# Run all tests for one workspace package.
+test package:
+    cargo test -p {{ package }}
+
+# Run one integration-test binary, e.g. `just test-target denju cli`.
+test-target package target:
+    cargo test -p {{ package }} --test {{ target }}
+
+# Fast Clippy for one or more packages; dependencies are compiled but not linted.
+lint +packages:
+    python3 scripts/scoped_verify.py lint {{ packages }}
+
+# Scoped handoff gate. With no args, infer changed packages and reverse dependents.
+verify *packages:
+    python3 scripts/scoped_verify.py verify {{ packages }}
+
+# Comprehensive repository gate used by CI/release. Deliberately expensive.
+full:
     cargo xtask check
 
-# Rust-only repository gate.
-rust:
+# Comprehensive Rust-only workspace gate. Deliberately expensive.
+rust-full:
     cargo xtask rust
 
 # Documentation type-check.
@@ -15,18 +35,6 @@ docs:
 # Start the pinned PostgreSQL + Garage dependencies and registry process.
 dev:
     cargo xtask dev
-
-# Fast compile check for one workspace package.
-check-crate crate:
-    cargo check -p {{ crate }}
-
-# Tests for one workspace package.
-test crate:
-    cargo test -p {{ crate }}
-
-# Clippy for one workspace package.
-clippy crate:
-    cargo clippy -p {{ crate }} --all-targets -- -D warnings
 
 # Run the docs site locally.
 docs-dev:

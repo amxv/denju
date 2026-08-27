@@ -4,10 +4,12 @@ Root `AGENTS.md` applies. `xtask` is the canonical repository automation, genera
 
 ## Invariants
 
-- nontrivial repository automation has one owner here rather than duplicated shell/Just/Make logic
+- heavyweight repository automation has one owner here rather than duplicated shell/Just/Make logic
 - `Justfile` may expose thin aliases only
 - `cargo xtask check` remains the comprehensive deterministic handoff/CI gate
 - `cargo xtask dev` owns the repeatable lifecycle around the pinned Compose dependencies and registry process
+
+The lightweight `scripts/scoped_verify.py` selector is intentionally outside xtask so `just lint` / `just verify` do not have to compile xtask's registry/AWS/SQLx dependencies before they can choose a scope.
 
 Keep runtime product logic out of xtask.
 

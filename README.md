@@ -136,16 +136,21 @@ Start with:
 
 ## Development
 
-Denju is a Rust workspace. `cargo xtask` is the repository automation and CI authority; `just` provides discoverable shortcuts.
+Denju is a Rust workspace. `just` is the discoverable developer/agent command menu. Scoped verification uses a zero-build-cost selector; `cargo xtask` owns the heavier repository-wide automation behind CI, release, generation, and development services.
 
 ```bash
 just
-just check
+just check denju
+just test-target denju cli
+just verify
+just full
 just dev
 cargo xtask check
 cargo build --workspace
 bun run docs:dev
 ```
+
+Use `just check` / `test-target` while iterating, `just verify` before a normal handoff, and reserve `just full` / `cargo xtask check` for the comprehensive CI/release gate.
 
 Repository shape:
 

@@ -16,18 +16,20 @@ Install the JavaScript workspaces without running the npm package's release-bina
 bun install --ignore-scripts
 ```
 
-Use crate-scoped checks while iterating and the root gate before handoff:
+Use the smallest useful check while iterating and the affected-package gate before a normal handoff:
 
 ```bash
 just
-just check-crate denju-core
+just check denju-core
 just test denju-core
+just lint denju-core
+just verify
 cargo check -p denju-core
 cargo test -p denju-core
-cargo xtask check
+just full
 ```
 
-`cargo xtask ...` remains the canonical automation/CI interface. Just recipes are thin aliases only; do not move build, generation, migration, or environment logic into the Justfile, and do not add a Makefile as a second command authority.
+`just verify` auto-detects changed Rust packages, includes workspace reverse dependents in the compile/lint closure, and avoids a redundant standalone `cargo check` before Clippy. Its lightweight selector is `scripts/scoped_verify.py`, which intentionally has no Rust build startup cost. `cargo xtask check` remains the comprehensive CI/release interface behind `just full`. Just recipes stay thin; do not move build, generation, migration, or environment logic into the Justfile, and do not add a Makefile as a second command authority.
 
 Build all Rust packages with:
 
