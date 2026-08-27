@@ -1,6 +1,6 @@
 ---
 title: Self-hosting quickstart
-description: Run a private Denju registry from the published server image, with either the complete reference Compose stack or your own PostgreSQL and S3 services.
+description: Run a private Denju registry from the published server image, using either bundled or existing PostgreSQL and S3-compatible storage.
 order: 20
 category: Self-host
 summary: "Pull the same server image used by the official registry, bring up durable storage, and point Denju clients at your own origin."
@@ -20,10 +20,9 @@ The server needs two durable services behind it:
 1. PostgreSQL for identities, resources, relationships, current refs, and registry state.
 2. S3-compatible object storage for immutable skill content and release snapshots.
 
-There are two normal deployment paths:
+Self-hosting has one deployment model: **run the published Denju server image**. The only choice is where PostgreSQL and S3-compatible storage come from.
 
-- **Complete reference stack:** use `deploy/compose.yml` to run the published Denju image with PostgreSQL 18 and Garage. This is the easiest way to try or operate a small standalone registry.
-- **Bring your own infrastructure:** run the published image directly on your container platform and point it at managed PostgreSQL and S3-compatible storage. See [Operations](/docs/self-host/operations#run-the-published-image-directly).
+If you want the reference stack to provide those dependencies, `deploy/compose.yml` runs the published image alongside PostgreSQL 18 and Garage. If you already have PostgreSQL and S3-compatible storage, run the same image on your container platform and point it at those services. See [Operations](/docs/self-host/operations#use-existing-postgresql-and-object-storage).
 
 ## Requirements for the reference stack
 

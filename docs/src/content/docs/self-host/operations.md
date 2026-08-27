@@ -111,15 +111,15 @@ DENJU_DATABASE_MIGRATION_URL='postgresql://...' \
   denju-server admin revoke <operator-id>
 ```
 
-## Run the published image directly
+## Use existing PostgreSQL and object storage
 
-Every Denju release publishes the same multi-architecture server image used by the official registry:
+Self-hosting always runs the published Denju server image. If you already have PostgreSQL and S3-compatible storage, use that same image without the bundled Compose dependencies:
 
 ```text
 ghcr.io/amxv/denju-server:vX.Y.Z
 ```
 
-For production, prefer an exact release tag rather than `latest`. If PostgreSQL and S3-compatible storage are already provisioned, no Compose stack or source checkout is required. Pull the image, apply migrations with migration-owner authority, then start the ordinary runtime without that privileged database credential:
+For production, prefer an exact release tag rather than `latest`. No source checkout is required. Pull the image, apply migrations with migration-owner authority, then start the ordinary runtime against your existing services without that privileged database credential:
 
 ```bash
 IMAGE=ghcr.io/amxv/denju-server:vX.Y.Z

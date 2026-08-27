@@ -109,6 +109,6 @@ On a configured machine, Denju keeps one managed copy of each installed skill an
 
 The public registry is the default, but Denju is not tied to it. An organization can run the same open-source `denju-server` against its own PostgreSQL database and S3-compatible object store.
 
-The reference Docker Compose stack includes PostgreSQL and Garage. Managed PostgreSQL and S3 services work through the same server contract.
+Self-hosting always runs the published Denju server image. The reference Docker Compose stack simply bundles PostgreSQL and Garage around it; managed PostgreSQL and S3 services use the same server image and contract.
 
 Next: [Install Denju](/docs/start/install) or jump straight to [Self-hosting](/docs/self-host/quickstart).

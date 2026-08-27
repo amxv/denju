@@ -119,7 +119,7 @@ Each release publishes the same production `denju-server` image at `ghcr.io/amxv
 denju setup --registry https://denju.example.com
 ```
 
-The reference Docker Compose stack pulls that published image alongside PostgreSQL and Garage; it does not require compiling the Rust server. You can also run the image directly with managed PostgreSQL and S3-compatible services.
+Self-hosting always runs that published image. The reference Docker Compose stack simply bundles PostgreSQL and Garage around it; if you already have PostgreSQL and S3-compatible storage, point the same image at those services.
 
 ## Documentation
 
