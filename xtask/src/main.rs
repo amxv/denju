@@ -25,7 +25,7 @@ fn main() -> ExitCode {
     let result = match command.as_str() {
         "check" => check_all(),
         "rust" => check_rust(),
-        "docs" => run("bun", &["run", "--cwd", "docs", "test"]),
+        "docs" => run("bun", &["run", "docs:check"]),
         "contracts" => match std::env::args().nth(2).as_deref() {
             None => repository_checks::check(&repo_root()),
             Some("--update") => repository_checks::update_contract_artifacts(&repo_root()),

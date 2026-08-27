@@ -99,10 +99,10 @@ The load harness is an explicit integration/performance command rather than part
 ## Documentation
 
 ```bash
-cargo xtask docs        # fast docs-specific tests; no Astro check/build
-bun run docs:check      # Astro diagnostics + docs tests
+cargo xtask docs        # Astro diagnostics + docs-specific tests; no production build
+bun run docs:check      # same docs validation path
 bun run docs:build      # production site build
 bun run docs:dev        # local docs server
 ```
 
-`cargo xtask docs` is intentionally the fast iteration command. The comprehensive repository gate still runs Astro diagnostics and the production build. The docs site remains under `docs/` and preserves both normal HTML pages and raw `.md` routes for agents and tools.
+`cargo xtask docs` intentionally runs Astro diagnostics and docs-specific tests without building the production site. The comprehensive repository gate also runs the production build. The docs site remains under `docs/` and preserves both normal HTML pages and raw `.md` routes for agents and tools.
