@@ -1,23 +1,35 @@
 ---
 title: Self-hosting quickstart
-description: Bring up a complete private Denju registry with Docker Compose, PostgreSQL, Garage object storage, and the production server container.
+description: Run a private Denju registry from the published server image, with either the complete reference Compose stack or your own PostgreSQL and S3 services.
 order: 20
 category: Self-host
-summary: "Start the reference stack, verify it, then bind Denju clients to your own registry origin."
+summary: "Pull the same server image used by the official registry, bring up durable storage, and point Denju clients at your own origin."
 ---
 
-Self-hosted Denju runs the **same `denju-server` product** as the official registry. You need two durable services behind it:
+Every Denju release publishes the production server as a multi-architecture container image:
+
+```text
+ghcr.io/amxv/denju-server:vX.Y.Z
+ghcr.io/amxv/denju-server:latest
+```
+
+That is the same `denju-server` product used by the official registry. **You do not need a Rust toolchain or a local server build to self-host Denju.**
+
+The server needs two durable services behind it:
 
 1. PostgreSQL for identities, resources, relationships, current refs, and registry state.
 2. S3-compatible object storage for immutable skill content and release snapshots.
 
-The reference Docker Compose stack includes PostgreSQL 18 and Garage, a lightweight S3-compatible service.
+There are two normal deployment paths:
 
-## Requirements
+- **Complete reference stack:** use `deploy/compose.yml` to run the published Denju image with PostgreSQL 18 and Garage. This is the easiest way to try or operate a small standalone registry.
+- **Bring your own infrastructure:** run the published image directly on your container platform and point it at managed PostgreSQL and S3-compatible storage. See [Operations](/docs/self-host/operations#run-the-published-image-directly).
+
+## Requirements for the reference stack
 
 - Docker with Compose support.
-- A Denju repository checkout, or at minimum the `deploy/` files from the release/source tree.
-- For a registry used by remote clients: an HTTPS hostname for the registry and an HTTPS object-store origin reachable by those clients.
+- The `deploy/` directory from a Denju source checkout.
+- For remote clients: an HTTPS hostname for the registry and an HTTPS object-store origin reachable by those clients.
 
 For a same-machine trial, the bundled loopback defaults work without TLS.
 
@@ -28,6 +40,8 @@ From the repository root:
 ```bash
 cp deploy/self-host.env.example deploy/self-host.env
 ```
+
+The example uses `ghcr.io/amxv/denju-server:latest`, which is convenient for a trial. For a production deployment, change `DENJU_SERVER_IMAGE` to an exact release such as `ghcr.io/amxv/denju-server:vX.Y.Z` so upgrades happen only when you choose them.
 
 Generate strong values for every blank secret. This snippet prints compatible values you can paste into the file:
 
@@ -56,16 +70,21 @@ DENJU_S3_PORT=3900
 DENJU_S3_PRESIGN_ENDPOINT=http://127.0.0.1:3900
 ```
 
-## 2. Start the stack
+## 2. Pull and start the stack
 
 ```bash
+docker compose \
+  --env-file deploy/self-host.env \
+  -f deploy/compose.yml \
+  pull
+
 docker compose \
   --env-file deploy/self-host.env \
   -f deploy/compose.yml \
   up -d
 ```
 
-The Compose stack starts PostgreSQL and Garage, runs database migrations once, then starts the ordinary Denju server.
+The Compose stack pulls the published Denju server image, starts PostgreSQL and Garage, runs database migrations once with the same image, then starts the registry. It does not compile Denju from source.
 
 Check the services:
 
@@ -137,4 +156,21 @@ DENJU_S3_PRESIGN_ENDPOINT=https://objects.example.com
 
 `DENJU_S3_PRESIGN_ENDPOINT` matters because Denju gives clients short-lived signed upload/download URLs. That origin must be reachable by the clients, not only by the server container.
 
-Next: [Configuration](/docs/self-host/configuration) covers managed PostgreSQL/S3 and every important server setting. [Operations](/docs/self-host/operations) covers migrations, upgrades, health, recovery, and operator quarantine.
+## Upgrade the reference stack
+
+For a production registry, change `DENJU_SERVER_IMAGE` to the next exact release, then pull and recreate the migration/server services:
+
+```bash
+docker compose \
+  --env-file deploy/self-host.env \
+  -f deploy/compose.yml \
+  pull migrate server
+docker compose \
+  --env-file deploy/self-host.env \
+  -f deploy/compose.yml \
+  up -d
+```
+
+The one-shot migration service must succeed before the new server becomes ready. Keeping an exact image tag makes rollback and change control straightforward.
+
+Next: [Configuration](/docs/self-host/configuration) covers managed PostgreSQL/S3 and every important server setting. [Operations](/docs/self-host/operations) covers running the image directly, migrations, health, recovery, and operator quarantine.

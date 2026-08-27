@@ -6,7 +6,7 @@ category: Self-host
 summary: "The server is deployment-neutral: provide one public origin, PostgreSQL authority, and an S3-compatible object store."
 ---
 
-The Denju registry is one containerized HTTP service with external durable state. You can run the reference Compose dependencies or replace either dependency with managed infrastructure.
+The Denju registry is one containerized HTTP service with external durable state. Each release publishes a multi-architecture `ghcr.io/amxv/denju-server:vX.Y.Z` image, so self-hosting does not require compiling the Rust server yourself. You can run the reference Compose dependencies or replace either dependency with managed infrastructure.
 
 ## Public registry origin
 

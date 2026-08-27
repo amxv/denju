@@ -111,9 +111,38 @@ DENJU_DATABASE_MIGRATION_URL='postgresql://...' \
   denju-server admin revoke <operator-id>
 ```
 
+## Run the published image directly
+
+Every Denju release publishes the same multi-architecture server image used by the official registry:
+
+```text
+ghcr.io/amxv/denju-server:vX.Y.Z
+```
+
+For production, prefer an exact release tag rather than `latest`. If PostgreSQL and S3-compatible storage are already provisioned, no Compose stack or source checkout is required. Pull the image, apply migrations with migration-owner authority, then start the ordinary runtime without that privileged database credential:
+
+```bash
+IMAGE=ghcr.io/amxv/denju-server:vX.Y.Z
+docker pull "$IMAGE"
+
+docker run --rm \
+  -e DENJU_DATABASE_MIGRATION_URL='postgresql://...' \
+  "$IMAGE" migrate
+
+docker run -d --name denju-server --restart unless-stopped \
+  --env-file denju-server.env \
+  -e PORT=80 \
+  -p 127.0.0.1:7788:80 \
+  "$IMAGE" serve
+```
+
+`denju-server.env` contains the restricted runtime settings described in [Configuration](/docs/self-host/configuration): public origin, app/worker/direct PostgreSQL URLs, S3 settings, recovery token, and any deployment limits. Do not put `DENJU_DATABASE_MIGRATION_URL` in the long-lived runtime environment.
+
+On Kubernetes, Nomad, ECS, Fly.io, Vercel, or another container platform, use the same image and environment contract. The platform does not change Denju's registry semantics.
+
 ## Deploy on a container platform
 
-Denju does not require a provider-specific runtime implementation. The official service runs the ordinary container on Vercel; the same image can run anywhere that can provide an HTTP container plus PostgreSQL and S3-compatible storage.
+Denju does not require a provider-specific runtime implementation. The official service runs the published container on Vercel; the same image can run anywhere that can provide an HTTP container plus PostgreSQL and S3-compatible storage.
 
 For a new deployment:
 

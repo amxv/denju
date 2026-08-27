@@ -27,6 +27,29 @@ cargo xtask fuzz
 
 `Justfile` is only a discoverable alias layer. It should not become a second implementation of build, migration, release, or environment logic.
 
+## Automated hosted-registry deployment
+
+A tagged release always builds and publishes the multi-architecture `denju-server` image. Hosted Vercel deployment is optional: if no Vercel credentials are configured, the release workflow skips that deployment path so forks are not coupled to the upstream project.
+
+To make a fork deploy its registry from the exact release image, configure these GitHub Actions **secrets**:
+
+```text
+VERCEL_TOKEN
+VERCEL_ORG_ID
+VERCEL_PROJECT_ID
+DENJU_DATABASE_MIGRATION_URL
+```
+
+Also configure this repository **variable** with the public HTTPS origin of that registry:
+
+```text
+VERCEL_REGISTRY_ORIGIN=https://denju.example.com
+```
+
+`DENJU_DATABASE_MIGRATION_URL` is the privileged direct PostgreSQL owner connection used only by release automation. Do not add it to the long-lived Vercel runtime environment; the deployed server should continue using the restricted app, worker, and direct-session roles documented under [Self-host configuration](/docs/self-host/configuration).
+
+With those settings present, release automation publishes the exact tagged image, verifies it can be pulled anonymously, applies migrations with that image, deploys Vercel from a tiny `FROM <exact-tag>` context, confirms the public origin points at the newly created deployment, and only then publishes the GitHub/npm release.
+
 ## Run the development registry
 
 ```bash

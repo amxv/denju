@@ -113,13 +113,13 @@ Denju does not require Git branches, semantic versioning, a new skill format, or
 
 The official registry is the default, but Denju is open source and self-hostable.
 
-Run the same `denju-server` with PostgreSQL and S3-compatible object storage, then set up clients against your registry:
+Each release publishes the same production `denju-server` image at `ghcr.io/amxv/denju-server:vX.Y.Z`. Run it with PostgreSQL and S3-compatible object storage, then set up clients against your registry:
 
 ```bash
 denju setup --registry https://denju.example.com
 ```
 
-The repository includes a Docker Compose deployment with PostgreSQL and Garage, or you can use managed PostgreSQL and S3-compatible services.
+The reference Docker Compose stack pulls that published image alongside PostgreSQL and Garage; it does not require compiling the Rust server. You can also run the image directly with managed PostgreSQL and S3-compatible services.
 
 ## Documentation
 

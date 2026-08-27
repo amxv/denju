@@ -55,9 +55,6 @@ services:
 
   migrate:
     image: ${DENJU_SERVER_IMAGE:-ghcr.io/amxv/denju-server:latest}
-    build:
-      context: ..
-      dockerfile: Dockerfile.vercel
     command: ["migrate"]
     environment:
       DENJU_DATABASE_MIGRATION_URL: postgresql://denju:${DENJU_DB_OWNER_PASSWORD:?set DENJU_DB_OWNER_PASSWORD}@postgres:5432/denju
@@ -68,9 +65,6 @@ services:
 
   server:
     image: ${DENJU_SERVER_IMAGE:-ghcr.io/amxv/denju-server:latest}
-    build:
-      context: ..
-      dockerfile: Dockerfile.vercel
     environment:
       <<: *denju-server-environment
       PORT: "80"

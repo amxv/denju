@@ -228,14 +228,102 @@ jobs:
             "${REGISTRY}/${IMAGE_NAME}:${{ github.ref_name }}-amd64" \
             "${REGISTRY}/${IMAGE_NAME}:${{ github.ref_name }}-arm64"
           docker buildx imagetools inspect "${REGISTRY}/${IMAGE_NAME}:${{ github.ref_name }}"
-      - name: Publish GitHub release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: dist/*
+      - name: Verify anonymous server image pull
+        shell: bash
+        run: |
+          set -euo pipefail
+          ANON_DOCKER_CONFIG="$(mktemp -d)"
+          trap 'rm -rf "$ANON_DOCKER_CONFIG"' EXIT
+          for attempt in 1 2 3 4 5 6; do
+            if DOCKER_CONFIG="$ANON_DOCKER_CONFIG" docker pull \
+              "${REGISTRY}/${IMAGE_NAME}:${{ github.ref_name }}"; then
+              exit 0
+            fi
+            if [[ "$attempt" == 6 ]]; then
+              echo "published server image is not anonymously pullable" >&2
+              exit 1
+            fi
+            sleep 2
+          done
       - uses: actions/setup-node@v7
         with:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"
+      - name: Deploy registry from release image
+        shell: bash
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          VERCEL_REGISTRY_ORIGIN: ${{ vars.VERCEL_REGISTRY_ORIGIN }}
+          DENJU_DATABASE_MIGRATION_URL: ${{ secrets.DENJU_DATABASE_MIGRATION_URL }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "$VERCEL_TOKEN" && -z "$VERCEL_ORG_ID" && -z "$VERCEL_PROJECT_ID" ]]; then
+            echo "Vercel deployment credentials are not configured; skipping registry deployment."
+            exit 0
+          fi
+          test -n "$VERCEL_TOKEN"
+          test -n "$VERCEL_ORG_ID"
+          test -n "$VERCEL_PROJECT_ID"
+          test -n "$VERCEL_REGISTRY_ORIGIN"
+          test -n "$DENJU_DATABASE_MIGRATION_URL"
+
+          docker run --rm \
+            -e DENJU_DATABASE_MIGRATION_URL \
+            "${REGISTRY}/${IMAGE_NAME}:${{ github.ref_name }}" migrate
+
+          CONTEXT="$(mktemp -d)"
+          trap 'rm -rf "$CONTEXT"' EXIT
+          mkdir -p "$CONTEXT/.vercel"
+          cp deploy/vercel.registry.json "$CONTEXT/vercel.json"
+          printf '%s\n' "FROM ${REGISTRY}/${IMAGE_NAME}:${{ github.ref_name }}" > "$CONTEXT/Dockerfile"
+          printf '{"orgId":"%s","projectId":"%s"}\n' \
+            "$VERCEL_ORG_ID" "$VERCEL_PROJECT_ID" > "$CONTEXT/.vercel/project.json"
+
+          DEPLOYMENT_URL="$(npx --yes vercel@50.34.3 deploy "$CONTEXT" \
+            --prod \
+            --yes \
+            --scope "$VERCEL_ORG_ID" \
+            --token "$VERCEL_TOKEN")"
+
+          DEPLOYMENT_JSON="$(npx --yes vercel@50.34.3 inspect "$DEPLOYMENT_URL" \
+            --wait \
+            --format=json \
+            --scope "$VERCEL_ORG_ID" \
+            --token "$VERCEL_TOKEN")"
+          DEPLOYMENT_ID="$(node -p 'JSON.parse(process.argv[1]).id' "$DEPLOYMENT_JSON")"
+          REGISTRY_ALIAS="${VERCEL_REGISTRY_ORIGIN#*://}"
+
+          for attempt in 1 2 3 4 5 6; do
+            ORIGIN_JSON="$(npx --yes vercel@50.34.3 inspect "$REGISTRY_ALIAS" \
+              --format=json \
+              --scope "$VERCEL_ORG_ID" \
+              --token "$VERCEL_TOKEN" 2>/dev/null || true)"
+            ORIGIN_DEPLOYMENT_ID=""
+            if [[ -n "$ORIGIN_JSON" ]]; then
+              ORIGIN_DEPLOYMENT_ID="$(node -p 'JSON.parse(process.argv[1]).id' "$ORIGIN_JSON")"
+            fi
+            if [[ "$ORIGIN_DEPLOYMENT_ID" == "$DEPLOYMENT_ID" ]]; then
+              break
+            fi
+            if [[ "$attempt" == 6 ]]; then
+              echo "registry origin did not resolve to the new production deployment" >&2
+              exit 1
+            fi
+            sleep 2
+          done
+
+          curl --fail --silent --show-error --retry 6 --retry-delay 2 \
+            "${VERCEL_REGISTRY_ORIGIN%/}/health/live" >/dev/null
+          curl --fail --silent --show-error --retry 6 --retry-delay 2 \
+            "${VERCEL_REGISTRY_ORIGIN%/}/health/ready" >/dev/null
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
       - name: Publish npm installer
         working-directory: packages/npm
         env:

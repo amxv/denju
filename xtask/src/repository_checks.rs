@@ -17,6 +17,7 @@ pub(crate) fn check(root: &Path) -> Result<(), String> {
     check_sqlx_offline_policy(root)?;
     check_openapi_contract(root)?;
     check_release_version_coherence(root)?;
+    check_self_host_release_image_contract(root)?;
     check_automation_authority(root)?;
     println!("repository contracts: passed");
     Ok(())
@@ -444,6 +445,83 @@ fn check_release_version_coherence(root: &Path) -> Result<(), String> {
             "release version drift: .github/workflows/release.yml must contain `{expected_default}`"
         ));
     }
+    check_registry_release_deploy(&release_workflow)?;
+    Ok(())
+}
+
+fn check_registry_release_deploy(workflow: &str) -> Result<(), String> {
+    for required in [
+        "VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}",
+        "VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}",
+        "VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}",
+        "VERCEL_REGISTRY_ORIGIN: ${{ vars.VERCEL_REGISTRY_ORIGIN }}",
+        "DENJU_DATABASE_MIGRATION_URL: ${{ secrets.DENJU_DATABASE_MIGRATION_URL }}",
+        r#"cp deploy/vercel.registry.json "$CONTEXT/vercel.json""#,
+        "FROM ${REGISTRY}/${IMAGE_NAME}:${{ github.ref_name }}",
+        "- name: Verify anonymous server image pull",
+        r#"DOCKER_CONFIG="$ANON_DOCKER_CONFIG" docker pull"#,
+        r#""${REGISTRY}/${IMAGE_NAME}:${{ github.ref_name }}" migrate"#,
+        r#"ORIGIN_DEPLOYMENT_ID="$(node -p 'JSON.parse(process.argv[1]).id' "$ORIGIN_JSON")""#,
+        r#"[[ "$ORIGIN_DEPLOYMENT_ID" == "$DEPLOYMENT_ID" ]]"#,
+        r#""${VERCEL_REGISTRY_ORIGIN%/}/health/ready""#,
+    ] {
+        if !workflow.contains(required) {
+            return Err(format!(
+                "release workflow is missing registry deployment contract: `{required}`"
+            ));
+        }
+    }
+
+    for forbidden in ["VERCEL_ORG_ID: team_", "VERCEL_PROJECT_ID: prj_"] {
+        if workflow.contains(forbidden) {
+            return Err(format!(
+                "release workflow must not hardcode Vercel deployment identity: `{forbidden}`"
+            ));
+        }
+    }
+
+    let image_publish = workflow
+        .find("- name: Publish multi-architecture server manifest")
+        .ok_or_else(|| "release workflow is missing server image publication".to_owned())?;
+    let anonymous_pull = workflow
+        .find("- name: Verify anonymous server image pull")
+        .ok_or_else(|| {
+            "release workflow is missing anonymous server image verification".to_owned()
+        })?;
+    let registry_deploy = workflow
+        .find("- name: Deploy registry from release image")
+        .ok_or_else(|| "release workflow is missing registry deployment".to_owned())?;
+    let github_release = workflow
+        .find("- name: Publish GitHub release")
+        .ok_or_else(|| "release workflow is missing GitHub release publication".to_owned())?;
+    if !(image_publish < anonymous_pull
+        && anonymous_pull < registry_deploy
+        && registry_deploy < github_release)
+    {
+        return Err(
+            "release workflow must publish the server image, verify anonymous pulls, deploy the configured registry, then publish the GitHub release"
+                .to_owned(),
+        );
+    }
+    Ok(())
+}
+
+fn check_self_host_release_image_contract(root: &Path) -> Result<(), String> {
+    let compose = fs::read_to_string(root.join("deploy/compose.yml"))
+        .map_err(|error| format!("failed to read deploy/compose.yml: {error}"))?;
+    let image = "image: ${DENJU_SERVER_IMAGE:-ghcr.io/amxv/denju-server:latest}";
+    if compose.matches(image).count() != 2 {
+        return Err(
+            "deploy/compose.yml must run both migrate and server from the configurable published Denju image"
+                .to_owned(),
+        );
+    }
+    if compose.lines().any(|line| line.trim() == "build:") {
+        return Err(
+            "deploy/compose.yml must consume published server images; source builds belong to the development deployment surface"
+                .to_owned(),
+        );
+    }
     Ok(())
 }
 
@@ -547,6 +625,44 @@ mod tests {
                 ("post".to_owned(), "/v1/other".to_owned()),
             ])
         );
+    }
+
+    #[test]
+    fn registry_deploy_requires_secrets_and_exact_release_image_before_publication() {
+        let workflow = r#"
+- name: Publish multi-architecture server manifest
+- name: Verify anonymous server image pull
+  run: |
+    DOCKER_CONFIG="$ANON_DOCKER_CONFIG" docker pull "${REGISTRY}/${IMAGE_NAME}:${{ github.ref_name }}"
+- name: Deploy registry from release image
+  env:
+    VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+    VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+    VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+    VERCEL_REGISTRY_ORIGIN: ${{ vars.VERCEL_REGISTRY_ORIGIN }}
+    DENJU_DATABASE_MIGRATION_URL: ${{ secrets.DENJU_DATABASE_MIGRATION_URL }}
+  run: |
+    "${REGISTRY}/${IMAGE_NAME}:${{ github.ref_name }}" migrate
+    cp deploy/vercel.registry.json "$CONTEXT/vercel.json"
+    printf '%s\n' "FROM ${REGISTRY}/${IMAGE_NAME}:${{ github.ref_name }}"
+    ORIGIN_DEPLOYMENT_ID="$(node -p 'JSON.parse(process.argv[1]).id' "$ORIGIN_JSON")"
+    [[ "$ORIGIN_DEPLOYMENT_ID" == "$DEPLOYMENT_ID" ]]
+    curl "${VERCEL_REGISTRY_ORIGIN%/}/health/ready"
+- name: Publish GitHub release
+"#;
+        check_registry_release_deploy(workflow).unwrap();
+
+        let wrong_order = workflow.replace(
+            "- name: Publish multi-architecture server manifest\n- name: Verify anonymous server image pull",
+            "- name: Deploy registry from release image\n- name: Verify anonymous server image pull",
+        );
+        assert!(check_registry_release_deploy(&wrong_order).is_err());
+
+        let hardcoded = workflow.replace(
+            "VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}",
+            "VERCEL_ORG_ID: team_example",
+        );
+        assert!(check_registry_release_deploy(&hardcoded).is_err());
     }
 
     #[test]
