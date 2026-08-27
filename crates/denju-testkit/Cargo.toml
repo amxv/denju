@@ -7,9 +7,5 @@ license.workspace = true
 repository.workspace = true
 publish = false
 
-[dependencies]
-denju-core = { path = "../denju-core" }
-denju-wire = { path = "../denju-wire" }
-
 [lints]
 workspace = true

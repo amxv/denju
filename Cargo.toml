@@ -61,3 +61,21 @@ unsafe_code = "forbid"
 dbg_macro = "deny"
 todo = "deny"
 unimplemented = "deny"
+
+# Keep local edit/build/test loops fast while retaining useful file/line
+# backtraces. Dependencies do not need debug info for normal development.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
+[profile.test]
+debug = "line-tables-only"
+
+[profile.test.package."*"]
+debug = false
+
+[profile.debugging]
+inherits = "dev"
+debug = true

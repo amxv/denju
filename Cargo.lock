@@ -1081,7 +1081,6 @@ dependencies = [
  "serde_json",
  "thiserror",
  "url",
- "uuid",
 ]
 
 [[package]]
@@ -1120,7 +1119,6 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
- "url",
  "uuid",
  "walkdir",
  "windows-native-keyring-store",
@@ -1163,7 +1161,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
- "sqlx",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -1183,10 +1180,6 @@ dependencies = [
 [[package]]
 name = "denju-testkit"
 version = "0.3.7"
-dependencies = [
- "denju-core",
- "denju-wire",
-]
 
 [[package]]
 name = "denju-wire"
