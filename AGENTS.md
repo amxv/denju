@@ -95,3 +95,7 @@ For line-count feedback, `locguard` checks the dirty/changed source tree quickly
 - **Tests and live acceptance fixtures must use `DENJU_TEST_HOME` pointing at a dedicated disposable directory containing `.denju-test-home-v1`.** Test mode intentionally ignores inherited `CODEX_HOME` and `CLAUDE_CONFIG_DIR`, forces file credentials, and never starts the real background service. Do not simulate isolation by changing only `HOME`.
 - No test/e2e/acceptance run may read, write, migrate, remove, or project into the developer's real harness homes. On this machine the custom homes are `~/.gg/codex/` and `~/.gg/claude/`; the standard homes `~/.codex/`, `~/.claude/`, and `~/.agents/` are equally protected. All harness fixtures must remain beneath `DENJU_TEST_HOME`.
 - Preserve the single Rust implementation path on `main`; no Go or Agentbox fallback.
+
+### Docs deployment
+
+The Docs GitHub Actions workflow deploys production only for the watched site paths; Vercel Git auto-deployments and `ignoreCommand` stay disabled. Keep the project-scoped `VERCEL_TOKEN` Actions secret and ID variables configured. Check Astro locally; builds run in CI.

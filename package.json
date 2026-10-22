@@ -7,7 +7,7 @@
     "packages/npm"
   ],
   "scripts": {
-    "check": "bun run npm:check && bun run docs:check && bun run docs:build",
+    "check": "bun run npm:check && bun run docs:check",
     "docs:dev": "bun run --cwd docs dev",
     "docs:check": "bun run --cwd docs check",
     "docs:build": "bun run --cwd docs build",

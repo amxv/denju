@@ -4,5 +4,7 @@
   "installCommand": "bun install --frozen-lockfile --filter @denju/docs",
   "buildCommand": "bun run docs:build",
   "outputDirectory": "docs/dist",
-  "ignoreCommand": "node docs/scripts/should-build.mjs"
+  "git": {
+    "deploymentEnabled": false
+  }
 }

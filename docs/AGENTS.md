@@ -28,15 +28,14 @@ Keep branding, navigation, accents, and footer content in `src/data/docs.ts`. Av
 
 ## Validation and deployment
 
-Run Astro validation serially:
+Run Astro validation:
 
 ```bash
 bun run docs:check
-bun run docs:build
 ```
 
 Use `bun run docs:dev` for local preview.
 
-The Vercel documentation project intentionally builds only when `docs/` changes. `docs/scripts/should-build.mjs` owns that Git diff decision and fails open when Vercel's comparison SHAs cannot be proven. Its regression tests are part of `docs:check`.
+The Docs GitHub Actions workflow filters `docs/**` and shared workspace build inputs **before** requesting a Vercel deployment. Vercel Git auto-deployments and `ignoreCommand` remain disabled; the CI workflow builds the site and deploys a prebuilt bundle.
 
 Vercel installs only the `@denju/docs` workspace. Do not broaden the docs install back to the whole Bun workspace: doing so runs the published `denju-cli` postinstall during documentation builds.
