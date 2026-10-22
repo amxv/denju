@@ -17,12 +17,16 @@ test('filtered GitHub pushes trigger deployment only for actual site inputs', ()
     const found = [...block.matchAll(/^      - "([^"]+)"$/gm)].map(m => m[1]);
     assert.deepEqual(found, ["docs/**", "package.json", "bun.lock", "packages/npm/package.json", "vercel.json"]);
   }
-  assert.match(workflow, /secrets\.VERCEL_TOKEN/);
+  assert.match(workflow, /secrets\.VERCEL_DOCS_TOKEN/);
+  assert.doesNotMatch(workflow, /VERCEL_TOKEN: \$\{\{ secrets\.VERCEL_TOKEN \}\}/);
   assert.match(workflow, /vars\.VERCEL_ORG_ID/);
   assert.match(workflow, /vars\.VERCEL_PROJECT_ID/);
   assert.match(workflow, /vercel@latest deploy --prebuilt --prod/);
   assert.match(workflow, /working-directory: \./);
   assert.match(workflow, /prepare-prebuilt\.mjs/);
+  const release = readFileSync(path.join(repo, '.github/workflows/release.yml'), 'utf8');
+  assert.match(release, /VERCEL_TOKEN: \$\{\{ secrets\.VERCEL_TOKEN \}\}/);
+  assert.match(release, /VERCEL_PROJECT_ID: \$\{\{ secrets\.VERCEL_PROJECT_ID \}\}/);
 });
 
 test('only Actions creates Vercel deployments', () => {

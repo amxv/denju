@@ -98,4 +98,4 @@ For line-count feedback, `locguard` checks the dirty/changed source tree quickly
 
 ### Docs deployment
 
-The Docs GitHub Actions workflow deploys production only for the watched site paths; Vercel Git auto-deployments and `ignoreCommand` stay disabled. Keep the project-scoped `VERCEL_TOKEN` Actions secret and ID variables configured. Check Astro locally; builds run in CI.
+The Docs GitHub Actions workflow deploys production only for the watched site paths; Vercel Git auto-deployments and `ignoreCommand` stay disabled. It uses the project-scoped `VERCEL_DOCS_TOKEN` Actions secret and `VERCEL_ORG_ID` / `VERCEL_PROJECT_ID` Actions variables. Keep the separate `VERCEL_TOKEN` and Vercel ID **secrets** for registry release deployments untouched. Check Astro locally; builds run in CI.
