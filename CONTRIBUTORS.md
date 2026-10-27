@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- Rust 1.97.1 via `rust-toolchain.toml`
+- Rust stable via `rust-toolchain.toml`
 - Bun 1.3.11
 - `just` 1.52+ is optional but recommended for the discoverable command menu
 - Docker Compose for the pinned PostgreSQL/S3-compatible development dependencies used by integration and load tests
